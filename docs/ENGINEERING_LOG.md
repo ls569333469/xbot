@@ -61,3 +61,13 @@ D:\AI_Projects\xbot\docs\
 - `X_DATA_PROVIDER`: 设为 `socialdata`（真实拉取）或 `mock`（前向测试模拟器）。
 - `TG_BOT_TOKEN` 与 `TG_CHAT_ID`: 填入以接收实时 Telegram 卡片通知。
 - `GMGN_API_KEY` 与 `GMGN_PRIVATE_KEY`: 真实交易接口授权及钱包私钥。
+
+---
+
+## 5. 最近变更记录 (Recent Engineering Updates)
+
+*   **2026-07-19 (EVM 多链与精度自适应加固)**:
+    - **代币精度解耦**：移除 `trade-engine.js` 原先硬编码的 `10^9` 数量缩放，改为在开仓与平仓前动态请求 GMGN 的 `getTokenInfo` 获取目标 MEME 代币真实精度（如 18 或 6），防范挂单 TP/SL 时代币额度算错被拒。
+    - **EVM 包装代币地址修正**：配置了 BSC (WBNB) 与 Base (WETH) 的真实链上智能合约地址，替换原先的 mock 占位符。
+    - **EVM 交易离线签名升级**：在本地解析 GMGN 原始交易体并格式化为 `ethers` 可签名的交易参数（补齐 chainId 等），安全打通 EVM 交易提交广播。
+
