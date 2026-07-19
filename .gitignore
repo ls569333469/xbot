@@ -1,0 +1,25 @@
+# Dependency directories
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Environment configurations and keys (CRITICAL)
+.env
+**/.env
+.env.*
+**/.env.*
+*.pem
+/**/*.pem
+
+# Logs
+logs/
+**/logs/
+*.log
+**/*.log
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

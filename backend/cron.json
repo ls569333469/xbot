@@ -1,0 +1,50 @@
+[
+  {
+    "id": "x-poll-timeline",
+    "name": "Poll X KOL Timelines",
+    "schedule": "*/30 * * * * *",
+    "handler": "./jobs/x-poll-timeline",
+    "enabled": true,
+    "timeout": 30000
+  },
+  {
+    "id": "x-poll-follows",
+    "name": "Poll X KOL Follows",
+    "schedule": "0 */5 * * * *",
+    "handler": "./jobs/x-poll-follows",
+    "enabled": true,
+    "timeout": 60000
+  },
+  {
+    "id": "signal-matcher",
+    "name": "Match Trade Signals",
+    "schedule": "*/5 * * * * *",
+    "handler": "./jobs/signal-matcher",
+    "enabled": true,
+    "timeout": 30000
+  },
+  {
+    "id": "price-monitor",
+    "name": "Simulated Price Monitor",
+    "schedule": "*/10 * * * * *",
+    "handler": "./jobs/price-monitor",
+    "enabled": true,
+    "timeout": 15000
+  },
+  {
+    "id": "order-sync",
+    "name": "Sync Orders",
+    "schedule": "*/30 * * * * *",
+    "handler": "./jobs/order-sync",
+    "enabled": true,
+    "timeout": 30000
+  },
+  {
+    "id": "budget-reset",
+    "name": "Reset Daily Budget",
+    "schedule": "0 0 * * *",
+    "handler": "./jobs/budget-reset",
+    "enabled": true,
+    "timeout": 30000
+  }
+]
