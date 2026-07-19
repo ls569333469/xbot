@@ -25,16 +25,23 @@ function loadSolanaKeypair(keyStr) {
   }
 }
 
-// 获取链对应原生代币地址
+// 获取链对应原生代币地址 (实盘 WETH/WBNB 合约地址)
 function getNativeTokenAddress(chain) {
   const map = {
     sol: 'So11111111111111111111111111111111111111112',
-    bsc: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', // Mock wrapper
-    base: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-    eth: 'c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
+    bsc: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',   // WBNB
+    base: '0x4200000000000000000000000000000000000006',  // WETH
+    eth: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'   // WETH
   };
   return map[chain] || map.sol;
 }
+
+// EVM 链 ID 映射表
+const EVM_CHAIN_IDS = {
+  eth: 1,
+  bsc: 56,
+  base: 8453
+};
 
 /**
  * 真实小额开仓逻辑
@@ -83,6 +90,18 @@ async function openRealPosition(signal, wsBroadcast) {
 
     logger.info('trade-engine', `进入实盘交易流水线 | 链: ${chain} | CA: ${ca} | 预算: ${budgetPerTrade}`);
 
+    // 获取代币的真实精度 (EVM 可为 18, 6 等; Solana 多为 9)
+    let tokenDecimals = 9;
+    try {
+      const tokenInfo = await gmgnHttp.getTokenInfo(chain, ca);
+      if (tokenInfo && tokenInfo.decimals !== undefined) {
+        tokenDecimals = Number(tokenInfo.decimals);
+      }
+    } catch (err) {
+      logger.warn('trade-engine', `获取代币 ${ca} 精度失败，使用链默认值: ${err.message}`);
+      tokenDecimals = chain === 'sol' ? 9 : 18;
+    }
+
     let buyTxHash = null;
     let amountOut = 0;
     let entryPriceUsd = 0;
@@ -112,14 +131,13 @@ async function openRealPosition(signal, wsBroadcast) {
         throw new Error('缺失钱包公钥 WALLET_SOL/WALLET_EVM 或私钥 GMGN_PRIVATE_KEY');
       }
 
-      // A. 获取买入路由
+      // A. 获取买入路由 (输入是原生代币 SOL/BNB/ETH)
       const nativeIn = getNativeTokenAddress(chain);
-      // 将 SOL 等原生币转换为 Lamports/Wei 计价
-      const decimals = chain === 'sol' ? 9 : 18;
-      const rawInAmount = Math.floor(budgetPerTrade * Math.pow(10, decimals)).toString();
+      const nativeDecimals = chain === 'sol' ? 9 : 18;
+      const rawInAmount = Math.floor(budgetPerTrade * Math.pow(10, nativeDecimals)).toString();
       
       const routeData = await gmgnHttp.getSwapRoute(chain, nativeIn, ca, rawInAmount, fromAddress, whitelist.slippage || 15);
-      const unsignedTx = routeData.raw_tx.tx_data; // Base64 或 Hex
+      const unsignedTx = routeData.raw_tx.tx_data;
       entryPriceUsd = Number(routeData.quote_price || 0);
       
       // B. 本地离线签署交易
@@ -133,10 +151,37 @@ async function openRealPosition(signal, wsBroadcast) {
         transaction.sign([keypair]);
         signedTx = Buffer.from(transaction.serialize()).toString('base64');
       } else {
+        // EVM 链离线签名
         const wallet = new Wallet(privateKeyStr);
-        // EVM 交易体签名
-        const signed = await wallet.signTransaction(JSON.parse(unsignedTx));
-        signedTx = signed;
+        
+        let txParams;
+        if (typeof unsignedTx === 'string') {
+          try {
+            txParams = JSON.parse(unsignedTx);
+          } catch (e) {
+            // 如果已经是 hex 编码的 rawTransaction，直接赋值
+            txParams = unsignedTx;
+          }
+        } else {
+          txParams = unsignedTx;
+        }
+
+        if (typeof txParams === 'object') {
+          // 适配 Ethers.js v5/v6 参数并补全 chainId
+          const chainId = EVM_CHAIN_IDS[chain] || 1;
+          const formattedTx = {
+            to: txParams.to || txParams.target,
+            data: txParams.data,
+            value: txParams.value || '0x00',
+            gasLimit: txParams.gasLimit || txParams.gas_limit || 300000,
+            gasPrice: txParams.gasPrice || txParams.gas_price,
+            chainId: chainId
+          };
+          signedTx = await wallet.signTransaction(formattedTx);
+        } else {
+          // 已经签过名或者格式为原生 Hex
+          signedTx = txParams;
+        }
       }
 
       // C. 提交交易上链
@@ -144,8 +189,8 @@ async function openRealPosition(signal, wsBroadcast) {
       buyTxHash = submitRes.tx_hash;
       logger.info('trade-engine', `买入交易已提交上链 | Hash: ${buyTxHash}`);
 
-      // D. 估算成交数量 (部分成交减除)
-      const expectedOut = Number(routeData.out_amount || 0) / Math.pow(10, 9); // 简易 decimals 处理
+      // D. 估算成交数量 (根据代币精度 tokenDecimals 进行处理)
+      const expectedOut = Number(routeData.out_amount || 0) / Math.pow(10, tokenDecimals);
       const fillRate = 0.98; // 实盘估算成交率
       amountOut = expectedOut * fillRate;
 
@@ -158,7 +203,7 @@ async function openRealPosition(signal, wsBroadcast) {
         from_address: fromAddress,
         token_in_address: ca,
         token_out_address: nativeIn,
-        amount_in: Math.floor(amountOut * Math.pow(10, 9)).toString(), // 全部抛出
+        amount_in: Math.floor(amountOut * Math.pow(10, tokenDecimals)).toString(), // 使用动态精度全部抛出
         tp_price: tpPrice.toString(),
         sl_price: slPrice.toString(),
         order_type: 'smart_trade',
@@ -264,6 +309,17 @@ async function closeRealPosition(positionId, closePriceUsd, status, wsBroadcast)
   let sellTxHash = null;
   let exitPrice = closePriceUsd;
 
+  // 获取该代币精度
+  let tokenDecimals = 9;
+  try {
+    const tokenInfo = await gmgnHttp.getTokenInfo(chain, ca);
+    if (tokenInfo && tokenInfo.decimals !== undefined) {
+      tokenDecimals = Number(tokenInfo.decimals);
+    }
+  } catch (err) {
+    tokenDecimals = chain === 'sol' ? 9 : 18;
+  }
+
   if (!apiKey) {
     // ◈ Mock 平仓模式
     sellTxHash = '0xmock_real_sell_' + Math.random().toString(36).substring(7);
@@ -286,9 +342,9 @@ async function closeRealPosition(positionId, closePriceUsd, status, wsBroadcast)
       }
     }
 
-    // B. 获取卖出 Swap 路由
+    // B. 获取卖出 Swap 路由 (输入是持有的代币，输出是原生包装代币)
     const nativeOut = getNativeTokenAddress(chain);
-    const rawSellAmount = Math.floor(Number(pos.amount_out) * Math.pow(10, 9)).toString();
+    const rawSellAmount = Math.floor(Number(pos.amount_out) * Math.pow(10, tokenDecimals)).toString();
     
     try {
       const routeData = await gmgnHttp.getSwapRoute(chain, ca, nativeOut, rawSellAmount, fromAddress, 15);
@@ -305,7 +361,32 @@ async function closeRealPosition(positionId, closePriceUsd, status, wsBroadcast)
         signedTx = Buffer.from(transaction.serialize()).toString('base64');
       } else {
         const wallet = new Wallet(privateKeyStr);
-        signedTx = await wallet.signTransaction(JSON.parse(unsignedTx));
+        
+        let txParams;
+        if (typeof unsignedTx === 'string') {
+          try {
+            txParams = JSON.parse(unsignedTx);
+          } catch (e) {
+            txParams = unsignedTx;
+          }
+        } else {
+          txParams = unsignedTx;
+        }
+
+        if (typeof txParams === 'object') {
+          const chainId = EVM_CHAIN_IDS[chain] || 1;
+          const formattedTx = {
+            to: txParams.to || txParams.target,
+            data: txParams.data,
+            value: txParams.value || '0x00',
+            gasLimit: txParams.gasLimit || txParams.gas_limit || 300000,
+            gasPrice: txParams.gasPrice || txParams.gas_price,
+            chainId: chainId
+          };
+          signedTx = await wallet.signTransaction(formattedTx);
+        } else {
+          signedTx = txParams;
+        }
       }
 
       const submitRes = await gmgnHttp.submitSwap(chain, signedTx);
