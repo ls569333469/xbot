@@ -3,6 +3,7 @@ const db = require('../lib/db');
 const logger = require('../lib/logger');
 const gmgnHttp = require('../lib/gmgn-http');
 const paperEngine = require('../domains/trade/paper-engine');
+const tradeEngine = require('../domains/trade/trade-engine');
 
 async function run(deps) {
   logger.info('jobs', 'Running price-monitor job');
@@ -79,10 +80,18 @@ async function run(deps) {
 
         if (pnlPct >= tpThreshold) {
           logger.trade('price-monitor', `代币 ${pos.symbol} 达到止盈线 (+${pnlPct}% >= +${tpThreshold}%)，触发自动平仓`);
-          await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
+          if (process.env.GMGN_API_KEY) {
+            await tradeEngine.closeRealPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
+          } else {
+            await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
+          }
         } else if (pnlPct <= -slThreshold) {
           logger.trade('price-monitor', `代币 ${pos.symbol} 跌破止损线 (${pnlPct}% <= -${slThreshold}%)，触发自动平仓`);
-          await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
+          if (process.env.GMGN_API_KEY) {
+            await tradeEngine.closeRealPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
+          } else {
+            await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
+          }
         } else {
           // 5. 未触发 TP/SL，仅更新当前实时价格、PnL 盈亏比及极值记录
           await db.query(

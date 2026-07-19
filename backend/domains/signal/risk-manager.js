@@ -95,8 +95,8 @@ async function checkRisks(signal, whitelist) {
     // Layer 2 — 链级
     // ═══════════════════════════════════
 
-    // 6. 链是否启用
-    riskCheck.chain_enabled = chainConf.enabled === true;
+    // 6. 链是否启用 (如果用户未配置 chain_configs，默认允许所有链)
+    riskCheck.chain_enabled = chainConf.enabled !== false;
     if (!riskCheck.chain_enabled) setFailed('CHAIN_DISABLED');
 
     // 7. 日预算

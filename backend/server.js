@@ -119,6 +119,10 @@ async function startServer() {
   const checkEnv = require('./scripts/check-env');
   await checkEnv();
 
+  // 从 DB 恢复 Armed 状态
+  const engineState = require('./lib/engine-state');
+  await engineState.init();
+
   await Promise.all([
     db.query("ALTER TABLE positions ADD COLUMN IF NOT EXISTS sim_peaks JSONB DEFAULT '{}'"),
     db.query("ALTER TABLE positions ADD COLUMN IF NOT EXISTS sell_tx_hash TEXT")

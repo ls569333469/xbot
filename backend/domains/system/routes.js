@@ -29,13 +29,13 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-router.post('/arm', (req, res) => {
-  engineState.setArmed(true);
+router.post('/arm', async (req, res) => {
+  await engineState.setArmed(true);
   res.json({ ok: true, data: { armed: true } });
 });
 
-router.post('/disarm', (req, res) => {
-  engineState.setArmed(false);
+router.post('/disarm', async (req, res) => {
+  await engineState.setArmed(false);
   res.json({ ok: true, data: { armed: false } });
 });
 

@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS positions (
   exit_price numeric(24,12),
   pnl numeric(18,8),
   pnl_pct numeric(8,2),
+  sim_peaks jsonb DEFAULT '{}',
   status text DEFAULT 'pending' CHECK(status IN('pending','open','tp_hit','sl_hit','manual_close','failed')),
   opened_at timestamptz,
   closed_at timestamptz,
