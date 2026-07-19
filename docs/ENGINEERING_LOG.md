@@ -71,3 +71,8 @@ D:\AI_Projects\xbot\docs\
     - **EVM 包装代币地址修正**：配置了 BSC (WBNB) 与 Base (WETH) 的真实链上智能合约地址，替换原先的 mock 占位符。
     - **EVM 交易离线签名升级**：在本地解析 GMGN 原始交易体并格式化为 `ethers` 可签名的交易参数（补齐 chainId 等），安全打通 EVM 交易提交广播。
 
+*   **2026-07-20 (P0 级全链路审查修复)**:
+    - **[P0-1] 止盈止损平仓引擎路由修正**：`price-monitor` 在触发 TP/SL 时原来无论是否实盘都调用 `paperEngine`（纸交易），导致链上持仓不会被卖出。现按 `GMGN_API_KEY` 存在与否分流至 `tradeEngine.closeRealPosition`。
+    - **[P0-2] 链级风控默认值修正**：`risk-manager` 中 `chain_enabled` 原为 `=== true`，当用户未在前端配置链时为 `undefined`，所有信号被 `CHAIN_DISABLED` 拦截。改为 `!== false`，默认允许所有链。
+    - **[P0-3] Armed 状态持久化**：引擎解锁状态从内存变量改为持久化到 DB `config` 表。服务重启后自动从 DB 恢复，避免每次重启需手动重新解锁。
+    - **[P0-4] init.sql 补全 `sim_peaks` 列定义**：全新环境部署时不再依赖 `ALTER TABLE` 动态补列。
