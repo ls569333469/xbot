@@ -29,7 +29,8 @@ D:\AI_Projects\xbot\docs\
     ├── P1_handover_report.md                    # P1: Phase 1 交接与开发指南
     ├── P2_audit_report.md                      # P2: Phase 1-3 深度安全性与高并发锁审计报告
     ├── P3_development_standards.md             # P3: xbot 前端与后台统一开发规范模板
-    └── P4_handover_report.md                    # P4: Phase 1-5 完工交接与实盘操作指南
+    ├── P4_handover_report.md                    # P4: Phase 1-5 完工交接与实盘操作指南
+    └── P5_audit_and_fix_report.md              # P5: 全链路审查与修复报告（降级/模拟方案全览）
 ```
 
 - **P0**：[PRD-MEME右侧交易系统.md](file:///D:/AI_Projects/xbot/docs/00_系统架构与全局设计/PRD-MEME%E5%8F%B3%E4%BE%A7%E4%BA%A4%E6%98%93%E7%B3%BB%E7%BB%9F.md)
@@ -37,6 +38,7 @@ D:\AI_Projects\xbot\docs\
 - **P2**：[P2_audit_report.md](file:///D:/AI_Projects/xbot/docs/00_系统架构与全局设计/P2_audit_report.md)
 - **P3**：[P3_development_standards.md](file:///D:/AI_Projects/xbot/docs/00_系统架构与全局设计/P3_development_standards.md)
 - **P4**：[P4_handover_report.md](file:///D:/AI_Projects/xbot/docs/00_系统架构与全局设计/P4_handover_report.md)
+- **P5**：[P5_audit_and_fix_report.md](file:///D:/AI_Projects/xbot/docs/00_系统架构与全局设计/P5_audit_and_fix_report.md)
 
 ---
 
