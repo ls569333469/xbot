@@ -54,7 +54,7 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=xbot
 DB_USER=pm_user
-DB_PASSWORD=pm123456
+DB_PASSWORD=<DB_PASSWORD>
 
 # 交易授权（由您填写）
 GMGN_API_KEY=your_gmgn_api_key
@@ -73,7 +73,7 @@ WALLET_SOL=your_solana_public_key
 WALLET_EVM=your_evm_public_key
 
 # 面板安全 Token
-ADMIN_TOKEN=xbot_admin_2026
+ADMIN_TOKEN=<ADMIN_TOKEN>
 ```
 
 ---
@@ -101,30 +101,7 @@ npm run dev
 ### 3.2 诊断与集成测试脚本 (`backend/scripts/`)
 我们为您提供了一组强大的测试命令，用于在实盘运行前排查接口和连通性：
 
-1.  **核验 SocialData 数据源拉取**：
-    ```bash
-    node scripts/test-socialdata.js
-    ```
-    *检查后台能否正确链接到 SocialData，并获取 elonmusk 的最新推文。*
-2.  **核验 Telegram 预警卡片推送**：
-    ```bash
-    node scripts/test-tg-notifier.js
-    ```
-    *验证您的 TG 机器人能否即时在群组中发送包含加粗、等宽代码与区块链接的精美交易提醒。*
-3.  **模拟并发冲突与事务锁**：
-    ```bash
-    node scripts/test-concurrency-locks.js
-    ```
-    *模拟一瞬间产生多笔买单，验证行锁防重入及超预算自动回滚拦截。*
-4.  **手动平仓与极值落盘审计**：
-    ```bash
-    node scripts/test-close.js
-    ```
-    *测试手动平仓逻辑、订单撤销动作及历史极值曲线统计数据是否成功写入 positions 的 `sim_peaks` jsonb 字段。*
-5.  **查看当前数据库活动抓取数**：
-    ```bash
-    node scripts/check-tweets.js
-    ```
+本节原有 SocialData、Telegram、并发模拟、命令行真实平仓和数据库检查脚本均为早期临时入口，已在实盘清理阶段删除。当前测试规范与数据库隔离要求见 `backend/tests/README.md`；真实平仓只允许通过正式前端和双阶段 API 执行。
 
 ---
 

@@ -9,14 +9,41 @@ dist/
 **/.env
 .env.*
 **/.env.*
+!.env.example
+!**/.env.example
 *.pem
 /**/*.pem
+*.key
+**/*.key
+*.p12
+**/*.p12
+*.pfx
+**/*.pfx
+*.keystore
+**/*.keystore
+.npmrc
+**/.npmrc
+.pgpass
+**/.pgpass
+credentials*.json
+**/credentials*.json
+secrets*.json
+**/secrets*.json
 
 # Logs
 logs/
 **/logs/
 *.log
 **/*.log
+
+# Local database safety snapshots
+backend/db/backups/
+*.dump
+**/*.dump
+*.sqlite
+*.sqlite3
+*.db
+*.bak
 
 # Editor & OS files
 .vscode/

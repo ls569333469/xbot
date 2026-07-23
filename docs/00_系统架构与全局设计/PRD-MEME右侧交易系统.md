@@ -216,14 +216,14 @@ KOL 推文文本中出现合约地址
 
 **误报控制**：白名单最多几十条 CA，任何不在白名单中的 CA 自动丢弃。Solana Base58 误匹配（如 TX Hash）不会命中白名单。
 
-#### 路径 C — $TICKER 匹配（增强路径）
+#### 路径 C — 代币关键词匹配（增强路径）
 
 ```
-KOL 推文文本中出现 $TICKER
+KOL 推文文本中出现白名单 symbol 对应的关键词（例如 ANSEM，不要求 $ 前缀）
     ↓
-正则提取: /\$([A-Z]{1,10})\b/g
+按完整单词边界、不区分大小写匹配
     ↓
-查白名单: $TICKER ∈ ca_whitelist.symbol ?
+查白名单: 关键词 = ca_whitelist.symbol ?
     ↓
 命中 → 触发买入信号（可能命中多链的同名 TICKER，各自独立评估）
 ```
@@ -239,7 +239,7 @@ WHERE status = 'active'
   AND (
     $1 = ANY(project_x_handles)           -- 路径 A: handle
     OR contract_address = ANY($2::text[])  -- 路径 B: CA
-    OR UPPER(symbol) = ANY($3::text[])     -- 路径 C: ticker
+    OR UPPER(symbol) = ANY($3::text[])     -- 路径 C: 代币关键词
   )
 ```
 
@@ -259,7 +259,7 @@ Cron 每 30 秒触发
 对每条推文:
     ├── 从 API 元数据提取 target_handles（被 @mention / 转发来源 / 回复对象）
     ├── 判断 activity_type: tweet / retweet / quote / reply
-    ├── 从推文文本提取 CA 和 $TICKER（增强路径）
+    ├── 从推文文本提取 CA，并匹配白名单 symbol 关键词（增强路径）
     └── 写入 x_activities 表（processed = false）
     ↓
 更新 KOL 的 last_polled_at 和 last_tweet_id

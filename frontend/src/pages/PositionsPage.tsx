@@ -1,16 +1,37 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
-import { Position } from '../lib/types';
+import { ApiResponse, Position } from '../lib/types';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { useToast } from '../components/ui/Toast';
+import { useToast } from '../components/ui/ToastContext';
 import { DataTable } from '../components/ui/DataTable';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { TableSkeleton } from '../components/ui/Skeleton';
-import { Play, TrendingUp, TrendingDown, Power } from 'lucide-react';
+import { TrendingUp, TrendingDown, Power } from 'lucide-react';
+import { StatusBadge } from '../components/ui/StatusBadge';
+
+const CLOSE_ERROR_MESSAGES: Record<string, string> = {
+  ENGINE_LOCKED: '自动买入引擎已锁定，但已有仓位仍应允许平仓',
+  LIVE_DISABLED: '实盘总开关未开启',
+  LIVE_MODE_REQUIRED: '当前不是实盘模式',
+  CLOSE_SLIPPAGE_INVALID: '平仓滑点配置无效，请检查白名单设置',
+  POSITION_NOT_CLOSABLE: '该仓位当前不能平仓，请刷新仓位状态',
+  POSITION_BALANCE_EMPTY: '交易钱包中没有可卖出的仓位余额',
+  PREPARE_TOKEN_INVALID: '平仓确认已过期，请重新点击平仓',
+  PREPARE_SNAPSHOT_CHANGED: '仓位或策略状态已变化，请重新点击平仓',
+  STRATEGY_STATE_UNSAFE: '止盈止损策略正在变化，请稍后刷新再试',
+  STRATEGY_CANCEL_UNCERTAIN: '止盈止损取消结果待确认，系统未继续卖出',
+  STRATEGY_CANCEL_UNVERIFIED: '未能确认止盈止损已取消，系统未继续卖出',
+  STRATEGY_TRIGGERED_DURING_CANCEL: '止盈止损在取消过程中已触发，请等待仓位对账'
+};
+
+function closeErrorMessage(response: ApiResponse<unknown>, fallback: string) {
+  return CLOSE_ERROR_MESSAGES[response.code || ''] || response.error || fallback;
+}
 
 export default function PositionsPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(true);
+  const [closingIds, setClosingIds] = useState<Set<string>>(new Set());
   const { toast } = useToast();
   const { lastEvent } = useWebSocket();
 
@@ -46,6 +67,8 @@ export default function PositionsPage() {
             : pos
         )
       );
+    } else if (type === 'trade:order-updated' || type === 'position:close_confirmed') {
+      void fetchPositions();
     } else if (['position:tp_hit', 'position:sl_hit', 'position:manual_close'].includes(type)) {
       setPositions(prev => prev.filter(pos => pos.id !== payload.id));
       const reasonMap: Record<string, string> = {
@@ -55,20 +78,39 @@ export default function PositionsPage() {
       };
       toast(`持仓已结束 [${reasonMap[type]}]: ${payload.symbol || '代币'} (${payload.pnl_pct}%)`, payload.pnl_pct >= 0 ? 'success' : 'warning');
     }
-  }, [lastEvent, toast]);
+  }, [lastEvent, toast, fetchPositions]);
 
   const handleClose = async (id: string) => {
-    if (!confirm('确认要手动平仓此仓位吗？平仓将撤销在途条件单并以市价成交。')) return;
+    const position = positions.find(item => item.id === id);
+    if (!position) return;
+    if (position.execution_mode === 'paper') {
+      if (!confirm('确认平仓模拟交易仓位？')) return;
+      const response = await api.trade.close(id);
+      if (response.ok) void fetchPositions();
+      else toast(response.error || '模拟交易平仓失败', 'error');
+      return;
+    }
+    setClosingIds(previous => new Set(previous).add(id));
     try {
-      const res = await api.trade.close(id);
-      if (res.ok) {
-        toast('平仓指令提交成功', 'success');
-        setPositions(prev => prev.filter(pos => pos.id !== id));
-      } else {
-        toast(res.error || '平仓失败', 'error');
-      }
+      const prepared = await api.trade.prepareClose(id, 100);
+      if (!prepared.ok || !prepared.data) throw new Error(closeErrorMessage(prepared, '平仓准备失败'));
+      const summary = prepared.data;
+      const confirmed = confirm(
+        `确认提交真实平仓？\n\n链: ${summary.chain}\n卖出: ${summary.sell_amount}\n钱包可用 raw: ${summary.wallet_available_raw}\n策略动作: ${summary.strategy_action}\n\n提交后仓位会保持显示，直到链上确认。`
+      );
+      if (!confirmed) return;
+      const executed = await api.trade.executeClose(id, summary.prepare_token);
+      if (!executed.ok) throw new Error(closeErrorMessage(executed, '平仓提交失败'));
+      toast('平仓订单已提交，等待交易服务与链上确认', 'success');
+      setPositions(previous => previous.map(item => item.id === id ? { ...item, status: 'closing' } : item));
     } catch (err: any) {
       toast(err.message || '平仓异常', 'error');
+    } finally {
+      setClosingIds(previous => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -92,7 +134,7 @@ export default function PositionsPage() {
       header: '代币',
       accessor: (row: Position) => (
         <div className="flex flex-col">
-          <span className="font-semibold text-white text-sm">{row.symbol || 'Unknown'}</span>
+          <span className="font-semibold text-white text-sm">{row.symbol || '未知代币'}</span>
           <span className="text-xs text-secondary font-mono" title={row.contract_address}>
             {row.contract_address.slice(0, 4)}...{row.contract_address.slice(-4)}
           </span>
@@ -106,6 +148,10 @@ export default function PositionsPage() {
           {row.amount_in} {getChainNativeSymbol(row.chain_id)}
         </span>
       )
+    },
+    {
+      header: '状态',
+      accessor: (row: Position) => <StatusBadge status={row.status} />
     },
     {
       header: '入场价',
@@ -137,20 +183,20 @@ export default function PositionsPage() {
       }
     },
     {
-      header: '极值记录 (Max/Min)',
+      header: '最高/最低涨幅',
       accessor: (row: Position) => {
         const peaks = row.sim_peaks;
         if (!peaks) return <span className="text-muted text-xs font-mono">-</span>;
         return (
           <div className="text-xs flex flex-col font-mono">
-            <span className="text-success">Max: +{(peaks.max_gain_pct || 0).toFixed(2)}%</span>
-            <span className="text-danger">Min: {(peaks.max_loss_pct || 0).toFixed(2)}%</span>
+            <span className="text-success">最高: +{(peaks.max_gain_pct || 0).toFixed(2)}%</span>
+            <span className="text-danger">最低: {(peaks.max_loss_pct || 0).toFixed(2)}%</span>
           </div>
         );
       }
     },
     {
-      header: 'TP/SL 目标',
+      header: '止盈/止损目标',
       accessor: (row: Position) => (
         <span className="text-secondary text-sm font-mono">
           +{row.tp_pct}% / -{row.sl_pct}%
@@ -180,8 +226,9 @@ export default function PositionsPage() {
           className="btn btn-danger text-xs flex items-center gap-xs"
           style={{ padding: '6px 10px' }}
           onClick={() => handleClose(row.id)}
+          disabled={closingIds.has(row.id) || ['closing', 'close_uncertain'].includes(row.status)}
         >
-          <Power size={12} /> 平仓
+          <Power size={12} /> {closingIds.has(row.id) ? '准备中' : row.status === 'closing' ? '确认中' : '平仓'}
         </button>
       )
     }
@@ -191,16 +238,16 @@ export default function PositionsPage() {
     <div className="flex flex-col gap-lg">
       <div className="flex justify-between items-center">
         <div className="flex flex-col gap-xs">
-          <p className="text-secondary text-sm">实盘条件单及价格追踪，刷新频率为 10 秒</p>
+          <p className="text-secondary text-sm">仓位、保护策略与链上确认状态</p>
         </div>
         <button className="btn btn-secondary text-sm" onClick={fetchPositions}>刷新</button>
       </div>
 
       {loading ? (
-        <TableSkeleton rows={3} cols={11} />
+          <TableSkeleton rows={3} cols={12} />
       ) : positions.length === 0 ? (
         <div className="card text-center text-secondary py-lg" style={{ padding: '64px' }}>
-          暂无活跃持仓。当系统武装（Armed）且 KOL 活动匹配白名单 CA 通过风控时将自动触发实盘交易并建立仓位。
+          暂无活跃仓位。
         </div>
       ) : (
         <DataTable data={positions} columns={columns} />

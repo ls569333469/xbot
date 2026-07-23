@@ -8,7 +8,7 @@ const credentials = {
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),
   user: process.env.DB_USER || 'pm_user',
-  password: process.env.DB_PASSWORD || 'pm123456',
+  password: process.env.DB_PASSWORD || '',
 };
 
 async function setup() {
@@ -62,6 +62,13 @@ async function setup() {
   } finally {
     await xbotClient.end();
   }
+
+  // Fresh databases and existing databases use the same ordered migration runner.
+  const { runMigrations } = require('../lib/migrations');
+  const applied = await runMigrations();
+  console.log(`数据库迁移完成：${applied.length > 0 ? applied.join(', ') : '无待执行迁移'}`);
+  const db = require('../lib/db');
+  await db.pool.end();
 }
 
 setup();

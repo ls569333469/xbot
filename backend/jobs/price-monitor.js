@@ -2,23 +2,43 @@
 const db = require('../lib/db');
 const logger = require('../lib/logger');
 const gmgnHttp = require('../lib/gmgn-http');
+const gmgnAdapter = require('../lib/gmgn-adapter');
 const paperEngine = require('../domains/trade/paper-engine');
-const tradeEngine = require('../domains/trade/trade-engine');
+const engineState = require('../lib/engine-state');
+const { getTradingMode } = require('../lib/runtime-mode');
+
+function tokenPriceUsd(rawTokenInfo) {
+  return gmgnAdapter.normalizeTokenInfo(rawTokenInfo).priceUsd;
+}
 
 async function run(deps) {
   logger.info('jobs', 'Running price-monitor job');
   const { wsBroadcast } = deps || {};
+  const executionMode = getTradingMode();
+
+  if (executionMode === 'signal') {
+    return { status: 'skipped', reason: 'signal_mode' };
+  }
+  if (executionMode === 'live' && !engineState.getArmed()) {
+    return { status: 'skipped', reason: 'engine_locked' };
+  }
 
   try {
     // 1. 查询所有处于 open 状态的模拟仓位
-    const res = await db.query("SELECT * FROM positions WHERE status = 'open'");
+    const statuses = executionMode === 'live'
+      ? ['open', 'open_unprotected', 'open_protected', 'partially_closed']
+      : ['open'];
+    const res = await db.query(
+      'SELECT * FROM positions WHERE status = ANY($1::text[]) AND execution_mode = $2',
+      [statuses, executionMode]
+    );
     const openPositions = res.rows;
 
     for (const pos of openPositions) {
       try {
         // 2. 调用 GMGN API 获取代币实时价格 (USD)
         const tokenInfo = await gmgnHttp.getTokenInfo(pos.chain_id, pos.contract_address);
-        const currentPriceUsd = Number(tokenInfo.price_usd || tokenInfo.price || 0);
+        const currentPriceUsd = tokenPriceUsd(tokenInfo);
 
         if (currentPriceUsd <= 0) {
           logger.warn('price-monitor', `未能获取到 ${pos.symbol} 实时价格，跳过本次更新`);
@@ -78,20 +98,12 @@ async function run(deps) {
         const tpThreshold = Number(pos.tp_pct || 100);
         const slThreshold = Number(pos.sl_pct || 20);
 
-        if (pnlPct >= tpThreshold) {
+        if (pos.execution_mode === 'paper' && pnlPct >= tpThreshold) {
           logger.trade('price-monitor', `代币 ${pos.symbol} 达到止盈线 (+${pnlPct}% >= +${tpThreshold}%)，触发自动平仓`);
-          if (process.env.GMGN_API_KEY) {
-            await tradeEngine.closeRealPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
-          } else {
-            await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
-          }
-        } else if (pnlPct <= -slThreshold) {
+          await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
+        } else if (pos.execution_mode === 'paper' && pnlPct <= -slThreshold) {
           logger.trade('price-monitor', `代币 ${pos.symbol} 跌破止损线 (${pnlPct}% <= -${slThreshold}%)，触发自动平仓`);
-          if (process.env.GMGN_API_KEY) {
-            await tradeEngine.closeRealPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
-          } else {
-            await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
-          }
+          await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
         } else {
           // 5. 未触发 TP/SL，仅更新当前实时价格、PnL 盈亏比及极值记录
           await db.query(
@@ -128,4 +140,4 @@ async function run(deps) {
   }
 }
 
-module.exports = { run };
+module.exports = { run, tokenPriceUsd };

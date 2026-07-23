@@ -41,11 +41,23 @@ async function getStatus() {
   return res.rows[0];
 }
 
-async function insertActivity(data) {
-  const res = await db.query(
-    `INSERT INTO x_activities (kol_id, kol_handle, activity_type, tweet_id, tweet_text, target_x_handle, extracted_cas, extracted_tickers, raw_json)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-    [data.kol_id, data.kol_handle, data.activity_type, data.tweet_id, data.tweet_text, data.target_x_handle, data.extracted_cas || [], data.extracted_tickers || [], data.raw_json]
+async function insertActivity(data, executor = db) {
+  const res = await executor.query(
+    `INSERT INTO x_activities
+      (kol_id, kol_handle, activity_type, tweet_id, tweet_text, target_x_handle,
+       target_x_handles, extracted_cas, extracted_tickers, provider_event_id,
+       source_created_at, provider, semantic_key, observation_started_at, observation_ended_at, raw_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+     ON CONFLICT DO NOTHING
+     RETURNING *`,
+    [
+      data.kol_id, data.kol_handle, data.activity_type, data.tweet_id,
+      data.tweet_text, data.target_x_handle, data.target_x_handles || [],
+      data.extracted_cas || [], data.extracted_tickers || [],
+      data.provider_event_id, data.source_created_at, data.provider,
+      data.semantic_key || null,
+      data.observation_started_at, data.observation_ended_at, data.raw_json
+    ]
   );
   return res.rows[0];
 }

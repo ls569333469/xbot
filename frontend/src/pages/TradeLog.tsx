@@ -1,217 +1,191 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ExternalLink, RefreshCw, Search, X } from 'lucide-react';
 import { api } from '../lib/api';
-import { Position } from '../lib/types';
-import { DataTable } from '../components/ui/DataTable';
+import type { TradeAttempt } from '../lib/types';
 import { ChainIcon } from '../components/ui/ChainIcon';
-import { StatusBadge } from '../components/ui/StatusBadge';
 import { TableSkeleton } from '../components/ui/Skeleton';
-import { useToast } from '../components/ui/Toast';
-import { Download } from 'lucide-react';
+import { queryStageLabel, sideLabel, statusLabel } from '../lib/display-labels';
+
+function explorerUrl(chain: string, hash: string) {
+  const base: Record<string, string> = {
+    sol: 'https://solscan.io/tx/',
+    bsc: 'https://bscscan.com/tx/',
+    base: 'https://basescan.org/tx/',
+    eth: 'https://etherscan.io/tx/'
+  };
+  return `${base[chain] || ''}${hash}`;
+}
+
+function short(value?: string) {
+  if (!value) return '-';
+  return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
+}
+
+function ageLabel(timestamp?: string, now = Date.now()) {
+  if (!timestamp) return '-';
+  const seconds = Math.max(0, Math.floor((now - new Date(timestamp).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function pollingIntervalLabel(order: any) {
+  if (['confirmed', 'failed', 'expired'].includes(order.normalized_status)) return '已停止查询';
+  if (order.last_queried_at && order.next_query_at) {
+    const seconds = Math.max(0, Math.round(
+      (new Date(order.next_query_at).getTime() - new Date(order.last_queried_at).getTime()) / 1000
+    ));
+    return `${seconds}s`;
+  }
+  return '等待首次查询';
+}
+
+function JsonSection({ title, rows }: { title: string; rows?: any[] }) {
+  if (!rows?.length) return null;
+  return (
+    <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+      <span className="text-xs text-secondary">{title}</span>
+      {rows.map((row: any, index: number) => (
+        <pre key={row.id || `${title}-${index}`} className="font-mono text-xs"
+          style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', padding: '10px 0' }}>
+          {JSON.stringify(row, null, 2)}
+        </pre>
+      ))}
+    </div>
+  );
+}
 
 export default function TradeLog() {
-  const [history, setHistory] = useState<Position[]>([]);
-  const [chainFilter, setChainFilter] = useState('');
+  const [attempts, setAttempts] = useState<TradeAttempt[]>([]);
   const [loading, setLoading] = useState(true);
-  const { toast } = useToast();
+  const [selected, setSelected] = useState<any>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
-  const fetchHistory = useCallback(() => {
+  const refresh = useCallback(async () => {
     setLoading(true);
-    const params: Record<string, string> = {};
-    if (chainFilter) params.chain_id = chainFilter;
+    const response = await api.trade.attempts(200);
+    if (response.ok && response.data) setAttempts(response.data);
+    setLoading(false);
+  }, []);
 
-    api.trade.history(params)
-      .then(res => {
-        if (res.ok && res.data) {
-          setHistory(res.data as unknown as Position[]);
-        }
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [chainFilter]);
+  useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
-    fetchHistory();
-  }, [fetchHistory]);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  const getChainNativeSymbol = (chain: string): string => {
-    const symbolMap: Record<string, string> = {
-      sol: 'SOL',
-      bsc: 'BNB',
-      base: 'ETH',
-      eth: 'ETH',
-      robinhood: 'USD'
-    };
-    return symbolMap[chain] || 'SOL';
+  const openDetail = async (id: string) => {
+    setDetailLoading(true);
+    setSelected({ id });
+    const response = await api.trade.attempt(id);
+    if (response.ok && response.data) setSelected(response.data);
+    setDetailLoading(false);
   };
-
-  const handleExportCSV = async () => {
-    const token = localStorage.getItem('xbot_admin_token') || 'xbot_admin_2026';
-    try {
-      const res = await fetch('/api/trade/history/export-csv', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (!res.ok) {
-        throw new Error('HTTP status ' + res.status);
-      }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'xbot-trade-history.csv';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-      toast('交易历史 CSV 导出成功！', 'success');
-    } catch (err: any) {
-      toast('导出 CSV 失败: ' + err.message, 'error');
-    }
-  };
-
-  const columns = [
-    {
-      header: '链',
-      accessor: (row: Position) => <ChainIcon chain={row.chain_id} size="sm" />
-    },
-    {
-      header: '代币',
-      accessor: (row: Position) => (
-        <div className="flex flex-col">
-          <span className="font-semibold text-white text-sm">{row.symbol || 'Unknown'}</span>
-          <span className="text-xs text-secondary font-mono">
-            {row.contract_address.slice(0, 4)}...{row.contract_address.slice(-4)}
-          </span>
-        </div>
-      )
-    },
-    {
-      header: '状态',
-      accessor: (row: Position) => <StatusBadge status={row.status} />
-    },
-    {
-      header: '投入额',
-      accessor: (row: Position) => (
-        <span className="text-white font-mono font-semibold text-sm">
-          {row.amount_in} {getChainNativeSymbol(row.chain_id)}
-        </span>
-      )
-    },
-    {
-      header: '入场价',
-      accessor: (row: Position) => (
-        <span className="text-secondary font-mono text-sm">
-          ${Number(row.entry_price).toFixed(6)}
-        </span>
-      )
-    },
-    {
-      header: '出场价',
-      accessor: (row: Position) => (
-        <span className="text-white font-mono text-sm">
-          ${row.exit_price ? Number(row.exit_price).toFixed(6) : '-'}
-        </span>
-      )
-    },
-    {
-      header: '实盘盈亏',
-      accessor: (row: Position) => {
-        const pnl = Number(row.pnl || 0);
-        const pnlPct = Number(row.pnl_pct || 0);
-        const isProfit = pnl >= 0;
-        const nativeSymbol = getChainNativeSymbol(row.chain_id);
-        
-        return (
-          <div className="flex flex-col font-mono text-sm" style={{ color: isProfit ? 'var(--color-success)' : 'var(--color-danger)' }}>
-            <span className="font-bold">{isProfit ? '+' : ''}{pnl.toFixed(5)} {nativeSymbol}</span>
-            <span className="text-xs">{isProfit ? '+' : ''}{pnlPct.toFixed(2)}%</span>
-          </div>
-        );
-      }
-    },
-    {
-      header: '历史极值 (Max/Min)',
-      accessor: (row: Position) => {
-        const peaks = row.sim_peaks;
-        if (!peaks) return <span className="text-muted text-xs font-mono">-</span>;
-        return (
-          <div className="text-xs flex flex-col font-mono">
-            <span className="text-success">Max: +{(peaks.max_gain_pct || 0).toFixed(2)}%</span>
-            <span className="text-danger">Min: {(peaks.max_loss_pct || 0).toFixed(2)}%</span>
-          </div>
-        );
-      }
-    },
-    {
-      header: '触发 KOL',
-      accessor: (row: Position) => (
-        <span className="text-sm font-semibold text-secondary">
-          {row.kol_handle ? `@${row.kol_handle}` : '未知'}
-        </span>
-      )
-    },
-    {
-      header: '持仓时长',
-      accessor: (row: Position) => {
-        if (!row.closed_at) return <span className="text-xs font-mono">-</span>;
-        const openTime = new Date(row.opened_at).getTime();
-        const closeTime = new Date(row.closed_at).getTime();
-        const diffSec = Math.max(0, Math.floor((closeTime - openTime) / 1000));
-        
-        if (diffSec < 60) return <span className="text-xs font-mono">{diffSec}秒</span>;
-        const diffMin = Math.floor(diffSec / 60);
-        const remSec = diffSec % 60;
-        return <span className="text-xs font-mono">{diffMin}分{remSec}秒</span>;
-      }
-    },
-    {
-      header: '结束时间',
-      accessor: (row: Position) => {
-        if (!row.closed_at) return <span className="text-xs font-mono">-</span>;
-        return (
-          <span className="text-xs text-secondary font-mono">
-            {new Date(row.closed_at).toLocaleString()}
-          </span>
-        );
-      }
-    }
-  ];
 
   return (
     <div className="flex flex-col gap-lg">
-      <div className="flex justify-between items-center">
-        <div className="flex flex-col gap-xs">
-          <p className="text-secondary text-sm">显示已结转平仓的实盘与历史记录</p>
+      <div className="flex justify-between items-center" style={{ flexWrap: 'wrap', gap: '12px' }}>
+        <div className="flex gap-md text-sm text-secondary">
+          <span>交易尝试 <strong className="text-white">{attempts.length}</strong></span>
+          <span>待确认 <strong className="text-white">{attempts.filter(item => ['submitted', 'confirming', 'submission_uncertain'].includes(item.status)).length}</strong></span>
+          <span>人工复核 <strong className="text-danger">{attempts.filter(item => item.requires_manual_review).length}</strong></span>
         </div>
-        <div className="flex gap-sm">
-          <select 
-            className="input" 
-            style={{ width: '150px' }} 
-            value={chainFilter} 
-            onChange={e => setChainFilter(e.target.value)}
-          >
-            <option value="">所有链</option>
-            <option value="sol">Solana</option>
-            <option value="bsc">BSC</option>
-            <option value="base">Base</option>
-            <option value="eth">Ethereum</option>
-          </select>
-          <button className="btn btn-secondary text-sm flex items-center gap-xs" onClick={handleExportCSV}>
-            <Download size={14} /> 导出 CSV
-          </button>
-          <button className="btn btn-secondary text-sm" onClick={fetchHistory}>刷新</button>
-        </div>
+        <button className="btn btn-secondary" onClick={refresh}><RefreshCw size={15} /> 刷新</button>
       </div>
 
-      {loading ? (
-        <TableSkeleton rows={5} cols={11} />
-      ) : history.length === 0 ? (
-        <div className="card text-center text-secondary py-lg" style={{ padding: '64px' }}>
-          暂无已平仓交易历史记录。
+      {loading ? <TableSkeleton rows={6} cols={9} /> : (
+        <div className="table-container">
+          <table className="table">
+            <thead><tr>
+              <th>编号</th><th>链</th><th>方向</th><th>交易尝试</th><th>交易订单</th>
+              <th>查询阶段</th><th>上次 / 下次查询</th><th>交易哈希</th><th></th>
+            </tr></thead>
+            <tbody>
+              {attempts.map(attempt => (
+                <tr key={attempt.id}>
+                  <td className="font-mono text-sm">#{attempt.id}</td>
+                  <td><ChainIcon chain={attempt.chain} size="sm" /></td>
+                  <td className="font-mono text-sm">{sideLabel(attempt.side)}</td>
+                  <td>
+                    <span className={attempt.requires_manual_review ? 'text-danger' : 'text-white'}>{statusLabel(attempt.status)}</span>
+                    {attempt.error_code && <div className="text-xs text-danger font-mono">{attempt.error_code}</div>}
+                  </td>
+                  <td>
+                    <span className="text-sm">{attempt.order_status ? statusLabel(attempt.order_status) : '未生成'}</span>
+                    <button type="button" className="text-xs text-accent font-mono" title={attempt.provider_order_id}
+                      style={{ border: 0, padding: 0, background: 'transparent', cursor: 'pointer' }}
+                      onClick={() => openDetail(attempt.id)}>{short(attempt.provider_order_id)}</button>
+                  </td>
+                  <td className="font-mono text-xs">{queryStageLabel(attempt.query_stage)}<div className="text-secondary">{attempt.query_count || 0} 次</div></td>
+                  <td className="font-mono text-xs text-secondary">
+                    <div>{attempt.last_queried_at ? new Date(attempt.last_queried_at).toLocaleTimeString() : '-'}</div>
+                    <div>{attempt.query_stage === 'stopped' ? '已停止查询' : attempt.next_query_at ? new Date(attempt.next_query_at).toLocaleTimeString() : '-'}</div>
+                  </td>
+                  <td>
+                    {attempt.tx_hash ? <a className="text-accent font-mono text-xs flex items-center gap-xs" href={explorerUrl(attempt.chain, attempt.tx_hash)} target="_blank" rel="noreferrer">{short(attempt.tx_hash)} <ExternalLink size={12} /></a> : '-'}
+                  </td>
+                  <td><button className="btn btn-secondary" title="订单详情" onClick={() => openDetail(attempt.id)}><Search size={15} /></button></td>
+                </tr>
+              ))}
+              {attempts.length === 0 && <tr><td colSpan={9} className="text-center text-secondary" style={{ padding: '48px' }}>暂无交易尝试记录</td></tr>}
+            </tbody>
+          </table>
         </div>
-      ) : (
-        <DataTable data={history} columns={columns} />
+      )}
+
+      {selected && (
+        <div className="modal-overlay" onMouseDown={() => setSelected(null)}>
+          <div className="modal-content" onMouseDown={event => event.stopPropagation()}>
+            <div className="flex justify-between items-center border-b p-md" style={{ borderColor: 'var(--color-border)' }}>
+              <strong>交易尝试 #{selected.id}</strong>
+              <button className="btn btn-secondary" title="关闭" onClick={() => setSelected(null)}><X size={16} /></button>
+            </div>
+            <div className="p-md flex flex-col gap-md">
+              {detailLoading ? <div className="text-secondary">加载中...</div> : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
+                    <div><span className="text-xs text-secondary">状态</span><div className="font-mono text-sm">{statusLabel(selected.status)}</div></div>
+                    <div><span className="text-xs text-secondary">方向</span><div className="font-mono text-sm">{sideLabel(selected.side)}</div></div>
+                    <div><span className="text-xs text-secondary">钱包</span><div className="font-mono text-xs" style={{ overflowWrap: 'anywhere' }}>{selected.wallet_address}</div></div>
+                    <div><span className="text-xs text-secondary">创建时间</span><div className="font-mono text-xs">{selected.created_at ? new Date(selected.created_at).toLocaleString() : '-'}</div></div>
+                  </div>
+                  <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+                    <span className="text-xs text-secondary">交易订单</span>
+                    {(selected.orders || []).map((order: any) => (
+                      <div key={order.id} className="border-t py-sm" style={{ borderColor: 'var(--color-border)' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                          <div><span className="text-xs text-secondary">订单编号</span><div className="font-mono text-xs" style={{ overflowWrap: 'anywhere' }}>{order.provider_order_id || '-'}</div></div>
+                          <div><span className="text-xs text-secondary">年龄</span><div className="font-mono text-xs">{ageLabel(order.submitted_at, now)}</div></div>
+                          <div><span className="text-xs text-secondary">状态</span><div className="font-mono text-xs">{statusLabel(order.normalized_status)}</div></div>
+                          <div><span className="text-xs text-secondary">当前间隔</span><div className="font-mono text-xs">{pollingIntervalLabel(order)}</div></div>
+                          <div><span className="text-xs text-secondary">上次 / 下次</span><div className="font-mono text-xs">{order.last_queried_at ? new Date(order.last_queried_at).toLocaleTimeString() : '-'} / {order.next_query_at ? new Date(order.next_query_at).toLocaleTimeString() : '-'}</div></div>
+                          <div><span className="text-xs text-secondary">查询次数</span><div className="font-mono text-xs">{order.query_count || 0}</div></div>
+                        </div>
+                        {order.tx_hash && <a className="text-accent font-mono text-xs flex items-center gap-xs mt-1" href={explorerUrl(selected.chain, order.tx_hash)} target="_blank" rel="noreferrer">{order.tx_hash} <ExternalLink size={12} /></a>}
+                        <pre className="font-mono text-xs" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', paddingTop: '10px' }}>{JSON.stringify({ report: order.report_json, fee_native: order.gas_native, fee_usd: order.gas_usd }, null, 2)}</pre>
+                      </div>
+                    ))}
+                  </div>
+                  <JsonSection title="策略组" rows={selected.strategy_groups} />
+                  <JsonSection title="策略明细" rows={selected.strategy_legs} />
+                  <JsonSection title="持仓批次" rows={selected.position_lots} />
+                  <JsonSection title="链上回执" rows={selected.chain_receipts} />
+                  <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+                    <span className="text-xs text-secondary">状态历史</span>
+                    {(selected.events || []).sort((a: any, b: any) => Number(a.id) - Number(b.id)).map((event: any) => (
+                      <div key={event.id} className="flex justify-between gap-sm py-sm text-xs border-t" style={{ borderColor: 'var(--color-border)' }}>
+                        <span className="font-mono">{event.from_status ? statusLabel(event.from_status) : '新建'} → {statusLabel(event.to_status)}</span>
+                        <span className="text-secondary">{new Date(event.created_at).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

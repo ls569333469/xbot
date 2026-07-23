@@ -6,7 +6,7 @@ const credentials = {
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),
   user: process.env.DB_USER || 'pm_user',
-  password: process.env.DB_PASSWORD || 'pm123456',
+  password: process.env.DB_PASSWORD || '',
   database: 'xbot'
 };
 

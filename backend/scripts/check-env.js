@@ -1,89 +1,129 @@
-// D:\AI_Projects\xbot\backend\scripts\check-env.js
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
-require('dotenv').config();
+const { getProcessRole } = require('../lib/process-role');
 
-const ROOT_DIR = path.resolve(__dirname, '../..');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
 async function checkDb() {
-  const credentials = {
+  const client = new Client({
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432', 10),
     user: process.env.DB_USER || 'pm_user',
-    password: process.env.DB_PASSWORD || 'pm123456',
+    password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'xbot'
-  };
+  });
 
-  const client = new Client(credentials);
   try {
     await client.connect();
-    console.log('[check-env] ✓ Database connection successful.');
-  } catch (err) {
-    console.error(`[check-env] ✗ Database connection failed: ${err.message}`);
-    throw err;
+    console.log('[check-env] Database connection successful.');
   } finally {
     await client.end();
   }
 }
 
-function checkKeys() {
-  const privPath = path.join(ROOT_DIR, 'private_key.pem');
-  const pubPath = path.join(ROOT_DIR, 'public_key.pem');
-
-  if (!fs.existsSync(privPath) || !fs.existsSync(pubPath)) {
-    console.log('[check-env] 🔑 Missing Ed25519 keypair. Generating new keypair...');
-    try {
-      const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
-        privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
-        publicKeyEncoding: { format: 'pem', type: 'spki' }
-      });
-
-      fs.writeFileSync(privPath, privateKey);
-      fs.writeFileSync(pubPath, publicKey);
-      console.log('[check-env] ✓ Keypair successfully generated and saved.');
-    } catch (err) {
-      console.error(`[check-env] ✗ Failed to generate keypair: ${err.message}`);
-      throw err;
-    }
-  } else {
-    console.log('[check-env] ✓ Ed25519 keypair files exist.');
-  }
-}
-
 function checkVars() {
-  const required = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
-  const warnings = ['WALLET_SOL', 'WALLET_EVM', 'ADMIN_TOKEN', 'X_DATA_PROVIDER'];
-
-  const missingReq = required.filter(v => !process.env[v]);
-  if (missingReq.length > 0) {
-    throw new Error(`Missing required .env variables: ${missingReq.join(', ')}`);
+  const required = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'ADMIN_TOKEN', 'TRADING_MODE'];
+  const missing = required.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required .env variables: ${missing.join(', ')}`);
   }
 
-  warnings.forEach(v => {
-    if (!process.env[v]) {
-      console.warn(`[check-env] [WARN] Environment variable "${v}" is not configured. Some systems might degrade.`);
+  const modes = new Set(['signal', 'paper', 'live']);
+  if (!modes.has(process.env.TRADING_MODE)) {
+    throw new Error('TRADING_MODE must be signal, paper, or live.');
+  }
+
+  const processRole = getProcessRole();
+  if (process.env.NODE_ENV === 'production' && processRole === 'all') {
+    throw new Error('Production requires separate --role=ingestion and --role=execution processes.');
+  }
+
+  const apiKey = process.env.GMGN_API_KEY || '';
+  const privateKey = (process.env.GMGN_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+
+  if (apiKey && !apiKey.startsWith('gmgn')) {
+    throw new Error('GMGN_API_KEY has an invalid format.');
+  }
+
+  if (privateKey) {
+    try {
+      crypto.createPrivateKey(privateKey);
+    } catch (err) {
+      throw new Error(`GMGN_PRIVATE_KEY must be a valid PEM signing key: ${err.message}`);
     }
-  });
+  }
+
+
+  if (process.env.X_DATA_PROVIDER === 'socialdata' && !process.env.SOCIALDATA_API_KEY) {
+    throw new Error('SOCIALDATA_API_KEY is required when X_DATA_PROVIDER=socialdata.');
+  }
+
+  const providers = new Set(['mock', 'socialdata', 'twitterapi', '6551']);
+  const provider = process.env.X_DATA_PROVIDER || 'mock';
+  if (!providers.has(provider)) {
+    throw new Error('X_DATA_PROVIDER must be mock, socialdata, twitterapi, or 6551.');
+  }
+  if (provider === 'twitterapi' && !process.env.TWITTERAPI_IO_API_KEY) {
+    throw new Error('TWITTERAPI_IO_API_KEY is required when X_DATA_PROVIDER=twitterapi.');
+  }
+  if (provider === '6551' && !process.env.OPENNEWS_TOKEN) {
+    throw new Error('OPENNEWS_TOKEN is required when X_DATA_PROVIDER=6551.');
+  }
+  if (provider !== 'twitterapi'
+      && String(process.env.TWITTER_STREAM_ENABLED || 'false').toLowerCase() === 'true') {
+    throw new Error('TWITTER_STREAM_ENABLED is only supported when X_DATA_PROVIDER=twitterapi.');
+  }
+
+  const verifiedLiveEvents = String(process.env.P8_VERIFIED_LIVE_EVENT_TYPES || '')
+    .split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
+  const supportedLiveEvents = new Set(['tweet', 'retweet', 'quote', 'reply', 'follow']);
+  if (verifiedLiveEvents.some((item) => !supportedLiveEvents.has(item))) {
+    throw new Error('P8_VERIFIED_LIVE_EVENT_TYPES contains an unsupported event type.');
+  }
+
+  for (const [key, fallback, minimum] of [
+    ['X_6551_HEARTBEAT_MS', 20000, 5000],
+    ['X_6551_RECONNECT_MAX_MS', 30000, 1000],
+    ['X_6551_MONTHLY_MESSAGE_LIMIT', 2000000, 1]
+  ]) {
+    const value = Number(process.env[key] || fallback);
+    if (!Number.isFinite(value) || value < minimum) {
+      throw new Error(`${key} must be at least ${minimum}.`);
+    }
+  }
+
+  const followIntervalMs = Number(process.env.TWITTERAPI_IO_FOLLOW_INTERVAL_MS || 60000);
+  if (!Number.isFinite(followIntervalMs) || followIntervalMs < 30000) {
+    throw new Error('TWITTERAPI_IO_FOLLOW_INTERVAL_MS must be at least 30000.');
+  }
+
+  const dailyCreditLimit = Number(process.env.TWITTERAPI_IO_DAILY_CREDIT_LIMIT || 50000);
+  if (!Number.isFinite(dailyCreditLimit) || dailyCreditLimit <= 0) {
+    throw new Error('TWITTERAPI_IO_DAILY_CREDIT_LIMIT must be a positive number.');
+  }
+
+  if (String(process.env.TWITTER_STREAM_ENABLED || 'false').toLowerCase() === 'true'
+      && !process.env.TWITTERAPI_IO_WEBHOOK_SECRET) {
+    throw new Error('TWITTERAPI_IO_WEBHOOK_SECRET is required when TWITTER_STREAM_ENABLED=true.');
+  }
+
 }
 
 async function run() {
-  console.log('=== [check-env] Starting Startup Checks ===');
-  try {
-    checkVars();
-    checkKeys();
-    await checkDb();
-    console.log('=== [check-env] All Pre-startup Checks Passed ===\n');
-  } catch (err) {
-    console.error('\n=== [check-env] Pre-startup Checks FAILED! ===');
-    console.error(err.message);
-    process.exit(1);
-  }
+  console.log('=== [check-env] Starting startup checks ===');
+  checkVars();
+  await checkDb();
+  console.log('=== [check-env] All startup checks passed ===\n');
 }
 
 if (require.main === module) {
-  run();
+  run().catch((err) => {
+    console.error('\n=== [check-env] Startup checks failed ===');
+    console.error(err.message);
+    process.exitCode = 1;
+  });
 }
 
 module.exports = run;
+module.exports.checkVars = checkVars;

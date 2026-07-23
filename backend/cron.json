@@ -4,15 +4,15 @@
     "name": "Poll X KOL Timelines",
     "schedule": "*/30 * * * * *",
     "handler": "./jobs/x-poll-timeline",
-    "enabled": true,
+    "enabled": false,
     "timeout": 30000
   },
   {
     "id": "x-poll-follows",
     "name": "Poll X KOL Follows",
-    "schedule": "0 */5 * * * *",
+    "schedule": "* * * * * *",
     "handler": "./jobs/x-poll-follows",
-    "enabled": true,
+    "enabled": false,
     "timeout": 60000
   },
   {
@@ -20,7 +20,7 @@
     "name": "Match Trade Signals",
     "schedule": "*/5 * * * * *",
     "handler": "./jobs/signal-matcher",
-    "enabled": true,
+    "enabled": false,
     "timeout": 30000
   },
   {
@@ -28,7 +28,7 @@
     "name": "Simulated Price Monitor",
     "schedule": "*/10 * * * * *",
     "handler": "./jobs/price-monitor",
-    "enabled": true,
+    "enabled": false,
     "timeout": 15000
   },
   {
@@ -36,15 +36,15 @@
     "name": "Sync Orders",
     "schedule": "*/30 * * * * *",
     "handler": "./jobs/order-sync",
-    "enabled": true,
+    "enabled": false,
     "timeout": 30000
   },
   {
     "id": "budget-reset",
-    "name": "Reset Daily Budget",
+    "name": "Legacy Budget Reset (disabled by P9 ledger)",
     "schedule": "0 0 * * *",
     "handler": "./jobs/budget-reset",
-    "enabled": true,
+    "enabled": false,
     "timeout": 30000
   }
 ]

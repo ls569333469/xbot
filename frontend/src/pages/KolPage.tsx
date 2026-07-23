@@ -3,7 +3,7 @@ import { api } from '../lib/api';
 import { DataTable } from '../components/ui/DataTable';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { Modal } from '../components/ui/Modal';
-import { useToast } from '../components/ui/Toast';
+import { useToast } from '../components/ui/ToastContext';
 import { TableSkeleton } from '../components/ui/Skeleton';
 import { KolAccount, ChainId } from '../lib/types';
 
@@ -130,7 +130,7 @@ export default function KolPage() {
       <Modal isOpen={isModalOpen} onClose={() => setModalOpen(false)} title={editItem ? '编辑 KOL' : '添加 KOL'}>
         <div className="flex flex-col gap-md">
           <label className="flex flex-col gap-xs">
-            <span className="text-sm text-secondary font-medium">X (Twitter) Handle</span>
+            <span className="text-sm text-secondary font-medium">X 账号</span>
             <div className="flex items-center">
               <span style={{ padding: '0 12px', background: 'var(--color-input)', border: '1px solid var(--border-base)', borderRight: 'none', borderRadius: 'var(--radius-sm) 0 0 var(--radius-sm)', height: '38px', display: 'flex', alignItems: 'center', color: 'var(--color-text-secondary)' }}>@</span>
               <input className="input" style={{ borderRadius: '0 var(--radius-sm) var(--radius-sm) 0', height: '38px' }} value={form.x_handle}

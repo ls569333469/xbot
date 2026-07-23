@@ -1,459 +1,371 @@
-// D:\AI_Projects\xbot\backend\lib\gmgn-http.js
 const crypto = require('crypto');
-const logger = require('./logger');
+const { EventEmitter } = require('events');
+const {
+  PRIORITIES,
+  endpointWeight,
+  parseResetAt,
+  scheduler
+} = require('./gmgn-rate-scheduler');
 
-const BASE_URL = 'https://openapi.gmgn.ai';
+const BASE_URL = String(process.env.GMGN_API_HOST || 'https://openapi.gmgn.ai').replace(/\/$/, '');
+const USER_AGENT = 'xbot/1.0.0';
+const DEFAULT_TIMEOUT_MS = 10000;
+const requestEvents = new EventEmitter();
 
-// 密钥解析器：支持 hex / base64 / solana数组 / PEM 格式的 Ed25519 私钥，并统一转化为 PKCS#8 密钥对象
-function getPrivateKeyObject(rawKeyStr) {
-  if (!rawKeyStr) return null;
-  if (rawKeyStr.includes('-----BEGIN PRIVATE KEY-----')) {
-    try {
-      return crypto.createPrivateKey(rawKeyStr);
-    } catch (e) {
-      logger.error('gmgn-http', `解析 PEM 私钥失败: ${e.message}`);
-      return null;
-    }
+class GmgnOpenApiError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'GmgnOpenApiError';
+    this.code = details.apiError || details.apiCode || 'GMGN_API_ERROR';
+    this.status = details.status;
+    this.apiCode = details.apiCode;
+    this.apiError = details.apiError;
+    this.apiMessage = details.apiMessage;
+    this.path = details.path;
+    this.method = details.method;
+    this.resetAt = details.resetAt;
+    this.responseMeta = details.responseMeta;
   }
-  let rawBytes;
-  try {
-    const trimmed = rawKeyStr.trim();
-    if (/^[0-9a-fA-F]+$/.test(trimmed)) {
-      rawBytes = Buffer.from(trimmed, 'hex');
-    } else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      rawBytes = Buffer.from(JSON.parse(trimmed));
-    } else {
-      rawBytes = Buffer.from(trimmed, 'base64');
-    }
-  } catch (e) {
-    logger.error('gmgn-http', `解码二进制私钥失败: ${e.message}`);
-    return null;
-  }
-
-  // Solana 私钥通常为 64 字节 (后 32 字节为公钥)，我们取前 32 字节私钥
-  if (rawBytes.length === 64) {
-    rawBytes = rawBytes.subarray(0, 32);
-  }
-
-  if (rawBytes.length === 32) {
-    // 注入 Ed25519 PKCS#8 DER 标准前缀，用以构造 Node.js 识别的 KeyObject
-    const prefix = Buffer.from('302e020100300506032b657004220420', 'hex');
-    const derKey = Buffer.concat([prefix, rawBytes]);
-    try {
-      return crypto.createPrivateKey({
-        key: derKey,
-        format: 'der',
-        type: 'pkcs8'
-      });
-    } catch (e) {
-      logger.error('gmgn-http', `使用 PKCS#8 包装私钥失败: ${e.message}`);
-      return null;
-    }
-  }
-  
-  logger.warn('gmgn-http', `私钥长度不匹配，预期 32 字节，当前为 ${rawBytes.length} 字节`);
-  return null;
 }
 
-// 获取请求头 (带有 API Key，且当配置私钥时自动附带 Ed25519 签名头部)
-function getHeaders(path = '', query = {}, body = '') {
-  const apiKey = process.env.GMGN_API_KEY;
-  const privateKeyStr = process.env.GMGN_PRIVATE_KEY;
-  
+function requireApiKey() {
+  const apiKey = String(process.env.GMGN_API_KEY || '').trim();
+  if (!apiKey) {
+    const error = new Error('GMGN_API_KEY is required');
+    error.code = 'GMGN_KEY_MISSING';
+    throw error;
+  }
+  return apiKey;
+}
+
+function requirePrivateKey() {
+  const privateKeyPem = String(process.env.GMGN_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  if (!privateKeyPem) {
+    const error = new Error('GMGN_PRIVATE_KEY is required for signed GMGN requests');
+    error.code = 'GMGN_PRIVATE_KEY_MISSING';
+    throw error;
+  }
+  return privateKeyPem;
+}
+
+function buildAuthQuery() {
+  return {
+    timestamp: Math.floor(Date.now() / 1000),
+    client_id: crypto.randomUUID()
+  };
+}
+
+function queryEntries(query) {
+  return Object.keys(query)
+    .sort()
+    .flatMap((key) => {
+      const value = query[key];
+      const values = Array.isArray(value) ? [...value].sort() : [value];
+      return values.map((item) => [key, String(item)]);
+    });
+}
+
+function buildQueryString(query) {
+  return queryEntries(query)
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&');
+}
+
+function buildSignatureMessage(path, query, body, timestamp) {
+  return `${path}:${buildQueryString(query)}:${body}:${timestamp}`;
+}
+
+function signMessage(message, privateKeyPem) {
+  const key = crypto.createPrivateKey(privateKeyPem);
+  const payload = Buffer.from(message, 'utf8');
+
+  if (key.asymmetricKeyType === 'ed25519') {
+    return crypto.sign(null, payload, key).toString('base64');
+  }
+  if (key.asymmetricKeyType === 'rsa') {
+    return crypto.sign('sha256', payload, {
+      key,
+      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: 32
+    }).toString('base64');
+  }
+
+  const error = new Error(`Unsupported GMGN signing key type: ${key.asymmetricKeyType}`);
+  error.code = 'GMGN_PRIVATE_KEY_INVALID';
+  throw error;
+}
+
+function buildUrl(path, query) {
+  const queryString = buildQueryString(query);
+  return `${BASE_URL}${path}${queryString ? `?${queryString}` : ''}`;
+}
+
+function formatApiError(method, path, status, envelope) {
+  const parts = [`${method} ${path} failed: HTTP ${status}`];
+  if (envelope.code !== undefined) parts.push(`code=${envelope.code}`);
+  if (envelope.error) parts.push(`error=${envelope.error}`);
+  if (envelope.message) parts.push(`message=${envelope.message}`);
+  return parts.join(' ');
+}
+
+function getResponseMeta(response, method, path, weight, startedAt, authQuery) {
+  const resetHeader = response.headers.get('X-RateLimit-Reset');
+  const remainingHeader = response.headers.get('X-RateLimit-Remaining');
+  return {
+    method,
+    path,
+    weight,
+    status: response.status,
+    latencyMs: Date.now() - startedAt,
+    remaining: remainingHeader === null ? null : Number(remainingHeader),
+    resetAt: resetHeader ? parseResetAt(resetHeader) : null,
+    authClientId: authQuery.client_id
+  };
+}
+
+function emitRequestEvent(meta, errorCode = null) {
+  requestEvents.emit('request', { ...meta, errorCode });
+}
+
+async function request(method, path, query = {}, body = null, options = {}) {
+  const weight = Number(options.weight || endpointWeight(method, path));
+  const apiKey = requireApiKey();
+  const authQuery = buildAuthQuery();
+  const fullQuery = { ...query, ...authQuery };
+  const bodyString = body === null ? '' : JSON.stringify(body);
   const headers = {
+    'X-APIKEY': apiKey,
     'Content-Type': 'application/json',
+    'User-Agent': USER_AGENT
   };
-  
-  if (apiKey) {
-    headers['x-route-key'] = apiKey;
-    headers['Authorization'] = `Bearer ${apiKey}`;
+
+  if (options.signed) {
+    const privateKeyPem = requirePrivateKey();
+    const message = buildSignatureMessage(path, fullQuery, bodyString, authQuery.timestamp);
+    headers['X-Signature'] = signMessage(message, privateKeyPem);
   }
 
-  if (privateKeyStr && path) {
-    const privateKey = getPrivateKeyObject(privateKeyStr);
-    if (privateKey) {
-      const timestamp = Date.now().toString();
-      
-      // 升序排列 Query 参数以生成一致的签名串
-      const sortedKeys = Object.keys(query).sort();
-      const sortedQueryStr = sortedKeys
-        .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(query[key])}`)
-        .join('&');
-      
-      const bodyStr = typeof body === 'object' ? JSON.stringify(body) : (body || '');
-      
-      // 构造签名消息 message: {sub_path}:{sorted_query_string}:{request_body}:{timestamp}
-      const message = `${path}:${sortedQueryStr}:${bodyStr}:${timestamp}`;
-      
-      try {
-        // 对 Ed25519 签名，摘要算法传 null
-        const signature = crypto.sign(null, Buffer.from(message), privateKey);
-        headers['X-Signature'] = signature.toString('base64');
-        headers['X-Timestamp'] = timestamp;
-      } catch (e) {
-        logger.error('gmgn-http', `生成 Ed25519 签名发生异常: ${e.message}`);
-      }
-    }
+  const rateLease = options.rateLease || await scheduler.acquire(weight, {
+    priority: options.priority ?? PRIORITIES.CACHE_WARMUP,
+    deadlineAt: options.deadlineAt,
+    context: { method, path }
+  });
+  rateLease.consume(weight);
+
+  let response;
+  const startedAt = Date.now();
+  try {
+    response = await fetch(buildUrl(path, fullQuery), {
+      method,
+      headers,
+      body: body === null ? undefined : bodyString,
+      signal: AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS)
+    });
+  } catch (cause) {
+    const error = new Error(`${method} ${path} request failed: ${cause.message}`);
+    error.code = cause.name === 'TimeoutError' ? 'GMGN_REQUEST_TIMEOUT' : 'GMGN_NETWORK_ERROR';
+    error.cause = cause;
+    error.path = path;
+    error.method = method;
+    emitRequestEvent({
+      method,
+      path,
+      weight,
+      status: null,
+      latencyMs: Date.now() - startedAt,
+      remaining: null,
+      resetAt: null,
+      authClientId: authQuery.client_id
+    }, error.code);
+    throw error;
   }
 
-  return headers;
+  const responseMeta = getResponseMeta(response, method, path, weight, startedAt, authQuery);
+
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch (cause) {
+    emitRequestEvent(responseMeta, 'GMGN_NON_JSON_RESPONSE');
+    throw new GmgnOpenApiError(`${method} ${path} failed: HTTP ${response.status} non-JSON response`, {
+      status: response.status,
+      path,
+      method,
+      responseMeta
+    });
+  }
+
+  if (response.status === 429 || Number(envelope.code) === 429) {
+    const resetAt = envelope.reset_at
+      ? parseResetAt(envelope.reset_at)
+      : responseMeta.resetAt;
+    scheduler.observe429(resetAt);
+    responseMeta.resetAt = resetAt || scheduler.getStatus().resetAt;
+  }
+
+  if (Number(envelope.code) !== 0) {
+    emitRequestEvent(responseMeta, envelope.error || envelope.code);
+    throw new GmgnOpenApiError(formatApiError(method, path, response.status, envelope), {
+      status: response.status,
+      apiCode: envelope.code,
+      apiError: envelope.error,
+      apiMessage: envelope.message,
+      path,
+      method,
+      resetAt: responseMeta.resetAt,
+      responseMeta
+    });
+  }
+
+  emitRequestEvent(responseMeta);
+  return options.returnMeta
+    ? { data: envelope.data, meta: responseMeta }
+    : envelope.data;
 }
 
-// 模拟代币基础数据生成器（降级使用，防止未配 API key 阻断测试）
-function getMockTokenInfo(chain, ca) {
-  let hash = 0;
-  for (let i = 0; i < ca.length; i++) {
-    hash = ca.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const basePrice = Math.abs(hash % 100) / 1000 + 0.001;
-  const drift = (Math.random() - 0.5) * 0.03;
-  const price = basePrice * (1 + drift);
+function getUserInfo(options = {}) {
+  return request('GET', '/v1/user/info', {}, null, options);
+}
 
-  return {
+function getTokenInfo(chain, address, options = {}) {
+  return request('GET', '/v1/token/info', { chain, address }, null, options);
+}
+
+function getTokenSecurity(chain, address, options = {}) {
+  return request('GET', '/v1/token/security', { chain, address }, null, options);
+}
+
+function getTokenPoolInfo(chain, address, options = {}) {
+  return request('GET', '/v1/token/pool_info', { chain, address }, null, options);
+}
+
+function getWalletTokenBalance(chain, walletAddress, tokenAddress, options = {}) {
+  return request('GET', '/v1/user/wallet_token_balance', {
     chain,
-    address: ca,
-    symbol: 'MOCK_TOKEN',
-    name: 'Simulated MEME Token',
-    decimals: 9,
-    price: price,
-    price_usd: price,
-    liquidity: 15000 + Math.random() * 5000,
-    market_cap: 120000 + Math.random() * 30000,
-    volume_24h: 85000,
-    logo: ''
-  };
+    wallet_address: walletAddress,
+    token_address: tokenAddress
+  }, null, options);
 }
 
-// 模拟代币安全数据
-function getMockTokenSecurity() {
-  return {
-    is_honeypot: false,
-    buy_tax: 0,
-    sell_tax: 0,
-    is_renounced: true,
-    is_blacklist: false,
-    lock_summary: {
-      is_locked: true,
-      lock_percent: 98.5
-    },
-    flags: []
-  };
+function getWalletActivity(chain, walletAddress, extra = {}, options = {}) {
+  return request('GET', '/v1/user/wallet_activity', {
+    chain,
+    wallet_address: walletAddress,
+    ...extra
+  }, null, options);
 }
 
-// 模拟交易报价与原始交易体
-function getMockQuote(from, to, amount) {
-  return {
-    quote_price: 1.0,
-    out_amount: amount,
-    price_impact: 0.1,
-    gas_fee: 0.00005,
-    slippage: 1.0,
-    raw_tx: {
-      tx_data: 'mock_transaction_serialized_data_base64_or_hex',
-      tx_hash: '0xmock_hash_' + Math.random().toString(36).substring(7)
-    }
-  };
-}
-
-/**
- * 获取代币基本价格与元数据
- */
-async function getTokenInfo(chain, ca) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，降级为 Mock 模式获取 Token Info', { chain, ca });
-    return getMockTokenInfo(chain, ca);
-  }
-
-  const url = `${BASE_URL}/api/v1/token_info/${chain}/${ca}`;
-  try {
-    const res = await fetch(url, { headers: getHeaders(), signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.data) {
-      return data.data;
-    }
-    throw new Error('Invalid response structure');
-  } catch (err) {
-    logger.error('gmgn-http', `获取代币 ${ca} 价格失败，降级为 Mock 价格: ${err.message}`, { chain, ca });
-    return getMockTokenInfo(chain, ca);
-  }
-}
-
-/**
- * 获取代币安全属性 (Honeypot/Tax/Locks)
- */
-async function getTokenSecurity(chain, ca) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，降级为 Mock 模式获取 Token Security', { chain, ca });
-    return getMockTokenSecurity();
-  }
-
-  const url = `${BASE_URL}/api/v1/token_security/${chain}/${ca}`;
-  try {
-    const res = await fetch(url, { headers: getHeaders(), signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.data) {
-      return data.data;
-    }
-    throw new Error('Invalid response structure');
-  } catch (err) {
-    logger.error('gmgn-http', `获取代币 ${ca} 安全检查失败，降级为 Mock 安全属性: ${err.message}`, { chain, ca });
-    return getMockTokenSecurity();
-  }
-}
-
-/**
- * 获取价格冲击和预计成交量 (Quote)
- */
-async function quote(chain, fromToken, toToken, amount, slippage) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，降级为 Mock 模式获取交易 Quote', { chain, fromToken, toToken });
-    return getMockQuote(fromToken, toToken, amount);
-  }
-
-  const path = `/defi/router/v1/${chain === 'sol' ? 'sol' : chain}/tx/get_swap_route`;
-  const query = {
-    token_in_address: fromToken,
-    token_out_address: toToken,
-    in_amount: amount.toString(),
-    slippage: slippage.toString()
-  };
-  const sortedKeys = Object.keys(query).sort();
-  const queryString = sortedKeys.map(k => `${k}=${query[k]}`).join('&');
-  const url = `${BASE_URL}${path}?${queryString}`;
-
-  try {
-    const res = await fetch(url, { headers: getHeaders(path, query), signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.data) {
-      return {
-        quote_price: data.data.quote_price,
-        out_amount: data.data.out_amount,
-        price_impact: data.data.price_impact || 0,
-        gas_fee: data.data.gas_fee || 0,
-        slippage: slippage
-      };
-    }
-    throw new Error('Invalid response structure');
-  } catch (err) {
-    logger.error('gmgn-http', `获取 Quote 失败，降级为 Mock 交易 Quote: ${err.message}`, { chain, fromToken, toToken });
-    return getMockQuote(fromToken, toToken, amount);
-  }
-}
-
-/**
- * 获取未签署的原生交易路由及 Payload
- */
-async function getSwapRoute(chain, fromToken, toToken, amount, fromAddress, slippage, isAntiMev = true) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，返回 Mock 交易路由 Payload');
-    return {
-      raw_tx: {
-        tx_data: Buffer.from('mock_serialized_transaction_payload').toString('base64'),
-        tx_hash: '0xmock_hash_' + Math.random().toString(36).substring(7),
-        quote_price: 1.0,
-        out_amount: amount.toString()
-      }
-    };
-  }
-
-  const path = `/defi/router/v1/${chain === 'sol' ? 'sol' : chain}/tx/get_swap_route`;
-  const query = {
-    token_in_address: fromToken,
-    token_out_address: toToken,
-    in_amount: amount.toString(),
+function quoteOrder(chain, fromAddress, inputToken, outputToken, inputAmount, slippage, options = {}) {
+  return request('GET', '/v1/trade/quote', {
+    chain,
     from_address: fromAddress,
-    slippage: slippage.toString()
+    input_token: inputToken,
+    output_token: outputToken,
+    input_amount: String(inputAmount),
+    slippage: Number(slippage)
+  }, null, options);
+}
+
+function swap(params, options = {}) {
+  return request('POST', '/v1/trade/swap', {}, params, {
+    ...options,
+    signed: true,
+    timeoutMs: 15000,
+    priority: options.priority ?? PRIORITIES.NEW_TRADE
+  });
+}
+
+function queryOrder(orderId, chain, options = {}) {
+  return request('GET', '/v1/trade/query_order', {
+    order_id: orderId,
+    chain
+  }, null, {
+    ...options,
+    signed: true,
+    priority: options.priority ?? PRIORITIES.CRITICAL_RECONCILIATION
+  });
+}
+
+function getGasPrice(chain) {
+  return request('GET', '/v1/trade/gas_price', { chain });
+}
+
+function submitStrategyOrder(_chain, params, options = {}) {
+  return request('POST', '/v1/trade/strategy/create', {}, params, {
+    ...options,
+    signed: true,
+    timeoutMs: 15000,
+    priority: options.priority ?? PRIORITIES.STRATEGY_ACTION
+  });
+}
+
+function cancelStrategyOrder(_chain, params, options = {}) {
+  return request('POST', '/v1/trade/strategy/cancel', {}, params, {
+    ...options,
+    signed: true,
+    priority: options.priority ?? PRIORITIES.STRATEGY_ACTION
+  });
+}
+
+function getStrategyOrders(chain, extra = {}, options = {}) {
+  return request('GET', '/v1/trade/strategy/orders', {
+    chain,
+    ...extra
+  }, null, { ...options, signed: true });
+}
+
+function listedStrategies(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.list)) return value.list;
+  if (Array.isArray(value?.orders)) return value.orders;
+  return value && typeof value === 'object' ? [value] : [];
+}
+
+async function queryStrategyOrder(chain, orderId, fromAddress, extra = {}, options = {}) {
+  const filters = {
+    ...(fromAddress ? { from_address: fromAddress } : {}),
+    group_tag: 'STMix',
+    ...(extra.baseToken ? { base_token: extra.baseToken } : {}),
+    limit: 100
   };
-  
-  if (chain === 'sol') {
-    query.is_anti_mev = isAntiMev ? 'true' : 'false';
-    query.fee = '0.002'; // Solana 防 MEV Jito Tip
+  for (const type of ['open', 'history']) {
+    const response = await getStrategyOrders(chain, { ...filters, type }, options);
+    const found = listedStrategies(response)
+      .find((item) => String(item?.order_id || '') === String(orderId));
+    if (found) return { list: [found], source: type };
   }
-
-  const sortedKeys = Object.keys(query).sort();
-  const queryString = sortedKeys.map(k => `${k}=${query[k]}`).join('&');
-  const url = `${BASE_URL}${path}?${queryString}`;
-
-  try {
-    const res = await fetch(url, { headers: getHeaders(path, query), signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.data) {
-      return data.data;
-    }
-    throw new Error(data.msg || data.error || '获取 Swap 路由交易体结构失败');
-  } catch (err) {
-    logger.error('gmgn-http', `获取交易路由失败: ${err.message}`, { chain, fromToken, toToken });
-    throw err;
-  }
+  return { list: [], source: 'not_found' };
 }
 
-/**
- * 提交签署后的真实交易字节码到链上
- */
-async function submitSwap(chain, signedTxHex) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，返回 Mock 交易上链 Hash');
-    return {
-      tx_hash: '0xmock_submitted_tx_' + chain + '_' + Math.random().toString(36).substring(7)
-    };
-  }
-
-  const path = `/defi/router/v1/${chain === 'sol' ? 'sol' : chain}/tx/submit`;
-  const body = { signed_tx: signedTxHex };
-  const url = `${BASE_URL}${path}`;
-
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(path, {}, body),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.ok) {
-      return data.data; // 应包含 { tx_hash }
-    }
-    throw new Error(data.msg || data.error || '提交交易广播失败');
-  } catch (err) {
-    logger.error('gmgn-http', `提交交易失败: ${err.message}`, { chain });
-    throw err;
-  }
-}
-
-/**
- * 创建止盈止损限制策略订单 (Limit/Strategy Order)
- */
-async function submitStrategyOrder(chain, params) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，返回 Mock 策略条件单 ID');
-    return {
-      order_id: 'mock_strategy_order_' + Math.random().toString(36).substring(7)
-    };
-  }
-
-  const path = `/v1/trade/strategy/create`;
-  const url = `${BASE_URL}${path}`;
-
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(path, {}, params),
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout(5000)
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.ok) {
-      return data.data; // 应包含 { order_id }
-    }
-    throw new Error(data.msg || data.error || '提交策略订单失败');
-  } catch (err) {
-    logger.error('gmgn-http', `提交策略订单接口错误: ${err.message}`, { chain });
-    throw err;
-  }
-}
-
-/**
- * 撤销止盈止损策略订单
- */
-async function cancelStrategyOrder(chain, params) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，返回 Mock 策略条件单撤销成功');
-    return { ok: true };
-  }
-
-  const path = `/v1/trade/strategy/cancel`;
-  const url = `${BASE_URL}${path}`;
-
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(path, {}, params),
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout(5000)
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.ok) {
-      return data.data;
-    }
-    throw new Error(data.msg || data.error || '撤销策略订单失败');
-  } catch (err) {
-    logger.error('gmgn-http', `撤销策略订单接口错误: ${err.message}`, { chain });
-    throw err;
-  }
-}
-
-/**
- * 状态同步：查询策略订单链上执行状态
- */
-async function queryStrategyOrder(chain, orderId, fromAddress) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    logger.warn('gmgn-http', 'GMGN_API_KEY 未配置，返回 Mock 策略条件单触发状态');
-    return {
-      order_id: orderId,
-      status: 'completed', // 默认返回已成交以支持 mock 同步逻辑
-      executed_price: 1.1,
-      pnl: 0.1
-    };
-  }
-
-  const path = `/v1/trade/strategy/status`;
-  const query = { chain, order_id: orderId, from_address: fromAddress };
-  const sortedKeys = Object.keys(query).sort();
-  const queryString = sortedKeys.map(k => `${k}=${query[k]}`).join('&');
-  const url = `${BASE_URL}${path}?${queryString}`;
-
-  try {
-    const res = await fetch(url, { headers: getHeaders(path, query), signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data && data.ok) {
-      return data.data; // 返回包含 { status: 'pending'|'completed'|'cancelled'|'failed' }
-    }
-    throw new Error(data.msg || data.error || '查询策略订单失败');
-  } catch (err) {
-    logger.error('gmgn-http', `查询策略订单状态接口错误: ${err.message}`, { chain, orderId });
-    throw err;
-  }
+function removedLegacyFlow() {
+  const error = new Error('Legacy local-wallet swap flow was removed; use GMGN swap() and queryOrder()');
+  error.code = 'GMGN_LEGACY_FLOW_REMOVED';
+  throw error;
 }
 
 module.exports = {
+  GmgnOpenApiError,
+  buildAuthQuery,
+  buildQueryString,
+  buildSignatureMessage,
+  signMessage,
+  request,
+  requestEvents,
+  scheduler,
+  getUserInfo,
   getTokenInfo,
   getTokenSecurity,
-  quote,
-  getSwapRoute,
-  submitSwap,
+  getTokenPoolInfo,
+  getWalletTokenBalance,
+  getWalletActivity,
+  quoteOrder,
+  swap,
+  queryOrder,
+  getGasPrice,
   submitStrategyOrder,
   cancelStrategyOrder,
-  queryStrategyOrder
+  queryStrategyOrder,
+  getStrategyOrders,
+  getSwapRoute: removedLegacyFlow,
+  submitSwap: removedLegacyFlow
 };

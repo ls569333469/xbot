@@ -30,8 +30,15 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const item = await service.addWhitelist(req.body);
-    res.json({ ok: true, data: item });
+    const result = await service.addWhitelist(req.body);
+    res.json({
+      ok: true,
+      data: result.item,
+      meta: {
+        merged_into_existing: result.mergedIntoExisting,
+        added_relations: result.addedRelations
+      }
+    });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message, code: 'BAD_REQUEST' });
   }

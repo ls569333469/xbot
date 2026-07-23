@@ -2,15 +2,8 @@
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
 const gmgnHttp = require('../../lib/gmgn-http');
-
-// 原生代币的 Mock 美元价格，用于虚拟算力换算 amount_out
-const NATIVE_PRICES = {
-  sol: 150.0,
-  bsc: 600.0,
-  base: 3000.0,
-  eth: 3000.0,
-  robinhood: 1.0
-};
+const gmgnAdapter = require('../../lib/gmgn-adapter');
+const { requireChain } = require('./chain-adapters');
 
 /**
  * 虚拟模拟买入（开仓）
@@ -19,9 +12,37 @@ async function openSimulatedPosition(signal, wsBroadcast) {
   const signalId = signal.id;
   const whitelistId = signal.whitelist_id;
 
-  const client = await db.pool.connect();
+  let client = null;
+  let transactionOpen = false;
   try {
+    const previewResult = await db.query('SELECT * FROM ca_whitelist WHERE id = $1', [whitelistId]);
+    const preview = previewResult.rows[0];
+    if (!preview) throw new Error('Whitelist entry not found');
+
+    // 所有外部请求在事务外完成，避免持有白名单锁等待网络。
+    const [tokenRaw, userRaw] = await Promise.all([
+      gmgnHttp.getTokenInfo(preview.chain_id, preview.contract_address),
+      gmgnHttp.getUserInfo()
+    ]);
+    const tokenInfo = gmgnAdapter.normalizeTokenInfo(tokenRaw);
+    const chain = requireChain(preview.chain_id);
+    const wallet = gmgnAdapter.selectWallet(userRaw, chain.id);
+    const entryPriceUsd = tokenInfo.priceUsd;
+    if (!Number.isFinite(entryPriceUsd) || entryPriceUsd <= 0) {
+      const error = new Error('Paper entry rejected because token price is unavailable');
+      error.code = 'PAPER_PRICE_UNAVAILABLE';
+      throw error;
+    }
+    const nativePrice = gmgnAdapter.walletNativePriceUsd(wallet, chain.nativeSymbol);
+    if (!Number.isFinite(nativePrice) || nativePrice <= 0) {
+      const error = new Error('Paper entry rejected because native USD price is unavailable');
+      error.code = 'PAPER_NATIVE_PRICE_UNAVAILABLE';
+      throw error;
+    }
+
+    client = await db.pool.connect();
     await client.query('BEGIN');
+    transactionOpen = true;
 
     // 1. 获取白名单详情并加行锁，防止竞态扣减预算
     const wlRes = await client.query(
@@ -32,14 +53,14 @@ async function openSimulatedPosition(signal, wsBroadcast) {
     if (!wl) {
       throw new Error('Whitelist entry not found');
     }
+    if (wl.chain_id !== preview.chain_id || wl.contract_address !== preview.contract_address) {
+      const error = new Error('Whitelist changed while Paper price context was loading');
+      error.code = 'PAPER_WHITELIST_CHANGED';
+      throw error;
+    }
 
-    // 2. 调用 GMGN API 获取代币实时价格 (USD)
-    const tokenInfo = await gmgnHttp.getTokenInfo(wl.chain_id, wl.contract_address);
-    const entryPriceUsd = tokenInfo.price_usd || tokenInfo.price || 0.001;
-
-    // 3. 计算买入数量 amount_out (花费 budget_per_trade 换成代币数量)
+    // 2. 计算买入数量 amount_out (花费 budget_per_trade 换成代币数量)
     const amountInNative = Number(wl.budget_per_trade);
-    const nativePrice = NATIVE_PRICES[wl.chain_id] || 1.0;
     const amountInUsd = amountInNative * nativePrice;
     const amountOut = entryPriceUsd > 0 ? (amountInUsd / entryPriceUsd) : 0;
 
@@ -48,8 +69,8 @@ async function openSimulatedPosition(signal, wsBroadcast) {
       `INSERT INTO positions (
         signal_id, whitelist_id, contract_address, chain_id, symbol,
         amount_in, amount_out, entry_price, tp_pct, sl_pct,
-        tpsl_status, status, opened_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open', NOW())
+        tpsl_status, execution_mode, status, opened_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'paper', 'open', NOW())
       RETURNING *`,
       [
         signalId, whitelistId, wl.contract_address, wl.chain_id, wl.symbol,
@@ -59,16 +80,18 @@ async function openSimulatedPosition(signal, wsBroadcast) {
     );
     const position = posRes.rows[0];
 
-    // 5. 扣减白名单预算，更新购买次数
+    // Paper counters never modify live budget or live buy count.
     await client.query(
       `UPDATE ca_whitelist 
-       SET spent_budget = spent_budget + $1,
-           current_buy_count = current_buy_count + 1
+       SET paper_spent_budget = paper_spent_budget + $1,
+           paper_buy_count = paper_buy_count + 1,
+           updated_at = NOW()
        WHERE id = $2`,
       [amountInNative, whitelistId]
     );
 
     await client.query('COMMIT');
+    transactionOpen = false;
     logger.trade('paper-engine', `模拟开仓成功: ${wl.symbol} (${wl.contract_address}) on ${wl.chain_id} | 入场价: $${entryPriceUsd} | 数量: ${amountOut}`, { position });
 
     // 6. 广播推送
@@ -78,7 +101,7 @@ async function openSimulatedPosition(signal, wsBroadcast) {
 
     return position;
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client && transactionOpen) await client.query('ROLLBACK');
     logger.error('paper-engine', `模拟开仓失败: ${err.message}`, { signalId, whitelistId });
     
     // 如果开仓失败，将 trade_signal 状态标为 rejected 记录失败原因
@@ -92,7 +115,7 @@ async function openSimulatedPosition(signal, wsBroadcast) {
     }
     throw err;
   } finally {
-    client.release();
+    client?.release();
   }
 }
 
@@ -112,6 +135,10 @@ async function closeSimulatedPosition(positionId, exitPriceUsd, statusReason, ws
     const pos = posRes.rows[0];
     if (!pos) {
       throw new Error(`Position ${positionId} not found`);
+    }
+
+    if (pos.execution_mode !== 'paper') {
+      throw new Error(`Position ${positionId} is not a paper position`);
     }
 
     if (pos.status !== 'open') {

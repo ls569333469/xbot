@@ -14,7 +14,10 @@ async function getPositions(filters) {
   const params = [];
   let paramIndex = 1;
 
-  if (filters.status) {
+  if (filters.statuses) {
+    query += ` AND p.status = ANY($${paramIndex++}::text[])`;
+    params.push(filters.statuses);
+  } else if (filters.status) {
     query += ` AND p.status = $${paramIndex++}`;
     params.push(filters.status);
   }
@@ -36,7 +39,7 @@ async function getHistory(filters) {
     FROM positions p
     LEFT JOIN ca_whitelist wl ON p.whitelist_id = wl.id
     LEFT JOIN trade_signals ts ON p.signal_id = ts.id
-    WHERE p.status IN ('tp_hit', 'sl_hit', 'manual_close', 'failed')
+    WHERE p.status IN ('closed', 'tp_hit', 'sl_hit', 'manual_close', 'failed')
   `;
   const params = [];
   let paramIndex = 1;

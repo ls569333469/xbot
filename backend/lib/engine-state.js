@@ -1,42 +1,224 @@
-// D:\AI_Projects\xbot\backend\lib\engine-state.js
-// Armed 状态持久化到 DB config 表，服务重启后自动恢复
-
 const db = require('./db');
 const logger = require('./logger');
+const { getTradingMode } = require('./runtime-mode');
+
+const RUNTIME_KEY = 'live_engine_control';
 
 let isArmed = false;
+let armedAt = null;
 let initialized = false;
+let state = {
+  desired_running: false,
+  status: 'stopped',
+  operator: null,
+  requested_at: null,
+  armed_at: null,
+  stopped_at: null,
+  readiness_snapshot_hash: null,
+  configuration_fingerprint: null,
+  last_error: null,
+  last_checked_at: null,
+  last_recovered_at: null
+};
 
-// 启动时从 DB 恢复 Armed 状态
+function normalize(value = {}) {
+  return {
+    ...state,
+    ...value,
+    desired_running: Boolean(value.desired_running),
+    status: ['stopped', 'recovering', 'running', 'fault_protected'].includes(value.status)
+      ? value.status
+      : 'stopped'
+  };
+}
+
+async function persist(next) {
+  await db.query(
+    `INSERT INTO trade_runtime_state(key, value_json)
+     VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE
+       SET value_json = EXCLUDED.value_json, updated_at = NOW()`,
+    [RUNTIME_KEY, next]
+  );
+  state = next;
+}
+
 async function init() {
-  if (initialized) return;
+  if (initialized) return getStatus();
+  const result = await db.query(
+    'SELECT value_json FROM trade_runtime_state WHERE key = $1',
+    [RUNTIME_KEY]
+  );
+  const saved = result.rows[0]?.value_json;
+  isArmed = false;
+  armedAt = null;
+  const next = saved
+    ? normalize({
+      ...saved,
+      status: saved.desired_running ? 'recovering' : 'stopped',
+      last_checked_at: new Date().toISOString()
+    })
+    : normalize({});
+  await persist(next);
+  initialized = true;
+  logger.info('engine-state', next.desired_running
+    ? 'Persisted live intent loaded; waiting for realtime readiness recovery'
+    : 'Live trading is stopped');
+  return getStatus();
+}
+
+async function arm(options = {}) {
+  if (getTradingMode() !== 'live') {
+    const error = new Error('Engine can only be armed in live mode');
+    error.code = 'LIVE_MODE_REQUIRED';
+    throw error;
+  }
+  const now = new Date();
+  const next = normalize({
+    ...state,
+    desired_running: true,
+    status: 'running',
+    operator: String(options.operator || state.operator || 'admin').slice(0, 128),
+    requested_at: options.preserveRequest && state.requested_at
+      ? state.requested_at
+      : now.toISOString(),
+    armed_at: now.toISOString(),
+    stopped_at: null,
+    readiness_snapshot_hash: options.readiness?.snapshotHash || null,
+    configuration_fingerprint: options.readiness?.configurationFingerprint || null,
+    last_error: null,
+    last_error_details: null,
+    last_checked_at: now.toISOString(),
+    last_recovered_at: options.recovered ? now.toISOString() : state.last_recovered_at
+  });
+  await db.query(
+    `UPDATE trade_signals
+     SET status = 'signal_only', reject_reason = 'LIVE_TRADING_STOPPED', updated_at = NOW()
+     WHERE status = 'recorded' AND execution_mode = 'live' AND created_at < $1`,
+    [now]
+  );
+  await persist(next);
+  isArmed = true;
+  armedAt = now;
+  return getStatus();
+}
+
+async function stop(options = {}) {
+  const now = new Date();
+  const next = normalize({
+    ...state,
+    desired_running: false,
+    status: 'stopped',
+    operator: String(options.operator || state.operator || 'admin').slice(0, 128),
+    stopped_at: now.toISOString(),
+    last_error: options.reason || null,
+    last_checked_at: now.toISOString()
+  });
+  await persist(next);
+  isArmed = false;
+  armedAt = null;
+  return getStatus();
+}
+
+async function setFaulted(options = {}) {
+  const now = new Date();
+  const next = normalize({
+    ...state,
+    desired_running: options.preserveIntent === false ? false : state.desired_running,
+    status: 'fault_protected',
+    operator: String(options.operator || state.operator || 'system').slice(0, 128),
+    stopped_at: now.toISOString(),
+    last_error: options.reason || 'READINESS_FAILED',
+    last_error_details: options.details || null,
+    last_checked_at: now.toISOString()
+  });
+  await persist(next);
+  isArmed = false;
+  armedAt = null;
+  return getStatus();
+}
+
+async function restoreDesiredState(snapshotProvider, options = {}) {
+  if (!state.desired_running) return { status: 'skipped', reason: 'stopped' };
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 1));
+  const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 0));
+  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const retryableBlockers = new Set(options.retryableBlockers || []);
   try {
-    const res = await db.query("SELECT value_json FROM config WHERE key = 'engine_armed'");
-    if (res.rows.length > 0 && res.rows[0].value_json) {
-      const val = res.rows[0].value_json;
-      isArmed = val === true || val.armed === true;
+    let snapshot;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      snapshot = await snapshotProvider();
+      if (snapshot.readyToArm) break;
+      const blockers = Array.isArray(snapshot.blockers) ? snapshot.blockers : [];
+      const retryable = blockers.length > 0
+        && blockers.every((blocker) => retryableBlockers.has(blocker));
+      if (!retryable || attempt === maxAttempts) {
+        await setFaulted({
+          reason: 'READINESS_FAILED_ON_RESTART',
+          details: { blockers, snapshot_hash: snapshot.snapshotHash }
+        });
+        return { status: 'fault_protected', snapshot };
+      }
+      await sleep(retryDelayMs);
     }
-    initialized = true;
-    logger.info('engine-state', `Armed 状态已从 DB 恢复: ${isArmed}`);
-  } catch (err) {
-    // DB 尚未就绪时降级为内存模式
-    logger.warn('engine-state', `无法从 DB 恢复 Armed 状态，降级为内存模式: ${err.message}`);
-    initialized = true;
+    if (!state.configuration_fingerprint
+        || state.configuration_fingerprint !== snapshot.configurationFingerprint) {
+      await setFaulted({
+        preserveIntent: false,
+        reason: 'LIVE_CONFIGURATION_CHANGED',
+        details: {
+          expected: state.configuration_fingerprint,
+          actual: snapshot.configurationFingerprint
+        }
+      });
+      return { status: 'fault_protected', reason: 'configuration_changed', snapshot };
+    }
+    await arm({
+      operator: state.operator || 'supervisor-restore',
+      readiness: snapshot,
+      recovered: true,
+      preserveRequest: true
+    });
+    logger.info('engine-state', 'Live trading restored after realtime readiness verification');
+    return { status: 'restored', snapshot };
+  } catch (error) {
+    await setFaulted({
+      reason: 'READINESS_CHECK_ERROR_ON_RESTART',
+      details: { error: error.code || error.message }
+    }).catch(() => {});
+    logger.error('engine-state', `Live trading recovery failed: ${error.message}`);
+    return { status: 'fault_protected', error: error.code || error.message };
   }
 }
 
+function getStatus() {
+  return {
+    armed: isArmed,
+    armedAt: armedAt ? armedAt.toISOString() : null,
+    desiredRunning: state.desired_running,
+    status: isArmed ? 'running' : state.status,
+    operator: state.operator,
+    requestedAt: state.requested_at,
+    stoppedAt: state.stopped_at,
+    readinessSnapshotHash: state.readiness_snapshot_hash,
+    configurationFingerprint: state.configuration_fingerprint,
+    lastError: state.last_error,
+    lastErrorDetails: state.last_error_details || null,
+    lastCheckedAt: state.last_checked_at,
+    lastRecoveredAt: state.last_recovered_at
+  };
+}
+
 module.exports = {
-  init,
+  RUNTIME_KEY,
+  arm,
   getArmed: () => isArmed,
-  setArmed: async (val) => {
-    isArmed = !!val;
-    try {
-      await db.query(
-        "INSERT INTO config (key, value_json) VALUES ('engine_armed', $1) ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = NOW()",
-        [JSON.stringify({ armed: isArmed })]
-      );
-    } catch (err) {
-      logger.error('engine-state', `持久化 Armed 状态到 DB 失败: ${err.message}`);
-    }
-  }
+  getArmedAt: () => armedAt,
+  getConfigurationFingerprint: () => state.configuration_fingerprint,
+  getStatus,
+  init,
+  restoreDesiredState,
+  setArmed: (value, options = {}) => value ? arm(options) : stop(options),
+  setFaulted,
+  stop
 };

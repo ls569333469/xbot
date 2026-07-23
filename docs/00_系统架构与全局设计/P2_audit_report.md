@@ -30,7 +30,8 @@
 
 ---
 
-### 2.3 风控拦截与熔断校验 ([test-risk-rejects.js](file:///D:/AI_Projects/xbot/backend/scripts/test-risk-rejects.js))
+### 2.3 风控拦截与熔断校验（历史验收记录）
+> 原临时脚本会写入并清理业务表，已在实盘清理阶段删除；不得在生产数据库复跑。
 验证在不同系统状态和条件下，风控管理器（`risk-manager.js`）的强拦截决策：
 - **`ENGINE_LOCKED` 拦截**：系统 disarmed 状态下，信号触发立即被拦截并归档为 `rejected`（原因：`ENGINE_LOCKED`）。
 - **`CA_BUY_COOLDOWN` 拦截**：系统武装后，第一笔 PEPE 信号成功以 $0.0882 开仓；**第二笔信号在数毫秒后传入，被强冷置风控模块瞬间拦截**（原因：`CA_BUY_COOLDOWN`），物理阻止了同一时间对同一 CA 的刷单式重复开仓。
@@ -38,7 +39,8 @@
 
 ---
 
-### 2.4 手平平仓及条件单撤销校验 ([test-close.js](file:///D:/AI_Projects/xbot/backend/scripts/test-close.js))
+### 2.4 手平平仓及条件单撤销校验（历史验收记录）
+> 原命令行真实平仓脚本已删除；当前平仓统一使用正式前端及双阶段 API。
 调用手动平仓 API 关闭持仓 ID `11`：
 - **接口响应**：
   - 平仓状态：成功触发 `manual_close`；

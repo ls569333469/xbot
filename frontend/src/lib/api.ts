@@ -1,13 +1,14 @@
 import {
-  WhitelistEntry, KolAccount, TradeSignal, ChainConfig,
-  RiskConfig, XMonitorConfig, ApiResponse, PaginatedResponse, XActivity, Position
+  WhitelistEntry, KolAccount, TradeSignal, ApiResponse,
+  PaginatedResponse, XActivity, Position, X6551Status, X6551WatchPlan,
+  TradeAttempt, TradeRuntimePolicy, TradeReadiness
 } from './types';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
 
 // 从 localStorage 或环境变量读取 token
-function getAuthToken(): string {
-  return localStorage.getItem('xbot_admin_token') || import.meta.env.VITE_ADMIN_TOKEN || 'xbot_admin_2026';
+export function getAuthToken(): string {
+  return localStorage.getItem('xbot_admin_token') || '';
 }
 
 function validatePayloadSchema(endpoint: string, payload: any) {
@@ -112,6 +113,12 @@ export const api = {
     },
     status: () => fetchApi<ApiResponse<any>>('/api/x-monitor/status'),
     pollNow: () => fetchApi<ApiResponse<boolean>>('/api/x-monitor/poll-now', { method: 'POST' }),
+    pollFollowsNow: () => fetchApi<ApiResponse<any>>('/api/x-monitor/poll-follows-now', { method: 'POST' }),
+    followPolls: () => fetchApi<ApiResponse<any[]>>('/api/x-monitor/follow-polls'),
+    providerUsage: () => fetchApi<ApiResponse<any>>('/api/x-monitor/provider-usage'),
+    syncStream: () => fetchApi<ApiResponse<any[]>>('/api/x-monitor/stream/sync', { method: 'POST' }),
+    status6551: () => fetchApi<ApiResponse<X6551Status>>('/api/x-monitor/6551/status'),
+    watchPlan6551: () => fetchApi<ApiResponse<X6551WatchPlan>>('/api/x-monitor/6551/watch-plan'),
   },
 
   config: {
@@ -124,12 +131,17 @@ export const api = {
   system: {
     health: () => fetchApi<ApiResponse<any>>('/api/health'),
     dashboard: () => fetchApi<ApiResponse<any>>('/api/system/dashboard'),
-    arm: () => fetchApi<ApiResponse<{ armed: boolean }>>('/api/system/arm', { method: 'POST' }),
-    disarm: () => fetchApi<ApiResponse<{ armed: boolean }>>('/api/system/disarm', { method: 'POST' }),
-    engineStatus: () => fetchApi<ApiResponse<{ armed: boolean }>>('/api/system/engine-status'),
+    arm: (confirmation: string) => fetchApi<ApiResponse<any>>('/api/system/arm', { method: 'POST', body: JSON.stringify({ confirmation }) }),
+    disarm: () => fetchApi<ApiResponse<any>>('/api/system/disarm', { method: 'POST' }),
+    engineStatus: () => fetchApi<ApiResponse<any>>('/api/system/engine-status'),
+    readiness: (probe = false) => fetchApi<ApiResponse<TradeReadiness>>(`/api/system/readiness?probe=${probe}`),
     budgets: () => fetchApi<ApiResponse<any>>('/api/system/budgets'),
+    testTradeAlert: () => fetchApi<ApiResponse<any>>('/api/system/alerts/test', { method: 'POST', body: '{}' }),
     getEnv: () => fetchApi<ApiResponse<any>>('/api/system/env'),
     saveEnv: (data: any) => fetchApi<ApiResponse<any>>('/api/system/env', { method: 'POST', body: JSON.stringify(data) }),
+    setRuntimeMode: (mode: string) => fetchApi<ApiResponse<any>>('/api/system/env/runtime-mode', { method: 'POST', body: JSON.stringify({ mode, confirmation: 'CHANGE TRADING MODE' }) }),
+    setLiveEnabled: (enabled: boolean) => fetchApi<ApiResponse<any>>('/api/system/env/live-enabled', { method: 'POST', body: JSON.stringify({ enabled, confirmation: enabled ? 'ENABLE LIVE TRADING' : '' }) }),
+    replaceGmgnPrivateKey: (privateKey: string) => fetchApi<ApiResponse<any>>('/api/system/env/gmgn-private-key', { method: 'POST', body: JSON.stringify({ private_key: privateKey, confirmation: 'REPLACE GMGN PRIVATE KEY' }) }),
   },
 
   trade: {
@@ -141,6 +153,13 @@ export const api = {
       const q = params ? '?' + new URLSearchParams(params).toString() : '';
       return fetchApi<ApiResponse<Position[]>>(`/api/trade/history${q}`);
     },
-    close: (id: string) => fetchApi<ApiResponse<Position>>(`/api/trade/positions/${id}/close`, { method: 'POST' })
+    close: (id: string) => fetchApi<ApiResponse<Position>>(`/api/trade/positions/${id}/close`, { method: 'POST' }),
+    runtimePolicy: () => fetchApi<ApiResponse<TradeRuntimePolicy>>('/api/trade/runtime-policy'),
+    attempts: (limit = 100) => fetchApi<ApiResponse<TradeAttempt[]>>(`/api/trade/attempts?limit=${limit}`),
+    attempt: (id: string) => fetchApi<ApiResponse<any>>(`/api/trade/attempts/${id}`),
+    prepareSignal: (id: string) => fetchApi<ApiResponse<any>>(`/api/trade/signals/${id}/prepare`, { method: 'POST', body: '{}' }),
+    executeSignal: (id: string, prepareToken: string) => fetchApi<ApiResponse<any>>(`/api/trade/signals/${id}/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE BUY' }) }),
+    prepareClose: (id: string, percent = 100) => fetchApi<ApiResponse<any>>(`/api/trade/positions/${id}/close/prepare`, { method: 'POST', body: JSON.stringify({ percent }) }),
+    executeClose: (id: string, prepareToken: string) => fetchApi<ApiResponse<any>>(`/api/trade/positions/${id}/close/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE CLOSE' }) })
   }
 };

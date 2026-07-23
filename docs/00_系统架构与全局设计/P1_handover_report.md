@@ -87,7 +87,7 @@ D:\AI_Projects\xbot\
    将 `backend/.env.example` 复制为 `backend/.env`，填写您本地的配置：
    - 必须配置 `DB_USER` 和 `DB_PASSWORD`；
    - 本地开发调试时，`X_DATA_PROVIDER` 保持为 `mock`（会模拟马斯克推特并产生 CA 命中，方便联调）；
-   - `ADMIN_TOKEN` 默认为 `xbot_admin_2026`（前端发送 API 时会自带此 Token 作为 Bearer 鉴权）。
+   - `ADMIN_TOKEN` 默认为 `<ADMIN_TOKEN>`（前端发送 API 时会自带此 Token 作为 Bearer 鉴权）。
 2. **启动服务**：
    ```bash
    cd D:\AI_Projects\xbot\backend

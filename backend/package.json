@@ -4,8 +4,15 @@
   "description": "xbot backend",
   "main": "server.js",
   "scripts": {
-    "dev": "node --watch server.js",
-    "start": "node server.js"
+    "dev": "node --watch server.js --role=all",
+    "start": "node scripts/supervisor.js",
+    "start:all": "node server.js --role=all",
+    "start:supervised": "node scripts/supervisor.js",
+    "start:execution": "node server.js --role=execution",
+    "start:ingestion": "node server.js --role=ingestion",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:integration": "node scripts/run-integration-tests.js",
+    "audit:solana-tx": "node scripts/audit-solana-transactions.js"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

@@ -1,5 +1,6 @@
 import React from 'react';
 import { SignalStatus, PositionStatus } from '../../lib/types';
+import { statusLabel } from '../../lib/display-labels';
 
 interface StatusBadgeProps {
   status: SignalStatus | PositionStatus | 'active' | 'paused' | 'locked' | 'armed';
@@ -14,6 +15,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
     case 'active':
     case 'armed':
     case 'open':
+    case 'open_protected':
     case 'executed':
     case 'approved':
       bgColor = 'rgba(0, 214, 143, 0.15)';
@@ -21,10 +23,14 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
       glow = true;
       break;
     case 'pending':
+    case 'execution_reserved':
+    case 'closing':
       bgColor = 'rgba(255, 165, 2, 0.15)';
       color = 'var(--color-warning)';
       break;
     case 'failed':
+    case 'close_uncertain':
+    case 'protection_failed':
     case 'sl_hit':
     case 'rejected':
       bgColor = 'rgba(255, 71, 87, 0.15)';
@@ -39,6 +45,9 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
     case 'expired':
     case 'recorded':
     case 'manual_close':
+    case 'closed':
+    case 'partially_closed':
+    case 'open_unprotected':
       bgColor = 'rgba(85, 85, 112, 0.3)';
       color = 'var(--color-text-secondary)';
       break;
@@ -54,14 +63,14 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status }) => {
         fontSize: '0.75rem',
         fontWeight: 600,
         textTransform: 'uppercase',
-        letterSpacing: '0.05em',
+        letterSpacing: 0,
         backgroundColor: bgColor,
         color: color,
         border: `1px solid ${color}`,
         boxShadow: glow ? `0 0 8px ${color}40` : 'none',
       }}
     >
-      {status.replace('_', ' ')}
+      {statusLabel(status)}
     </span>
   );
 };

@@ -1,4 +1,5 @@
 const db = require('../../lib/db');
+const { hydrateWhitelistRelations } = require('./relations');
 
 async function getAll(filters) {
   let query = 'SELECT * FROM ca_whitelist WHERE 1=1';
@@ -41,16 +42,33 @@ async function getAll(filters) {
   params.push(pageSize, offset);
 
   const res = await db.query(query, params);
-  return { rows: res.rows, total, page, pageSize };
+  return { rows: await hydrateWhitelistRelations(res.rows, db), total, page, pageSize };
 }
 
-async function getById(id) {
-  const res = await db.query('SELECT * FROM ca_whitelist WHERE id = $1', [id]);
-  return res.rows[0];
+async function getById(id, executor = db) {
+  const res = await executor.query('SELECT * FROM ca_whitelist WHERE id = $1', [id]);
+  const rows = await hydrateWhitelistRelations(res.rows, executor);
+  return rows[0];
 }
 
-async function create(data) {
-  const res = await db.query(
+async function getActiveByContract(contractAddress, chainId, executor = db, options = {}) {
+  const evmChain = ['bsc', 'base', 'eth'].includes(String(chainId).toLowerCase());
+  const addressMatch = evmChain
+    ? 'lower(contract_address) = lower($1)'
+    : 'contract_address = $1';
+  const lock = options.forUpdate ? ' FOR UPDATE' : '';
+  const res = await executor.query(
+    `SELECT * FROM ca_whitelist
+     WHERE ${addressMatch} AND chain_id = $2 AND status = 'active'
+     ORDER BY id LIMIT 1${lock}`,
+    [contractAddress, chainId]
+  );
+  const rows = await hydrateWhitelistRelations(res.rows, executor);
+  return rows[0];
+}
+
+async function create(data, executor = db) {
+  const res = await executor.query(
     `INSERT INTO ca_whitelist 
     (contract_address, chain_id, symbol, project_name, project_x_handles, budget_per_trade, total_budget, auto_tp_pct, auto_sl_pct, slippage, allow_repeat_buy, max_repeat_buys, status, source, expires_at) 
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
@@ -65,8 +83,8 @@ async function create(data) {
   return res.rows[0];
 }
 
-async function update(id, data) {
-  const res = await db.query(
+async function update(id, data, executor = db) {
+  const res = await executor.query(
     `UPDATE ca_whitelist SET 
       symbol = COALESCE($1, symbol),
       project_name = COALESCE($2, project_name),
@@ -103,4 +121,4 @@ async function remove(id) {
   return true;
 }
 
-module.exports = { getAll, getById, create, update, updateStatus, remove };
+module.exports = { getAll, getById, getActiveByContract, create, update, updateStatus, remove };

@@ -1,0 +1,767 @@
+const db = require('../../lib/db');
+const logger = require('../../lib/logger');
+const gmgnHttp = require('../../lib/gmgn-http');
+const gmgnAdapter = require('../../lib/gmgn-adapter');
+const receiptService = require('./chain-receipt-service');
+const repository = require('./trade-repository');
+const { requireChain } = require('./chain-adapters');
+const { PRIORITIES } = require('../../lib/gmgn-rate-scheduler');
+const { decimalToRaw } = require('../../lib/decimal-units');
+
+const RECONCILER_LOCK = 'xbot:trade-reconciler';
+
+function pollingIntervalMs(submittedAt, state, random = Math.random) {
+  if (['closing', 'triggered'].includes(state)) return 1000;
+  const ageMs = Math.max(0, Date.now() - new Date(submittedAt).getTime());
+  if (ageMs < 10_000) return 1000;
+  if (ageMs < 30_000) return 2000;
+  if (ageMs < 120_000) return 5000;
+  return Math.round(15_000 + random() * 15_000);
+}
+
+function nextQueryAt(order, state, random) {
+  return new Date(Date.now() + pollingIntervalMs(order.submitted_at, state, random));
+}
+
+function strategyPollingIntervalMs(state, random = Math.random) {
+  if (['triggered', 'cancelling'].includes(state)) return 1000;
+  if (state === 'unknown') return 5000;
+  return Math.round(10_000 + random() * 20_000);
+}
+
+function nextStrategyQueryAt(state, random) {
+  return new Date(Date.now() + strategyPollingIntervalMs(state, random));
+}
+
+function orderFromStoredRow(row) {
+  return gmgnAdapter.normalizeOrder({
+    order_id: row.provider_order_id,
+    status: 'confirmed',
+    hash: row.tx_hash,
+    strategy_order_id: row.last_response_json?.strategy_order_id,
+    report: row.report_json || {}
+  });
+}
+
+function receiptContainsTradedToken(row, receipt) {
+  const chain = requireChain(row.chain);
+  const tradedToken = row.side === 'sell' ? row.input_token : row.output_token;
+  if (!tradedToken || tradedToken === chain.nativeToken) return false;
+  if (chain.id === 'sol') {
+    const balances = [
+      ...(receipt.transfers?.preTokenBalances || []),
+      ...(receipt.transfers?.postTokenBalances || [])
+    ];
+    return balances.some((balance) => String(balance.mint || '') === String(tradedToken));
+  }
+  return (Array.isArray(receipt.transfers) ? receipt.transfers : [])
+    .some((log) => String(log.address || '').toLowerCase() === String(tradedToken).toLowerCase());
+}
+
+function solTokenAmount(balance) {
+  const raw = balance?.uiTokenAmount?.amount ?? balance?.amount;
+  return /^\d+$/.test(String(raw || '')) ? BigInt(raw) : 0n;
+}
+
+function receiptTradedAmountRaw(row, receipt) {
+  const chain = requireChain(row.chain);
+  const wallet = String(row.wallet_address || '').toLowerCase();
+  const tradedToken = row.side === 'sell' ? row.input_token : row.output_token;
+  if (!tradedToken || tradedToken === chain.nativeToken) return null;
+  if (chain.id === 'sol') {
+    const totals = (balances) => (balances || []).reduce((total, balance) => {
+      if (String(balance.mint || '') !== String(tradedToken)) return total;
+      if (String(balance.owner || '').toLowerCase() !== wallet) return total;
+      return total + solTokenAmount(balance);
+    }, 0n);
+    const before = totals(receipt.transfers?.preTokenBalances);
+    const after = totals(receipt.transfers?.postTokenBalances);
+    const delta = row.side === 'sell' ? before - after : after - before;
+    return delta >= 0n ? delta.toString() : null;
+  }
+  const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  let total = 0n;
+  let matched = false;
+  for (const log of Array.isArray(receipt.transfers) ? receipt.transfers : []) {
+    if (String(log.address || '').toLowerCase() !== String(tradedToken).toLowerCase()) continue;
+    const topics = Array.isArray(log.topics) ? log.topics : [];
+    if (String(topics[0] || '').toLowerCase() !== transferTopic || topics.length < 3) continue;
+    const from = `0x${String(topics[1]).slice(-40)}`.toLowerCase();
+    const to = `0x${String(topics[2]).slice(-40)}`.toLowerCase();
+    if ((row.side === 'sell' && from !== wallet) || (row.side !== 'sell' && to !== wallet)) continue;
+    if (!/^0x[0-9a-f]+$/i.test(String(log.data || ''))) continue;
+    total += BigInt(log.data);
+    matched = true;
+  }
+  return matched ? total.toString() : null;
+}
+
+function receiptMatchesTradedAmount(row, normalizedOrder, receipt) {
+  const expected = row.side === 'sell'
+    ? normalizedOrder.report.inputAmountRaw || row.input_amount_raw
+    : normalizedOrder.report.outputAmountRaw || row.output_amount_raw;
+  if (!/^\d+$/.test(String(expected || ''))) return false;
+  const actual = receiptTradedAmountRaw(row, receipt);
+  if (!/^\d+$/.test(String(actual || ''))) return false;
+  return row.side === 'sell'
+    ? BigInt(actual) === BigInt(expected)
+    : BigInt(actual) >= BigInt(expected);
+}
+
+function receiptHasVerifiableNativeProceeds(row, receipt) {
+  const chain = requireChain(row.chain);
+  if (row.side !== 'sell' || String(row.output_token) !== String(chain.nativeToken)) return true;
+  const delta = String(receipt.nativeBalanceDeltaRaw ?? '');
+  const routerProceeds = String(receipt.nativeProceedsRaw ?? '');
+  return (/^-?\d+$/.test(delta) && BigInt(delta) > 0n)
+    || (/^\d+$/.test(routerProceeds) && BigInt(routerProceeds) > 0n);
+}
+
+function strategyRows(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.list)) return value.list;
+  if (Array.isArray(value?.orders)) return value.orders;
+  return value && typeof value === 'object' ? [value] : [];
+}
+
+function providerTimeMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+}
+
+function sameAddress(chain, left, right) {
+  const leftValue = String(left || '').trim();
+  const rightValue = String(right || '').trim();
+  if (!leftValue || !rightValue) return false;
+  return chain === 'sol'
+    ? leftValue === rightValue
+    : leftValue.toLowerCase() === rightValue.toLowerCase();
+}
+
+function strategyMatchesConfirmedOrder(row, normalizedOrder, strategy, windowMs = 10 * 60_000) {
+  if (!strategy.providerOrderId
+      || !sameAddress(row.chain, strategy.walletAddress, row.wallet_address)
+      || !sameAddress(row.chain, strategy.baseToken, row.output_token)) return false;
+  const outputAmountRaw = String(normalizedOrder.report.outputAmountRaw || row.output_amount_raw || '');
+  if (!/^\d+$/.test(outputAmountRaw) || String(strategy.openAmountRaw || '') !== outputAmountRaw) {
+    return false;
+  }
+  const inputAmountRaw = String(normalizedOrder.report.inputAmountRaw || row.input_amount_raw || '');
+  if (strategy.quoteInvestmentRaw && /^\d+$/.test(inputAmountRaw)
+      && String(strategy.quoteInvestmentRaw) !== inputAmountRaw) return false;
+  const submittedAt = new Date(row.submitted_at).getTime();
+  const createdAt = providerTimeMs(strategy.createdAt);
+  return Number.isFinite(submittedAt) && createdAt !== null
+    && Math.abs(createdAt - submittedAt) <= windowMs;
+}
+
+class TradeReconciler {
+  constructor(options = {}) {
+    this.db = options.db || db;
+    this.gmgnHttp = options.gmgnHttp || gmgnHttp;
+    this.receiptService = options.receiptService || receiptService;
+    this.repository = options.repository || repository;
+    this.logger = options.logger || logger;
+    this.random = options.random || Math.random;
+    this.timer = null;
+    this.running = false;
+    this.startedAt = null;
+    this.lastRunAt = null;
+    this.lastSuccessAt = null;
+    this.lastError = null;
+    this.processed = 0;
+    this.wsBroadcast = null;
+  }
+
+  async reconcileOrder(row) {
+    let normalized;
+    if (row.normalized_status === 'chain_verifying') {
+      normalized = orderFromStoredRow(row);
+    } else {
+      const response = await this.gmgnHttp.queryOrder(row.provider_order_id, row.chain);
+      normalized = gmgnAdapter.normalizeOrder(response);
+      normalized = await this.resolveProtectionStrategy(row, normalized);
+      const persistedStatus = normalized.status === 'confirmed' ? 'chain_verifying' : normalized.status;
+      await this.repository.updateOrderAfterQuery(
+        row.id,
+        { ...normalized, status: persistedStatus },
+        nextQueryAt(row, persistedStatus, this.random)
+      );
+      if (['failed', 'expired'].includes(normalized.status)) {
+        await this.repository.failOrder(row.id, normalized);
+        return { orderId: row.id, status: normalized.status };
+      }
+      if (normalized.status !== 'confirmed') {
+        return { orderId: row.id, status: normalized.status };
+      }
+    }
+
+    const receipt = await this.receiptService.verify(row.chain, normalized.txHash, {
+      walletAddress: row.wallet_address,
+      tradedToken: row.side === 'sell' ? row.input_token : row.output_token,
+      expectedInputAmountRaw: normalized.report.inputAmountRaw || row.input_amount_raw,
+      expectedOutputAmountRaw: normalized.report.outputAmountRaw || row.output_amount_raw,
+      verifyNativeBalanceDelta: row.side === 'sell'
+        && String(row.output_token) === String(requireChain(row.chain).nativeToken)
+    });
+    if (normalized.txHash) {
+      await this.repository.saveChainReceipt(row.id, row.chain, normalized.txHash, receipt);
+    }
+    if (receipt.status === 'dropped' && row.chain !== 'sol') {
+      const replacement = await this.recoverEvmReplacement(row, normalized, receipt);
+      if (replacement) return replacement;
+    }
+    if (receipt.status === 'confirmed') {
+      if (!receiptContainsTradedToken(row, receipt)
+          || !receiptMatchesTradedAmount(row, normalized, receipt)
+          || !receiptHasVerifiableNativeProceeds(row, receipt)) {
+        const errorCode = !receiptHasVerifiableNativeProceeds(row, receipt)
+          ? 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
+          : 'CHAIN_TOKEN_TRANSFER_AMOUNT_MISMATCH';
+        await this.repository.transitionAttempt(
+          row.attempt_id,
+          ['submitted', 'confirming', 'reconciliation_required'],
+          'reconciliation_required',
+          {
+            errorCode,
+            requiresManualReview: true,
+            alertTopic: errorCode === 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
+              ? 'trade.chain_native_proceeds_unverified'
+              : 'trade.chain_transfer_mismatch'
+          }
+        );
+        return {
+          orderId: row.id,
+          status: errorCode === 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
+            ? 'native_proceeds_unverified'
+            : 'transfer_mismatch'
+        };
+      }
+      const position = await this.repository.finalizeConfirmedOrder(row.id, normalized, receipt);
+      return { orderId: row.id, status: 'confirmed', positionId: position.id };
+    }
+    if (['failed', 'reorged', 'replaced', 'dropped'].includes(receipt.status)) {
+      await this.repository.transitionAttempt(
+        row.attempt_id,
+        ['submitted', 'confirming', 'reconciliation_required'],
+        'reconciliation_required',
+        {
+          errorCode: `CHAIN_RECEIPT_${receipt.status.toUpperCase()}`,
+          requiresManualReview: true,
+          alertTopic: 'trade.chain_receipt_mismatch'
+        }
+      );
+    }
+    await this.db.query(
+      `UPDATE trade_orders
+       SET normalized_status = 'chain_verifying', next_query_at = $2,
+           last_queried_at = NOW(), query_count = query_count + 1, updated_at = NOW()
+       WHERE id = $1`,
+      [row.id, nextQueryAt(row, 'chain_verifying', this.random)]
+    );
+    return { orderId: row.id, status: `chain_${receipt.status}` };
+  }
+
+  async recoverEvmReplacement(row, previousOrder, previousReceipt) {
+    if (!row.provider_order_id || !previousOrder.txHash) return null;
+    const response = await this.gmgnHttp.queryOrder(row.provider_order_id, row.chain);
+    let refreshed = gmgnAdapter.normalizeOrder(response);
+    refreshed = await this.resolveProtectionStrategy(row, refreshed);
+    const oldHash = String(previousOrder.txHash).toLowerCase();
+    const newHash = String(refreshed.txHash || '').toLowerCase();
+    if (refreshed.status !== 'confirmed' || !newHash || newHash === oldHash) return null;
+
+    await this.repository.saveChainReceipt(row.id, row.chain, previousOrder.txHash, {
+      ...previousReceipt,
+      status: 'replaced',
+      raw: {
+        ...(previousReceipt.raw || {}),
+        replacement: {
+          source: 'gmgn_order_report',
+          replacement_tx_hash: refreshed.txHash
+        }
+      }
+    });
+    await this.repository.updateOrderAfterQuery(
+      row.id,
+      { ...refreshed, status: 'chain_verifying' },
+      new Date()
+    );
+    return {
+      orderId: row.id,
+      status: 'chain_replaced',
+      previousTxHash: previousOrder.txHash,
+      replacementTxHash: refreshed.txHash
+    };
+  }
+
+  async resolveProtectionStrategy(row, normalizedOrder) {
+    const conditions = row.attempt_metadata?.condition_orders;
+    if (normalizedOrder.status !== 'confirmed' || normalizedOrder.strategyOrderId
+        || !Array.isArray(conditions) || conditions.length === 0) {
+      return normalizedOrder;
+    }
+    const filters = {
+      from_address: row.wallet_address,
+      group_tag: 'STMix',
+      base_token: row.output_token,
+      limit: 100
+    };
+    const candidates = new Map();
+    for (const type of ['open', 'history']) {
+      const response = await this.gmgnHttp.getStrategyOrders(
+        row.chain,
+        { ...filters, type },
+        { priority: PRIORITIES.STRATEGY_ACTION }
+      );
+      for (const item of strategyRows(response)) {
+        const strategy = gmgnAdapter.normalizeStrategy(item);
+        if (strategyMatchesConfirmedOrder(row, normalizedOrder, strategy)) {
+          candidates.set(strategy.providerOrderId, strategy);
+        }
+      }
+    }
+    const matches = [...candidates.values()];
+    const association = matches.length === 1
+      ? { status: 'matched', candidate_count: 1, order_id: matches[0].providerOrderId }
+      : { status: matches.length === 0 ? 'missing' : 'ambiguous', candidate_count: matches.length };
+    return {
+      ...normalizedOrder,
+      strategyOrderId: matches.length === 1 ? matches[0].providerOrderId : null,
+      raw: {
+        ...(normalizedOrder.raw || {}),
+        ...(matches.length === 1 ? { strategy_order_id: matches[0].providerOrderId } : {}),
+        xbot_strategy_association: association
+      }
+    };
+  }
+
+  async fetchStrategy(row) {
+    if (!this.gmgnHttp.getStrategyOrders && this.gmgnHttp.queryStrategyOrder) {
+      const raw = await this.gmgnHttp.queryStrategyOrder(
+        row.chain_id,
+        row.provider_order_id,
+        row.wallet_address
+      );
+      return strategyRows(raw)
+        .map((item) => gmgnAdapter.normalizeStrategy(item))
+        .find((item) => item.providerOrderId === String(row.provider_order_id)) || null;
+    }
+    const filters = {
+      from_address: row.wallet_address,
+      group_tag: 'STMix',
+      base_token: row.contract_address,
+      limit: 100
+    };
+    const requestOptions = {
+      priority: ['triggered', 'cancelling', 'unknown'].includes(row.status)
+        ? PRIORITIES.STRATEGY_ACTION
+        : PRIORITIES.STABLE_RECONCILIATION
+    };
+    for (const type of ['open', 'history']) {
+      const raw = await this.gmgnHttp.getStrategyOrders(
+        row.chain_id,
+        { ...filters, type },
+        requestOptions
+      );
+      const found = strategyRows(raw)
+        .map((item) => gmgnAdapter.normalizeStrategy(item))
+        .find((item) => item.providerOrderId === String(row.provider_order_id));
+      if (found) return found;
+    }
+    return null;
+  }
+
+  async reconcileStrategy(row) {
+    const normalized = await this.fetchStrategy(row);
+    if (!normalized) {
+      const missing = {
+        raw: { reason: 'not_found_in_open_or_history' },
+        providerStatus: null,
+        strategyStatus: null,
+        status: 'unknown',
+        closeAmountRaw: null,
+        closeOutputAmountRaw: null,
+        closeTxHash: null,
+        closePrice: null,
+        closeTime: null,
+        conditionOrders: []
+      };
+      await this.repository.persistStrategySnapshot(
+        row.id,
+        missing,
+        nextStrategyQueryAt('unknown', this.random)
+      );
+      return { strategyGroupId: row.id, status: 'unknown' };
+    }
+    await this.repository.persistStrategySnapshot(
+      row.id,
+      normalized,
+      nextStrategyQueryAt(normalized.status, this.random)
+    );
+    if (normalized.status !== 'triggered') {
+      return { strategyGroupId: row.id, status: normalized.status };
+    }
+    const claimed = await this.repository.claimStrategyClose(row.id, normalized);
+    return {
+      strategyGroupId: row.id,
+      status: claimed.conflict ? 'manual_close_conflict' : 'chain_verifying',
+      orderId: claimed.orderId || null,
+      existing: Boolean(claimed.existing)
+    };
+  }
+
+  async reconcilePositionBalance(row) {
+    const state = await this.repository.getPositionBalanceState(row.id);
+    if (!state || BigInt(state.remaining_amount_raw.split('.')[0]) === 0n) {
+      return { positionId: row.id, status: 'no_open_lot' };
+    }
+    const balanceResponse = await this.gmgnHttp.getWalletTokenBalance(
+      state.chain_id,
+      state.wallet_address,
+      state.contract_address
+    );
+    const normalizedBalance = gmgnAdapter.normalizeWalletTokenBalance(
+      balanceResponse,
+      state.token_decimals
+    );
+    if (Number(normalizedBalance.decimals) !== Number(state.token_decimals)) {
+      const error = new Error('Wallet balance decimals differ from the verified position lot');
+      error.code = 'POSITION_BALANCE_DECIMALS_MISMATCH';
+      throw error;
+    }
+    const actualRaw = normalizedBalance.amountRaw
+      || decimalToRaw(normalizedBalance.amountDisplay, state.token_decimals);
+    const observation = await this.repository.observePositionBalance(row.id, actualRaw);
+    if (BigInt(observation.deficitRaw) === 0n) {
+      return {
+        positionId: row.id,
+        status: BigInt(observation.externalRaw) > 0n ? 'external_balance_present' : 'matched'
+      };
+    }
+    if (Number(state.active_strategy_count) > 0) {
+      await this.repository.markPositionBalanceMismatch(row.id, {
+        reason: 'ACTIVE_STRATEGY_BALANCE_DEFICIT',
+        deficit_raw: observation.deficitRaw,
+        active_strategy_count: Number(state.active_strategy_count)
+      });
+      return { positionId: row.id, status: 'active_strategy_conflict' };
+    }
+
+    const activityResponse = await this.gmgnHttp.getWalletActivity(
+      state.chain_id,
+      state.wallet_address,
+      { token_address: state.contract_address, limit: 100 }
+    );
+    const candidates = (activityResponse.activities || []).filter((activity) => {
+      if (String(activity.event_type || '').toLowerCase() !== 'sell') return false;
+      if (String(activity.token?.address || '').toLowerCase()
+          !== String(state.contract_address).toLowerCase()) return false;
+      if (Number(activity.timestamp || 0) * 1000 < new Date(state.opened_at).getTime()) return false;
+      try {
+        return decimalToRaw(activity.token_amount, state.token_decimals) === observation.deficitRaw;
+      } catch {
+        return false;
+      }
+    });
+    if (candidates.length !== 1) {
+      await this.repository.markPositionBalanceMismatch(row.id, {
+        reason: 'EXTERNAL_SELL_NOT_UNIQUE',
+        deficit_raw: observation.deficitRaw,
+        candidate_count: candidates.length
+      });
+      return { positionId: row.id, status: 'manual_reconciliation_required' };
+    }
+    const activity = candidates[0];
+    const outputDecimals = Number(activity.quote_token?.decimals);
+    if (!Number.isInteger(outputDecimals)) {
+      const error = new Error('Wallet activity lacks quote token decimals');
+      error.code = 'GMGN_SCHEMA_INVALID';
+      throw error;
+    }
+    const claimed = await this.repository.claimExternalClose(row.id, {
+      txHash: String(activity.tx_hash),
+      inputAmountRaw: observation.deficitRaw,
+      outputAmountRaw: decimalToRaw(activity.quote_amount, outputDecimals),
+      outputDecimals,
+      priceUsd: Number(activity.price_usd || 0) || null,
+      gasNative: Number(activity.gas_native || 0) || null,
+      submittedAt: new Date(Number(activity.timestamp) * 1000),
+      raw: activity
+    });
+    return {
+      positionId: row.id,
+      status: 'chain_verifying',
+      orderId: claimed.orderId,
+      existing: Boolean(claimed.existing)
+    };
+  }
+
+  async reconcileCancelledCloseAttempt(attempt) {
+    if (attempt.side !== 'sell') return null;
+    const details = await this.repository.getAttemptDetails(attempt.id);
+    if (!details || details.orders.length > 0) return null;
+    const cancellationUncertainty = [
+      'STRATEGY_CANCEL_UNCERTAIN',
+      'STRATEGY_CANCEL_UNVERIFIED'
+    ].includes(attempt.error_code) || details.events.some((event) => (
+      event.to_status === 'submission_uncertain'
+        && String(event.reason || '').toLowerCase().includes('strategy cancellation')
+    ));
+    if (!cancellationUncertainty) return null;
+    const groups = details.strategy_groups.filter((group) => group.provider_order_id);
+    const lots = details.position_lots.filter((lot) => BigInt(String(lot.remaining_amount_raw || '0')) > 0n);
+    if (groups.length === 0 || lots.length === 0) return null;
+    const tokenDecimals = Number(lots[0].token_decimals);
+    const walletAddress = String(lots[0].wallet_address || '');
+    if (!Number.isInteger(tokenDecimals)
+        || !walletAddress
+        || !lots.every((lot) => Number(lot.token_decimals) === tokenDecimals
+          && String(lot.wallet_address) === walletAddress)) return null;
+
+    const strategyEvidence = [];
+    for (const group of groups) {
+      const response = await this.gmgnHttp.queryStrategyOrder(
+        attempt.chain,
+        group.provider_order_id,
+        walletAddress,
+        { baseToken: attempt.input_token }
+      );
+      const normalized = strategyRows(response)
+        .map((item) => gmgnAdapter.normalizeStrategy(item))
+        .find((item) => item.providerOrderId === String(group.provider_order_id));
+      if (!normalized || normalized.status !== 'cancelled' || normalized.closeTxHash) return null;
+      strategyEvidence.push({ groupId: group.id, normalized });
+    }
+
+    const balanceResponse = await this.gmgnHttp.getWalletTokenBalance(
+      attempt.chain,
+      walletAddress,
+      attempt.input_token
+    );
+    const balance = gmgnAdapter.normalizeWalletTokenBalance(balanceResponse, tokenDecimals);
+    if (Number(balance.decimals) !== tokenDecimals) return null;
+    const walletRaw = balance.amountRaw || decimalToRaw(balance.amountDisplay, tokenDecimals);
+    const remainingRaw = lots.reduce(
+      (total, lot) => total + BigInt(String(lot.remaining_amount_raw)),
+      0n
+    );
+    if (BigInt(walletRaw) < remainingRaw) return null;
+
+    const recovered = await this.repository.resolveCancelledCloseAttempt(
+      attempt.id,
+      attempt.position_id,
+      strategyEvidence
+    );
+    return { ...recovered, status: 'cancelled_before_swap_recovered' };
+  }
+
+  async runOnce() {
+    if (this.running) return { status: 'skipped', reason: 'already_running' };
+    this.running = true;
+    this.lastRunAt = new Date();
+    this.lastError = null;
+    let lockClient = null;
+    try {
+      if (this.db.pool?.connect) {
+        lockClient = await this.db.pool.connect();
+        const lock = await lockClient.query(
+          'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+          [RECONCILER_LOCK]
+        );
+        if (!lock.rows[0].locked) return { status: 'skipped', reason: 'another_instance_is_active' };
+      }
+      const orders = await this.repository.listDueOrders(20);
+      const results = [];
+      for (const order of orders) {
+        try {
+          const result = await this.reconcileOrder(order);
+          results.push(result);
+          this.processed += 1;
+          this.wsBroadcast?.({ type: 'trade:order-updated', payload: result });
+        } catch (error) {
+          this.lastError = error.message;
+          this.logger.error('trade-reconciler', `Order ${order.id} reconciliation failed: ${error.message}`);
+          results.push({ orderId: order.id, status: 'error', error: error.code || error.message });
+        }
+      }
+      const strategies = await this.repository.listDueStrategyGroups(20);
+      for (const strategy of strategies) {
+        try {
+          const result = await this.reconcileStrategy(strategy);
+          results.push(result);
+          this.processed += 1;
+          this.wsBroadcast?.({ type: 'trade:strategy-updated', payload: result });
+        } catch (error) {
+          this.lastError = error.message;
+          this.logger.error(
+            'trade-reconciler',
+            `Strategy ${strategy.id} reconciliation failed: ${error.message}`
+          );
+          results.push({ strategyGroupId: strategy.id, status: 'error', error: error.code || error.message });
+        }
+      }
+      const balanceChecks = await this.repository.listDuePositionBalances(10);
+      for (const position of balanceChecks) {
+        try {
+          const result = await this.reconcilePositionBalance(position);
+          results.push(result);
+          this.processed += 1;
+          this.wsBroadcast?.({ type: 'trade:position-balance-updated', payload: result });
+        } catch (error) {
+          this.lastError = error.message;
+          this.logger.error(
+            'trade-reconciler',
+            `Position ${position.id} balance reconciliation failed: ${error.message}`
+          );
+          results.push({ positionId: position.id, status: 'error', error: error.code || error.message });
+        }
+      }
+      const uncertainAttempts = await this.repository.listUncertainAttempts(10);
+      for (const attempt of uncertainAttempts) {
+        try {
+          const recovered = await this.reconcileCancelledCloseAttempt(attempt);
+          if (recovered) {
+            results.push(recovered);
+            this.processed += 1;
+            this.wsBroadcast?.({ type: 'trade:attempt-recovered', payload: recovered });
+            continue;
+          }
+          await this.gmgnHttp.getWalletActivity(
+            attempt.chain,
+            attempt.wallet_address,
+            {
+              token_address: attempt.side === 'sell' ? attempt.input_token : attempt.output_token,
+              limit: 20
+            }
+          );
+          await this.repository.touchAttemptReconciliation(attempt.id);
+          if (Date.now() - new Date(attempt.created_at).getTime() >= 120_000) {
+            await this.repository.transitionAttempt(
+              attempt.id,
+              ['submission_uncertain'],
+              'reconciliation_required',
+              {
+                errorCode: 'SUBMISSION_COULD_NOT_BE_UNIQUELY_RECONCILED',
+                requiresManualReview: true,
+                alertTopic: 'trade.manual_reconciliation_required'
+              }
+            );
+          }
+        } catch (error) {
+          await this.repository.touchAttemptReconciliation(attempt.id);
+          this.logger.warn('trade-reconciler', `Uncertain attempt ${attempt.id} lookup failed: ${error.message}`);
+        }
+      }
+      const uncertain = await this.db.query(
+        `SELECT COUNT(*)::int AS count, MIN(created_at) AS oldest
+         FROM trade_attempts WHERE status = 'submission_uncertain'`
+      );
+      this.lastSuccessAt = new Date();
+      await this.db.query(
+        `INSERT INTO trade_runtime_state(key, value_json)
+         VALUES ('reconciler', $1)
+         ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = NOW()`,
+        [{
+          heartbeat_at: this.lastSuccessAt,
+          processed: this.processed,
+          due_orders: orders.length,
+          due_strategies: strategies.length,
+          due_balance_checks: balanceChecks.length,
+          uncertain_count: uncertain.rows[0].count,
+          oldest_uncertain_at: uncertain.rows[0].oldest
+        }]
+      );
+      return {
+        status: 'completed',
+        processed: results.length,
+        dueOrders: orders.length,
+        dueStrategies: strategies.length,
+        dueBalanceChecks: balanceChecks.length,
+        results
+      };
+    } finally {
+      if (lockClient) {
+        await lockClient.query('SELECT pg_advisory_unlock(hashtext($1))', [RECONCILER_LOCK]).catch(() => {});
+        lockClient.release();
+      }
+      this.running = false;
+    }
+  }
+
+  start(options = {}) {
+    if (this.timer) return;
+    this.wsBroadcast = options.wsBroadcast || this.wsBroadcast;
+    this.startedAt = new Date();
+    const intervalMs = Math.max(500, Number(options.intervalMs || 1000));
+    void this.runOnce().catch((error) => {
+      this.lastError = error.message;
+      this.logger.error('trade-reconciler', `Startup reconciliation failed: ${error.message}`);
+    });
+    this.timer = setInterval(() => {
+      void this.runOnce().catch((error) => {
+        this.lastError = error.message;
+        this.logger.error('trade-reconciler', `Reconciliation failed: ${error.message}`);
+      });
+    }, intervalMs);
+    this.timer.unref?.();
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  async getStatus() {
+    const [backlog, strategyBacklog] = await Promise.all([
+      this.db.query(
+      `SELECT normalized_status AS status, COUNT(*)::int AS count,
+              MIN(submitted_at) AS oldest
+       FROM trade_orders
+       WHERE normalized_status IN ('submitted','pending','chain_verifying','unknown')
+       GROUP BY normalized_status`
+      ),
+      this.db.query(
+        `SELECT status, COUNT(*)::int AS count, MIN(next_query_at) AS oldest
+         FROM strategy_groups
+         WHERE status IN ('pending','running','partially_filled','triggered','cancelling','unknown')
+         GROUP BY status`
+      )
+    ]);
+    return {
+      running: Boolean(this.timer),
+      active: this.running,
+      startedAt: this.startedAt,
+      lastRunAt: this.lastRunAt,
+      lastSuccessAt: this.lastSuccessAt,
+      lastError: this.lastError,
+      processed: this.processed,
+      backlog: backlog.rows,
+      strategyBacklog: strategyBacklog.rows,
+      pollingPolicy: [
+        { fromSeconds: 0, toSeconds: 10, intervalMs: 1000 },
+        { fromSeconds: 10, toSeconds: 30, intervalMs: 2000 },
+        { fromSeconds: 30, toSeconds: 120, intervalMs: 5000 },
+        { fromSeconds: 120, toSeconds: null, intervalMs: [15000, 30000] }
+      ]
+    };
+  }
+}
+
+const reconciler = new TradeReconciler();
+
+module.exports = {
+  RECONCILER_LOCK,
+  TradeReconciler,
+  nextQueryAt,
+  nextStrategyQueryAt,
+  pollingIntervalMs,
+  receiptContainsTradedToken,
+  receiptHasVerifiableNativeProceeds,
+  receiptMatchesTradedAmount,
+  receiptTradedAmountRaw,
+  strategyPollingIntervalMs,
+  strategyMatchesConfirmedOrder,
+  reconciler
+};

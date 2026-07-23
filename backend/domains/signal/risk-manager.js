@@ -4,13 +4,35 @@ const logger = require('../../lib/logger');
 const configService = require('../config/service');
 const engineState = require('../../lib/engine-state');
 const gmgnHttp = require('../../lib/gmgn-http');
+const gmgnAdapter = require('../../lib/gmgn-adapter');
+const { decimalToRaw } = require('../../lib/decimal-units');
 const { CHAIN_REGISTRY } = require('../../lib/chain-config');
 
 /**
  * 校验各项风控规则 (Dry-Run 模式)
  * 返回 { riskCheck, passed, rejectReason }
  */
-async function checkRisks(signal, whitelist) {
+async function checkRisks(signal, whitelist, options = {}) {
+  const executionMode = options.executionMode || signal.execution_mode || 'signal';
+  if (executionMode === 'signal') {
+    return {
+      riskCheck: { execution_mode: 'signal', external_checks_skipped: true },
+      passed: false,
+      rejectReason: 'SIGNAL_ONLY'
+    };
+  }
+  if (executionMode === 'live') {
+    return {
+      riskCheck: {
+        execution_mode: 'live',
+        engine_armed: engineState.getArmed(),
+        external_checks_skipped: true,
+        owner: 'execution-service'
+      },
+      passed: false,
+      rejectReason: 'LIVE_RISK_OWNED_BY_EXECUTION_SERVICE'
+    };
+  }
   const chainId = whitelist.chain_id;
   const ca = whitelist.contract_address;
 
@@ -69,11 +91,19 @@ async function checkRisks(signal, whitelist) {
 
     // 2. 白名单总预算未超限
     const amount = Number(whitelist.budget_per_trade);
-    riskCheck.wl_budget_ok = (Number(whitelist.spent_budget) + amount) <= Number(whitelist.total_budget);
+    const spentBudget = executionMode === 'paper'
+      ? Number(whitelist.paper_spent_budget || 0)
+      : Number(whitelist.spent_budget || 0);
+    const buyCount = executionMode === 'paper'
+      ? Number(whitelist.paper_buy_count || 0)
+      : Number(whitelist.current_buy_count || 0);
+    riskCheck.wl_budget_ok = (spentBudget + amount) <= Number(whitelist.total_budget);
     if (!riskCheck.wl_budget_ok) setFailed('WL_BUDGET_EXCEEDED');
 
     // 3. 重复买入次数
-    riskCheck.wl_repeat_ok = !whitelist.allow_repeat_buy || (whitelist.current_buy_count < whitelist.max_repeat_buys);
+    riskCheck.wl_repeat_ok = whitelist.allow_repeat_buy
+      ? buyCount < Number(whitelist.max_repeat_buys || 1)
+      : buyCount === 0;
     if (!riskCheck.wl_repeat_ok) setFailed('WL_REPEAT_LIMIT');
 
     // 4. 未过期
@@ -85,8 +115,9 @@ async function checkRisks(signal, whitelist) {
     const cooldownRes = await db.query(
       `SELECT COUNT(*) FROM positions 
        WHERE contract_address = $1 AND chain_id = $2 
-         AND opened_at >= NOW() - CAST($3 || ' minutes' AS INTERVAL)`,
-      [ca, chainId, cooldownMin]
+         AND execution_mode = $3
+         AND opened_at >= NOW() - CAST($4 || ' minutes' AS INTERVAL)`,
+      [ca, chainId, executionMode, cooldownMin]
     );
     riskCheck.ca_cooldown_ok = parseInt(cooldownRes.rows[0].count, 10) === 0;
     if (!riskCheck.ca_cooldown_ok) setFailed('CA_BUY_COOLDOWN');
@@ -103,8 +134,9 @@ async function checkRisks(signal, whitelist) {
     const dailyLimit = chainConf.dailyBudget || 0;
     const dailySpentRes = await db.query(
       `SELECT COALESCE(SUM(amount_in), 0) as spent FROM positions 
-       WHERE chain_id = $1 AND opened_at >= NOW() - INTERVAL '1 day' AND status != 'failed'`,
-      [chainId]
+       WHERE chain_id = $1 AND execution_mode = $2
+         AND opened_at >= NOW() - INTERVAL '1 day' AND status != 'failed'`,
+      [chainId, executionMode]
     );
     const dailySpent = Number(dailySpentRes.rows[0].spent);
     riskCheck.chain_daily_budget_ok = dailyLimit === 0 || (dailySpent + amount <= dailyLimit);
@@ -114,8 +146,9 @@ async function checkRisks(signal, whitelist) {
     const weeklyLimit = chainConf.weeklyBudget || 0;
     const weeklySpentRes = await db.query(
       `SELECT COALESCE(SUM(amount_in), 0) as spent FROM positions 
-       WHERE chain_id = $1 AND opened_at >= NOW() - INTERVAL '7 days' AND status != 'failed'`,
-      [chainId]
+       WHERE chain_id = $1 AND execution_mode = $2
+         AND opened_at >= NOW() - INTERVAL '7 days' AND status != 'failed'`,
+      [chainId, executionMode]
     );
     const weeklySpent = Number(weeklySpentRes.rows[0].spent);
     riskCheck.chain_weekly_budget_ok = weeklyLimit === 0 || (weeklySpent + amount <= weeklyLimit);
@@ -129,8 +162,8 @@ async function checkRisks(signal, whitelist) {
     // 10. 最大同时活跃持仓
     const maxPositions = chainConf.maxOpenPositions || 5;
     const activePositionsRes = await db.query(
-      "SELECT COUNT(*) FROM positions WHERE chain_id = $1 AND status = 'open'",
-      [chainId]
+      "SELECT COUNT(*) FROM positions WHERE chain_id = $1 AND execution_mode = $2 AND status = 'open'",
+      [chainId, executionMode]
     );
     riskCheck.max_positions_ok = parseInt(activePositionsRes.rows[0].count, 10) < maxPositions;
     if (!riskCheck.max_positions_ok) setFailed('MAX_POSITIONS_REACHED');
@@ -139,9 +172,9 @@ async function checkRisks(signal, whitelist) {
     const dailyLossLimit = chainConf.dailyLossLimit || 0;
     const dailyRealizedRes = await db.query(
       `SELECT COALESCE(SUM(pnl), 0) as pnl FROM positions 
-       WHERE chain_id = $1 AND closed_at >= NOW() - INTERVAL '1 day' 
+       WHERE chain_id = $1 AND execution_mode = $2 AND closed_at >= NOW() - INTERVAL '1 day'
          AND status IN ('tp_hit', 'sl_hit', 'manual_close')`,
-      [chainId]
+      [chainId, executionMode]
     );
     const dailyLoss = Number(dailyRealizedRes.rows[0].pnl);
     // dailyLoss 为负代表亏损
@@ -152,9 +185,10 @@ async function checkRisks(signal, whitelist) {
     const consecutiveLossLimit = riskConfig.consecutive_loss_limit || 5;
     const lastPositionsRes = await db.query(
       `SELECT status, pnl FROM positions 
-       WHERE chain_id = $1 AND status IN ('tp_hit', 'sl_hit', 'manual_close', 'failed')
-       ORDER BY closed_at DESC LIMIT $2`,
-      [chainId, consecutiveLossLimit]
+       WHERE chain_id = $1 AND execution_mode = $2
+         AND status IN ('tp_hit', 'sl_hit', 'manual_close', 'failed')
+       ORDER BY closed_at DESC LIMIT $3`,
+      [chainId, executionMode, consecutiveLossLimit]
     );
     const lastPositions = lastPositionsRes.rows;
     if (lastPositions.length >= consecutiveLossLimit) {
@@ -171,54 +205,99 @@ async function checkRisks(signal, whitelist) {
     // ═══════════════════════════════════
 
     // 13. 引擎已解锁
-    riskCheck.engine_armed = engineState.getArmed();
+    riskCheck.engine_armed = executionMode === 'paper' || engineState.getArmed();
     if (!riskCheck.engine_armed) setFailed('ENGINE_LOCKED');
 
-    // 调用 GMGN API 获取安全属性和基本信息
-    const security = await gmgnHttp.getTokenSecurity(chainId, ca);
-    const tokenInfo = await gmgnHttp.getTokenInfo(chainId, ca);
+    // 使用正式 GMGN /v1 合约和严格 Adapter 构造同一份只读风险输入。
+    const [userRaw, securityRaw, tokenRaw, poolRaw] = await Promise.all([
+      gmgnHttp.getUserInfo(),
+      gmgnHttp.getTokenSecurity(chainId, ca),
+      gmgnHttp.getTokenInfo(chainId, ca),
+      gmgnHttp.getTokenPoolInfo(chainId, ca)
+    ]);
+    const wallet = gmgnAdapter.selectWallet(userRaw, chainId);
+    const security = gmgnAdapter.normalizeSecurity(securityRaw, chainId);
+    const tokenInfo = gmgnAdapter.normalizeTokenInfo(tokenRaw);
+    const pool = gmgnAdapter.normalizePool(poolRaw);
 
     // 14. 蜜罐校验
-    riskCheck.not_honeypot = security.is_honeypot === false;
+    riskCheck.not_honeypot = security.isHoneypot === false
+      || (chainId === 'sol' && security.isHoneypot === null);
     if (!riskCheck.not_honeypot) setFailed('HONEYPOT_DETECTED');
 
     // 15. 买入税率 (默认上限 5%)
-    const maxBuyTax = riskConfig.max_buy_tax || 5;
-    riskCheck.buy_tax_ok = security.buy_tax === undefined || security.buy_tax <= maxBuyTax;
-    if (!riskCheck.buy_tax_ok) setFailed('HIGH_BUY_TAX');
+    const maxBuyTax = riskConfig.max_buy_tax ?? 5;
+    riskCheck.buy_tax_ok = true;
+    riskCheck.buy_tax = security.buyTax;
+    riskCheck.buy_tax_warning = chainId !== 'sol'
+      && (security.buyTax === null || security.buyTax > maxBuyTax);
 
     // 16. 卖出税率 (默认上限 10%)
-    const maxSellTax = riskConfig.max_sell_tax || 10;
-    riskCheck.sell_tax_ok = security.sell_tax === undefined || security.sell_tax <= maxSellTax;
-    if (!riskCheck.sell_tax_ok) setFailed('HIGH_SELL_TAX');
+    const maxSellTax = riskConfig.max_sell_tax ?? 10;
+    riskCheck.sell_tax_ok = true;
+    riskCheck.sell_tax = security.sellTax;
+    riskCheck.sell_tax_warning = chainId !== 'sol'
+      && (security.sellTax === null || security.sellTax > maxSellTax);
 
-    // 17. 最小流动性深度 (默认 $10,000)
-    const minLiquidity = riskConfig.min_liquidity_usd || 10000;
-    riskCheck.liquidity_ok = tokenInfo.liquidity === undefined || tokenInfo.liquidity >= minLiquidity;
+    // 17. Rug 风险必须有明确数值，未知不能自动视为安全。
+    const maxRugRatio = Number(riskConfig.max_rug_ratio ?? 0.3);
+    const rugRatio = security.rugRatio ?? tokenInfo.rugRatio;
+    riskCheck.rug_ratio = rugRatio;
+    riskCheck.rug_ratio_ok = rugRatio !== null && rugRatio <= maxRugRatio;
+    if (!riskCheck.rug_ratio_ok) {
+      setFailed(rugRatio === null ? 'RUG_RATIO_UNKNOWN' : 'HIGH_RUG_RATIO');
+    }
+
+    riskCheck.mint_authority_ok = chainId !== 'sol' || security.renouncedMint === true;
+    if (!riskCheck.mint_authority_ok) {
+      setFailed(security.renouncedMint === null ? 'MINT_AUTHORITY_UNKNOWN_SOL' : 'MINT_AUTHORITY_ACTIVE');
+    }
+    riskCheck.freeze_authority_ok = chainId !== 'sol' || security.renouncedFreeze === true;
+    if (!riskCheck.freeze_authority_ok) {
+      setFailed(security.renouncedFreeze === null ? 'FREEZE_AUTHORITY_UNKNOWN_SOL' : 'FREEZE_AUTHORITY_ACTIVE');
+    }
+
+    // 18. 最小流动性深度 (默认 $10,000)
+    const minLiquidity = riskConfig.min_liquidity_usd ?? 10000;
+    const liquidityUsd = pool.liquidityUsd ?? tokenInfo.liquidityUsd;
+    riskCheck.liquidity_ok = liquidityUsd !== null && liquidityUsd >= minLiquidity;
     if (!riskCheck.liquidity_ok) setFailed('LOW_LIQUIDITY');
 
     // ═══════════════════════════════════
     // Layer 4 — 执行级
     // ═══════════════════════════════════
 
-    // 18. CA 连续执行失败锁定 (最近 2 小时失败不超过 3 次)
+    // 19. CA 连续执行失败锁定 (最近 2 小时失败不超过 3 次)
     const failureRes = await db.query(
       `SELECT COUNT(*) FROM positions 
-       WHERE contract_address = $1 AND status = 'failed' 
+       WHERE contract_address = $1 AND execution_mode = $2 AND status = 'failed'
          AND opened_at >= NOW() - INTERVAL '2 hours'`,
-      [ca]
+      [ca, executionMode]
     );
     riskCheck.ca_failure_ok = parseInt(failureRes.rows[0].count, 10) < 3;
     if (!riskCheck.ca_failure_ok) setFailed('CA_FAILURE_LOCKED');
 
-    // 19. 滑点检查
+    // 20. 滑点检查
     // 通过询价接口模拟报价
     const chainRegistry = CHAIN_REGISTRY[chainId] || {};
     const nativeToken = chainRegistry.nativeToken || '';
-    const maxSlippage = riskConfig.max_slippage_pct || 15;
+    const maxSlippage = riskConfig.max_slippage_pct ?? 15;
     
-    const quote = await gmgnHttp.quote(chainId, nativeToken, ca, amount, maxSlippage);
-    riskCheck.slippage_ok = quote.price_impact <= maxSlippage;
+    const inputAmountRaw = decimalToRaw(amount, chainRegistry.decimals);
+    const quote = gmgnAdapter.normalizeQuote(await gmgnHttp.quoteOrder(
+      chainId,
+      wallet.address,
+      nativeToken,
+      ca,
+      inputAmountRaw,
+      maxSlippage
+    ));
+    const taxAdjustedImpact = quote.priceImpactPct === null
+      ? null
+      : Math.max(0, quote.priceImpactPct - Number(security.buyTax || 0));
+    riskCheck.price_impact_gross_pct = quote.priceImpactPct;
+    riskCheck.price_impact_excluding_buy_tax_pct = taxAdjustedImpact;
+    riskCheck.slippage_ok = taxAdjustedImpact !== null && taxAdjustedImpact <= maxSlippage;
     if (!riskCheck.slippage_ok) setFailed('SLIPPAGE_TOO_HIGH');
 
   } catch (err) {

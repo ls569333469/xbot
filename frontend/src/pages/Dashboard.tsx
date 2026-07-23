@@ -7,6 +7,7 @@ import { ProgressBar } from '../components/ui/ProgressBar';
 import { CardSkeleton, Skeleton } from '../components/ui/Skeleton';
 import { Activity, DollarSign, Target, TrendingUp } from 'lucide-react';
 import { TradeSignal } from '../lib/types';
+import { signalTypeLabel } from '../lib/display-labels';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({ signalsToday: 0, tradesToday: 0, activePositions: 0, totalPnl: 0 });
@@ -124,7 +125,7 @@ export default function Dashboard() {
           <div className="text-2xl font-bold">{stats.activePositions}</div>
         </div>
         <div className="card flex flex-col gap-sm">
-          <div className="text-secondary text-sm flex items-center gap-xs"><DollarSign size={16} /> 总 PnL (USD)</div>
+          <div className="text-secondary text-sm flex items-center gap-xs"><DollarSign size={16} /> 累计盈亏（美元）</div>
           <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-success' : 'text-danger'}`}>
             {stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}
           </div>
@@ -157,7 +158,7 @@ export default function Dashboard() {
                   <ChainIcon chain={(sig as any).chain_id || 'sol'} size="sm" />
                   <div className="flex flex-col">
                     <span className="font-semibold text-sm">@{sig.kol_handle}</span>
-                    <span className="text-xs text-secondary">{sig.project_name || (sig as any).symbol || 'Unknown'} — {(sig as any).signal_type || sig.type}</span>
+                    <span className="text-xs text-secondary">{sig.project_name || (sig as any).symbol || '未知项目'} · {signalTypeLabel((sig as any).signal_type || sig.type)}</span>
                   </div>
                 </div>
                 <StatusBadge status={sig.status} />

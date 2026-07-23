@@ -1,25 +1,6 @@
-import React, { createContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
-
-type WebSocketStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
-
-interface WsEvent {
-  type: string;
-  payload: any;
-}
-
-interface WebSocketContextType {
-  status: WebSocketStatus;
-  lastEvent: WsEvent | null;
-  isConnected: boolean;
-  send: (type: string, payload: any) => void;
-}
-
-export const WebSocketContext = createContext<WebSocketContextType>({
-  status: 'disconnected',
-  lastEvent: null,
-  isConnected: false,
-  send: () => {},
-});
+import React, { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { getAuthToken } from '../lib/api';
+import { WebSocketContext, WebSocketStatus, WsEvent } from './WebSocketContext';
 
 export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<WebSocketStatus>('disconnected');
@@ -30,8 +11,15 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   const connect = useCallback(() => {
     try {
+      const authToken = getAuthToken();
+      if (!authToken) {
+        setStatus('disconnected');
+        return;
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const token = encodeURIComponent(authToken);
+      const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`;
       setStatus('connecting');
       const ws = new WebSocket(wsUrl);
 
