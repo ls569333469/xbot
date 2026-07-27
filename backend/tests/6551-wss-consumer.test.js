@@ -123,6 +123,33 @@ test('WSS consumer remains non-connected when another instance owns the lock', a
   }
 });
 
+test('WSS consumer retries pending inbox events while the process remains running', async () => {
+  const restore = with6551Env();
+  FakeWebSocket.instances = [];
+  let recoveries = 0;
+  const consumer = new X6551WssConsumer({
+    WebSocketImpl: FakeWebSocket,
+    db: fakeDb(true),
+    logger: { error: () => {} },
+    clientFactory: () => ({}),
+    pendingResumeIntervalMs: 5,
+    resume: async () => {
+      recoveries += 1;
+      return { processed: 0, failed: 0 };
+    }
+  });
+
+  try {
+    await consumer.start();
+    await new Promise((resolve) => setTimeout(resolve, 18));
+    assert.ok(recoveries >= 2);
+    assert.equal(consumer.getStatus().pendingResumeIntervalMs, 5);
+  } finally {
+    await consumer.stop();
+    restore();
+  }
+});
+
 test('WSS consumer raises one circuit alert after repeated reconnect failures', async () => {
   const errors = [];
   const consumer = new X6551WssConsumer({

@@ -4,7 +4,7 @@ const service = require('./service');
 
 router.get('/', async (req, res) => {
   try {
-    const kols = await service.getKols();
+    const kols = await service.getKols(req.query);
     res.json({ ok: true, data: kols });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, code: 'INTERNAL_ERROR' });
@@ -38,10 +38,24 @@ router.patch('/:id/toggle', async (req, res) => {
   }
 });
 
+router.post('/:id/profile/retry', async (req, res) => {
+  try {
+    const kol = await service.retryKolProfile(req.params.id);
+    res.json({ ok: true, data: kol });
+  } catch (err) {
+    const notFound = err.message === 'KOL account not found';
+    res.status(notFound ? 404 : 400).json({
+      ok: false,
+      error: err.message,
+      code: notFound ? 'NOT_FOUND' : 'BAD_REQUEST'
+    });
+  }
+});
+
 router.delete('/:id', async (req, res) => {
   try {
-    await service.deleteKol(req.params.id);
-    res.json({ ok: true, data: { success: true } });
+    const result = await service.deleteKol(req.params.id);
+    res.json({ ok: true, data: { success: true, ...result } });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, code: 'INTERNAL_ERROR' });
   }

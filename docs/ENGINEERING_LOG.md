@@ -15,7 +15,7 @@
 | **Phase 4** | 系统加固、CSV 导出与热重启 | **DONE** | 2026-07-19 | `.env` 安全掩码读写、touch 自动重载、Excel-BOM CSV 导出、`check-env` 启动自检跑通。 |
 | **Phase 5** | X 真实数据对接与 TG 机器人集成 | **DONE** | 2026-07-19 | SocialData API 真实时间线/关注扫描通过；Telegram 消息异步 HTML 卡片推送通过。 |
 
-> **2026-07-22 状态校正**：上表中的 `DONE` 表示原型功能代码与页面已经形成，不表示真实 Provider、Paper 或 Live 已通过持续运行验收。当前项目状态以 P6/P8/P9.1 为准：P8 负责 6551 实时信号验收，P9.1 负责 GMGN 托管钱包交易状态机、限流、对账、平仓和逐链小额 Live 灰度；两者分别验收，当前自动实盘继续冻结。
+> **2026-07-27 状态校正**：上表是早期原型阶段记录，不代表当前运行状态。P12-P16 已完成迁移演练与自动化回归；P17 Migration 024-025 已应用到当前数据库，后端已加载新代码，白名单热激活、临时故障恢复、紧凑启动与本地 DOM 验收已完成。生产环境仍需受控执行 P17 热添加、6551 可控断线恢复和用户确认后的 prepare/confirm。易变化的 Engine、`live_policy`、余额和 Provider 状态必须实时查询，不能从本日志推断。
 
 ---
 
@@ -25,7 +25,8 @@
 
 ```text
 D:\Axiangmu\xbot\docs\
-├── ENGINEERING_LOG.md                          # 本日志：项目状态与变更跟踪总览
+├── README.md                                   # 唯一当前文档入口与 Active Plan 索引
+├── ENGINEERING_LOG.md                          # 本日志：历史事实与变更时间线
 └── 00_系统架构与全局设计\
     ├── PRD-MEME右侧交易系统.md                 # P0: 核心需求与风控设计文档 v1.2
     ├── P1_handover_report.md                    # P1: Phase 1 交接与开发指南
@@ -35,8 +36,19 @@ D:\Axiangmu\xbot\docs\
     ├── P5_audit_and_fix_report.md               # P5: 全链路审查与修复报告（降级/模拟方案全览）
     ├── P6_real_operation_iteration_plan.md      # P6: 从原型到真实运行的长期执行基线
     ├── P7_twitterapi_signal_mvp_execution_plan.md # P7: TwitterAPI.io 实现与前期验收记录
-    ├── P8_6551_max_realtime_signal_execution_plan.md # P8: 当前 6551 Max 实时信号执行方案
-    └── P9_gmgn_live_trading_execution_plan.md       # P9.1: 多链 GMGN 实盘、Fast Path 与限流方案
+    ├── P8_6551_max_realtime_signal_execution_plan.md # P8: 6551 Max 历史实施与验收记录
+    ├── P9_gmgn_live_trading_execution_plan.md       # P9.1: GMGN 实盘内核历史设计与实现证据
+    ├── P10_real_trading_launch_gap_closure_plan.md  # P10: Readiness/进程守护历史收口记录
+    ├── P11_final_live_trading_execution_plan.md     # P11: 四链真实交易验收记录
+    ├── P12_definitive_failure_retry_and_four_chain_validation_plan.md # P12 资金状态机与 Robinhood 接入设计证据
+    ├── P13_whitelist_owned_configuration_convergence_plan.md # P13 配置收敛实施证据
+    ├── P14_p13_acceptance_robinhood_live_and_release_closure_plan.md # 当前唯一 Active Plan
+    ├── P15_frontend_information_architecture_convergence_plan.md # P15 前端信息架构收敛实施证据
+    ├── P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md # P16 实现与剩余验收基线
+    ├── P16_1_prelaunch_project_monitor_plan.md  # P16.1 未发币监控与固定 CA 触发纠偏
+    ├── P17_whitelist_hot_activation_transient_recovery_and_compact_arm_plan.md # P17 当前发布与生产验收方案
+    ├── maintenance_tool_registry.md               # 后台维护工具长期唯一登记表
+    └── xbot-system-link-map.html                    # 当前系统架构与交易链路图
 ```
 
 - **P0**：[PRD-MEME右侧交易系统.md](./00_系统架构与全局设计/PRD-MEME右侧交易系统.md)
@@ -49,20 +61,32 @@ D:\Axiangmu\xbot\docs\
 - **P7**：[P7_twitterapi_signal_mvp_execution_plan.md](./00_系统架构与全局设计/P7_twitterapi_signal_mvp_execution_plan.md)
 - **P8**：[P8_6551_max_realtime_signal_execution_plan.md](./00_系统架构与全局设计/P8_6551_max_realtime_signal_execution_plan.md)
 - **P9**：[P9_gmgn_live_trading_execution_plan.md](./00_系统架构与全局设计/P9_gmgn_live_trading_execution_plan.md)
+- **P10**：[P10_real_trading_launch_gap_closure_plan.md](./00_系统架构与全局设计/P10_real_trading_launch_gap_closure_plan.md)
+- **P11**：[P11_final_live_trading_execution_plan.md](./00_系统架构与全局设计/P11_final_live_trading_execution_plan.md)
+- **P12**：[P12_definitive_failure_retry_and_four_chain_validation_plan.md](./00_系统架构与全局设计/P12_definitive_failure_retry_and_four_chain_validation_plan.md)
+- **P13**：[P13_whitelist_owned_configuration_convergence_plan.md](./00_系统架构与全局设计/P13_whitelist_owned_configuration_convergence_plan.md)
+- **P14 Active**：[P14_p13_acceptance_robinhood_live_and_release_closure_plan.md](./00_系统架构与全局设计/P14_p13_acceptance_robinhood_live_and_release_closure_plan.md)
+- **P15 已完成**：[P15_frontend_information_architecture_convergence_plan.md](./00_系统架构与全局设计/P15_frontend_information_architecture_convergence_plan.md)
+- **P16 实现与验收**：[P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md](./00_系统架构与全局设计/P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md)
+- **P16.1 已实现，待真实事件验收**：[P16_1_prelaunch_project_monitor_plan.md](./00_系统架构与全局设计/P16_1_prelaunch_project_monitor_plan.md)
+- **P17 当前发布与生产验收**：[P17_whitelist_hot_activation_transient_recovery_and_compact_arm_plan.md](./00_系统架构与全局设计/P17_whitelist_hot_activation_transient_recovery_and_compact_arm_plan.md)
+- **维护工具登记表**：[maintenance_tool_registry.md](./00_系统架构与全局设计/maintenance_tool_registry.md)
+- **架构图**：[xbot-system-link-map.html](./00_系统架构与全局设计/xbot-system-link-map.html)
 
 ---
 
 ## 3. 数据库架构当前状态 (Database Schema Status)
 
-当前 PostgreSQL `xbot` 数据库表结构均已完成物理加固，核心表清单：
-1.  **`ca_whitelist`**：白名单规则，包含每日最大买入次数及止盈/止损线。
-2.  **`x_kol_accounts`**：KOL 推特监控账号及权重。
-3.  **`x_activities`**：采集到的推文与关注变更流。
-4.  **`trade_signals`**：匹配生成的待交易信号（通过唯一约束防重：`UNIQUE(activity_id, whitelist_id, signal_type)`）。
-5.  **`positions`**：实盘/模拟持仓表。
-    *   *加固字段*：`sim_peaks` (JSONB, 用于记录纸交易/实盘波动最高点与最高亏损)；`sell_tx_hash` (TEXT, 记录出场链上哈希)。
-6.  **`budget_tracking`**：链级每日限额追踪表，包含并发事务锁定隔离。
-7.  **`system_configs`**：存放风控规则阈值等配置。
+当前 PostgreSQL `xbot` 的核心数据边界：
+
+1. 信号域：`x_provider_events`、`x_activities`、`trade_signals`、`x_signal_relations`、`ca_whitelist`、`x_kol_accounts`。
+2. 交易提交域：`trade_attempts`、`trade_orders`、`trade_attempt_events`、`prepare_tokens`。
+3. 仓位与策略域：`positions`、`position_lots`、`strategy_groups`、`strategy_legs`。
+4. 链上证据域：`chain_receipts`、`chain_readiness_evidence`。
+5. 预算域：`budget_reservations`、`budget_ledger`；旧 `budget_tracking` 仅用于兼容历史结构。
+6. 运行治理：`config`、`trade_runtime_state`、`service_heartbeats`、`provider_rate_events`、`notification_outbox`。
+7. P12-P16 已新增：`trade_intents`、失败证据、重试决策、Wallet Write Lane、链级熔断、关系事件、Watch Sync Outbox、投研与未发币监控结构。
+8. P17 已新增：`whitelist_activation_outbox`、白名单激活版本/状态、`arm_preparations` 及启动失败证据；专用测试库和当前数据库均已验证 Migration 000-025，生产升级备份与回滚点已形成。
 
 ---
 
@@ -79,6 +103,124 @@ D:\Axiangmu\xbot\docs\
 ---
 
 ## 5. 最近变更记录 (Recent Engineering Updates)
+
+*   **2026-07-26 (P16.1 未发币项目监控与固定 CA 触发纠偏)**:
+    - 将已知 CA 与未发币项目拆成两条独立链路：固定 CA 的项目账号只保留身份或生态互动目标，只有生态账号行为可触发当前 CA；未发币监控不预填 CA，由项目来源或可选生态互动事件发现首个唯一有效 CA。
+    - 新增 Migration 020、Launch Monitor CRUD/状态/Watch Impact、6551 Launch Matcher、Discovery 审计、同链同 CA 锁和原子白名单/Signal 物化；无 CA、多 CA、链格式错误和重复事件均失败关闭。
+    - 历史固定 CA Project Direct Source 共 16 条已停用并保留身份；Migration 没有创建 Launch Rule、Signal、订单或远端 Watch 写入，已有交易证据不变。
+    - 白名单页新增 `已知 CA / 未发币监控` 双入口和三步未发币工作区；桌面与 `390x844` DOM 验收通过，无 CA 输入或横向溢出。固定 CA 工作区明确不因项目账号自己的动态买入。
+    - 修复旧数据或热更新状态缺少 `event_types` 时账号规则组件可能渲染失败的问题，固定 CA 与未发币表单统一归一化事件数组。
+    - 后续白名单实测修复三处交互：研究候选的身份选择与候选删除拆分；生态账号建议支持关闭按钮、`Esc` 和点击外部关闭；Grok `display_name/role/association/confidence` 完整进入证据快照并显示在项目身份行。
+    - 最终验证：后端单元测试 `213/213`，独立 `xbot_test` 数据库 Migration 000-020 与集成测试 `27/27`，前端 lint/build、桌面与 `390x844` DOM、`git diff --check` 通过。
+    - 本轮没有保存真实未发币监控、同步 6551 Watch、启动 Engine 或发起交易；唯一剩余验收是用户选定真实项目账号、链、模板和金额后的首条真实未发币事件闭环。
+
+*   **2026-07-25 (P16 高级策略、白名单模板与快速投研方案及实施)**:
+    - 初始审计确认现有 GMGN Token Info、1 小时 Token 缓存、权重调度、6551 Profile Client、白名单多对多关系和 Strategy Group/Leg 可以复用；当时缺少模板、研究报告、6551 Tweets/Search/KOL Followers 封装和 Grok Client。
+    - 新增 P16 方案，统一规划多段固定/移动止盈止损、白名单模板与复制、链 + CA 自动补全，以及 Robinhood 在内的 GMGN + 6551 快速投研助手。
+    - 复核 GMGN 官方语义：`profit_stop.price_scale=100` 为上涨 100%，`loss_stop.price_scale=20` 为下跌 20%；当前简单策略语义正确，P16 将其固化为 Strategy Compiler 契约测试。
+    - 投研结果严格区分 Project Target、Founder/CEO/Team 候选和高影响力 Actor；所有候选必须展示证据与置信等级，只能生成白名单草稿，不能自动保存、同步 Watch 或触发交易。
+    - Grok/xAI 定位为可选第二阶段；MVP 使用 GMGN + 6551 即可完整工作。正式前端更新前必须先交付独立 HTML 原型供用户审核。
+    - 补充 GMGN 无官方 X 的回退链路：先由 6551 精确搜索完整 CA，结果为空或冲突时由用户主动调用具备实时 X/Web 搜索能力的 Grok，再用 6551 回查候选；没有直接来源的结果始终保持“待确认”。
+    - 复核现有关系模型发现 Actor/Target 强制不同且 Target 必填，无法正确表达项目官方账号直接发帖；P16 补充多项目身份账号、无 Target 的 Direct Source Rule，以及链负责人/产品经理/发射平台/KOL Actor 到项目账号的 Interaction Relation。
+    - 将现有 `x_kol_accounts` 历史下拉记录纳入 P16 生态高权重账号库：保留历史账号，新增组织/角色备注、来源、证据、置信度、收藏和使用次数；推荐候选与 6551 Watch 分离，并用分页搜索替代一次加载全部账号。
+    - 明确 6551 成本按唯一 Actor Watch 和事件并集增长，不按 CA 关系数重复：同一批 10 个 Actor 关联 100 个 CA 仍只有 10 个远端 Watch；P16 保存前增加复用/新增 Watch、事件扩展和月度消息投影摘要。
+    - 根据对话结果收敛 P16：确认每链默认模板、投研一键生成草稿、多项目账号与生态 Actor、历史账号库、全局 Watch 去重和 GMGN 无 X 的 Grok 回退；剩余决策只有策略预设比例、具体 xAI 模型/预算和 HTML 原型审核。
+    - 原型阶段先将标准 `XAI_API_KEY` 加入 `.env.example`、Settings API 允许列表和密钥掩码；仅确认掩码状态，未读取或记录真实值，该阶段尚未新增 Grok Client 或发起 xAI 请求。
+    - 二次复核补充同链同 CA 合并、Direct Source/Interaction 事件语义拆分、专用创建工作区、事务 + Watch Outbox 原子边界和 Grok 去重/费用审计；独立交互原型为 `xbot-p16-whitelist-research-preview.html`。
+    - 原型阶段的首轮生产改动仅增加 `XAI_API_KEY` 环境读写、允许列表与密钥掩码保护；Grok Client 与投研业务逻辑在后续实施轮次完成。
+    - 根据原型审核反馈完成信息架构 V2：新增白名单收敛为“代币与模板、X 触发账号、资金与离场、确认保存”四步任务流；快速投研改为独立入口，研究结果仅回填草稿并返回账号步骤，右侧只保留进度而不重复表单。
+    - 完成 Migration 017、旧 TP/SL 等价迁移、历史 Tweet Signal 证据迁移、版本化离场策略 Compiler、模板 CRUD、Direct Source、项目身份账号、账号库和 Watch 影响预览；Migration 不写远端 Watch，旧成交、仓位、Attempt 和 Order 保持不变。
+    - 完成 GMGN Metadata/Security/Pool 快速投研、6551 官方账号 Profile 核验、可选 `grok-4.5 + x_search` 严格结构化扩展、单个/批量研究和一键生成白名单草稿；外部文本统一清洗，私网/文件 URL 被拒绝，研究结果不能自动保存或触发交易。
+    - 正式数据库已应用 Migration 017；后端测试 `191/191`、独立数据库集成测试 `21/21`、P16 历史迁移演练、前端 build/lint 与正式 Schema Audit 均通过。桌面和 `390x844` 移动端完成列表、四步编辑、Direct Source、Interaction、策略和单个/批量投研只读验收，无横向溢出或控制台错误。
+    - Supervisor 已安全拉起新代码，Engine 恢复既有 `desired_running=true / status=running` 意图；本轮没有保存白名单、修改 Watch、切换实盘参数或发起真实交易写请求。
+    - 剩余 P16 工作仅按方案未勾选项执行：真实 GMGN/6551 只读契约、6551 Search/KOL 推荐、xAI 缓存与费用审计、消息投影摘要、Grok 候选回查，以及一笔用户确认金额的新策略真实 Buy/条件单/取消/Close。
+    - 2026-07-26 实施后审计修复模板事件未应用、研究证据未随草稿保存、切换 CA 残留账号上下文、跨链复制配置、账号置信度可被降级、输入校验不完整和私网 IPv6 URL 漏检；单元测试增至 `195/195`。
+    - 清理无引用的旧 P15 设置页 HTML 原型。P16 原型、Migration 演练和现有测试均有明确设计或回归用途，继续保留。
+    - P16 最终复查新增 Migration 019，补齐研究任务取消、刷新恢复、并发上限、GMGN 报告复用、xAI Token 用量审计、候选关联说明及 6551 完整 CA Search 核验；失败项重试不再重复执行 GMGN 基础扫描。
+    - 最终本地验证为后端单元测试 `204/204`、独立数据库集成测试 `23/23`、Migration 017 -> 018 -> 019 隔离演练、前端 lint/build 和桌面/`390x844` DOM 全部通过；迁移未改写 Position、Trade Attempt、Trade Order 或 Watch Outbox。
+    - 本轮未触发真实 Grok、真实 Provider 契约探针或资金交易。最低实盘 Migration 已提升至 019，升级前的最终批准必须在恢复自动交易前重新执行。
+
+*   **2026-07-25 (维护工具退出日常前端并建立长期登记)**:
+    - 从设置页移除 Robinhood 只读诊断、30 分钟限时验收、结束验收和生产批准操作；同时删除无消费者的前端验收 API 包装，后端路由、门禁、Migration 和测试保持不变。
+    - 新增 `maintenance_tool_registry.md`，登记新链验收、6551 Watch 补偿、钱包隔离解除、链熔断重置、环境热重载、告警测试、测试库和审计脚本的唯一入口、前提、副作用和前端策略。
+    - 核心 PRD 与开发规范明确：维护工具默认 Backend/CLI only；只有真实生产异常可显示条件式恢复入口；前端不可见不等于死代码。
+    - Robinhood 已生产批准，限时验收当前未开启；本轮未修改任何后端验收状态、Engine、白名单、重试开关或资金参数。
+
+*   **2026-07-25 (P15 前端信息架构与配置收敛)**:
+    - 设置页收敛为“交易 / 运行状态 / 系统维护”三个任务视图；默认交易视图只保留真实交易启停、统一失败重试开关和白名单派生范围摘要。
+    - 删除逐链失败重试表单，新增统一重试策略 API；用户只决定是否允许明确未成交后的重试，链级次数、窗口、费用上限和 Gas 保留由后端 Chain Manifest 统一派生。
+    - GMGN、6551 运行指标移入运行状态并默认折叠诊断；Robinhood 验收、API、RPC 和数据库配置移入系统维护；重复 CA 列表改为白名单管理入口。
+    - 后端完整测试 `179/179`、前端 production build、Lint 与 `git diff --check` 通过；桌面端和 `390x844` 移动端三个视图无横向溢出、控件裁切或重叠，页面重载后无新增控制台错误。
+    - 现有 Supervisor 已重新拉起 ingestion/execution 进程加载新代码；Engine 仍为 stopped，五链失败重试仍全部关闭，本轮未修改任何实盘参数或执行资金写操作。
+
+*   **2026-07-25 (P14 证据门禁与 Robinhood 接入复核)**:
+    - 将 Contract Probe、Trade Intent、Retry Audit、Shadow 和 `manual_e2e` 统一到内容寻址代码版本；显式发布版本也附带源码哈希，代码变化后旧验收证据自动失效。
+    - Contract Probe 上下文新增白名单资金参数、TP/SL、滑点、次数、到期时间及 Actor/Project/Event 关系；真实 Buy 创建 Attempt 前再次比对作用域上下文，验收中修改配置不能沿用旧证据。
+    - 修复 Robinhood 未纳入 EVM CA 地址小写规范化与大小写无关查重的问题，防止同一 CA 重复创建或关系合并失败。
+    - 新增严格校验生产库名称的测试库 `recreate/drop` 管理脚本；独立数据库集成测试 `21/21`、Migration 013-016 历史演练、后端 `173/173`、前端 lint/build 全部通过，两座临时测试库均已删除。
+    - 当前后端与前端已恢复运行，Engine 为 stopped；Robinhood 仍无白名单、费用预留和最低 Gas 保留，钱包上次核验为 `0 ETH`，未开启验收作用域，未调用任何 Swap/Strategy 写接口。
+
+*   **2026-07-24 (P14 P13 验收、Robinhood 实盘与生产收尾方案)**:
+    - 新增 P14 作为唯一 Active Plan，接管 P13 专用测试库与生产行为验收、Robinhood 首次只读接入和真实自动 Buy/Close、四链更新后回归、逐链 Retry 与发布收尾。
+    - 当前复核：Migration 013-015 已应用；后端单元测试 `161/161`、前端 production build 通过；无未决 Intent、无 Wallet Quarantine，五链 Circuit 均为 open，6551 WSS 心跳为 subscribed，Engine 为 stopped。
+    - Robinhood 已有 Chain Manifest、数据库链约束、GMGN 只读和 EVM Receipt 基础，但缺少 `ROBINHOOD_RPC_URL`、钱包资金、Active 白名单、Contract Probe 和真实 Buy/Close 证据；同时确认 Readiness 只探测 Execution Chains，存在首次接入循环门禁。
+    - 代码盘查发现 P13 已移除普通链 `enabled` 配置，但 Buy/Close Retry 仍检查 `chainConfig.enabled`，会导致启用 Retry 后仍被拒绝；列为 P14-A0 发布前 P0 修复。
+
+*   **2026-07-24 (P14 门禁与 Robinhood 验收代码实施)**:
+    - Migration 016 已应用，将代码能力、Contract Probe、限时验收作用域和生产批准拆成四层；Robinhood 代码能力标记为已接入，但生产批准继续关闭。
+    - Live Policy 在正常状态只接受 `live_enabled=true` 链；限时验收存在时全系统只允许指定的一条白名单，作用域过期后保持空策略，不能自动恢复四链。
+    - 新增 Robinhood 定向只读诊断，覆盖 Wallet、RPC、Token/Pool/Security/Quote 和 Strategy 查询；证据绑定代码版本、配置上下文、CA 和有效期，钱包仅保存哈希引用。
+    - `manual_e2e` 不再因 Sell confirmed 自动通过，改为核验完整 Buy/Close、Receipt、Position/Lot、Strategy 和 Budget/Ledger；生产批准必须绑定同一次已完成验收和当前上下文。
+    - Buy/Sell Retry 移除旧 `chainConfig.enabled` 依赖；Buy Retry 仍要求 Engine armed，Sell Retry 可在停止新买入时继续退出仓位。
+    - 设置页新增 Robinhood 中文验收区，提供只读诊断、30 分钟验收、结束验收和生产批准四个明确动作；这些按钮不会自动启动 Engine。
+    - 自动化验证通过：后端 `166/166`，前端 lint 与 production build 通过。此结果只证明代码契约，不代表 Robinhood 已完成真实 Buy/Close。
+    - 本轮只编制和复核方案，没有修改 Engine、链门禁或调用任何资金写接口。
+
+*   **2026-07-24 (P14 Robinhood 只读网络与配置补漏)**:
+    - 从 Robinhood 官方文档确认主网 `chainId=4663`，Public RPC 为 `https://rpc.mainnet.chain.robinhood.com`；官方明确该端点限流且不建议生产，XBOT 仅将其用于首次 Contract Probe/小额验收，正式批准前仍需稳定 Provider RPC。
+    - 实测官方 RPC 返回 `0x1237`、最新区块约 3 秒新鲜、连续响应约 330-520ms 且区块持续增长；GMGN 推荐高档 Gas 约 `0.338408 gwei`。
+    - GMGN Robinhood 钱包链上余额经官方 RPC 只读核对为 `0 ETH`，因此未开启验收作用域、未启动 Engine、未调用 Swap 或 Strategy 写接口。
+    - 修复 P14 配置遗漏：设置 API、`.env.example` 和前端支持 Robinhood 最大费用预留与最低 Gas 保留；开启限时验收前强制要求 RPC 和两项正数配置，设置页显示 RPC、费用、Gas、余额和白名单状态。
+    - 移除逐链费用预留的隐藏默认值；所有链 Readiness 和执行准备均要求显式正数配置，缺失时明确返回费用/Gas 配置阻断，不再产生前后端口径漂移。
+    - 自动化验证：后端 `168/168`，前端 lint/build 通过；真实 Contract Probe 仍需充值、真实白名单及关系后执行。
+
+*   **2026-07-24 (P14 独立数据库验收)**:
+    - 新建隔离测试库安装 Migration 000-016 后，数据库集成测试 `21/21` 通过；测试发现旧预算 fixture 假设新库链天然获批并期待已删除链预算，已改为测试显式批准 SOL 且只断言白名单本金/费用语义，未放宽生产门禁。
+    - Migration 演练扩展至 013-016：13 张历史业务表字段/行数保持不变，历史 Attempt/Intent、预算/Ledger、八张 Robinhood CHECK、P13 Watch Outbox/关系事件、P14 Evidence Context/Acceptance Scope 全部通过，Outbox 行数 `1 -> 1`。
+    - 两座临时测试库均已删除；生产库未执行故障注入或测试 fixture 写入。
+
+*   **2026-07-24 (P12 本地复核、错误修复与生成物清理)**:
+    - 本地源码已包含 P12-A/P12-B 交易内核，但当前业务数据库仍停在 Migration 012，`trade_intents`/`wallet_write_lanes` 尚不存在；运行中的旧后端未重启，避免在没有新备份时自动应用 013。
+    - 当前 Engine 为 `fault_protected`、`armed=false`，没有未平 Live Position；6551 心跳正常。历史 ETH Sell Attempt `#119` 已 confirmed，旧日志中的 `CHAIN_NATIVE_PROCEEDS_UNVERIFIED` 是成交确认前的历史告警，不是当前未决订单。
+    - 修复前端滚动升级兼容问题：缺少 P12 链配置字段时不再向数值输入框传入 `NaN`；Position 列表 Schema Drift 检查不再误判平仓子接口；API 对 HTML/空响应返回清晰错误，不再直接抛出 JSON 解析异常。
+    - 源码无完全重复文件，P12 新模块均被生产入口引用；Paper、TwitterAPI.io、SocialData、Shadow、Robinhood UI 和测试资产按可达性清单保留。
+    - 删除停止进程留下的旧 Supervisor/ingestion/execution/Codex 前端日志和可重建的 `frontend/dist`；运行中服务占用的四个日志、数据库备份、PEM、`.env` 与依赖目录保留。
+    - 验证通过：后端单元测试 `146/146`、独立数据库集成测试 `21/21`、Migration 013 历史回填演练、前端 oxlint/TypeScript/production build。测试库和构建产物在验收后已删除。
+
+*   **2026-07-23 (P12 独立数据库迁移与集成验收)**:
+    - 新建独立测试库实际执行 Migration 001-013；数据库集成测试 `21/21` 通过，覆盖 6551 去重、关系匹配、Readiness、预算并发、部分平仓、Strategy 竞态与双 Retry Worker `SKIP LOCKED` 领取。
+    - 集成测试发现并修复 `trade-intent-repository.js` 中 `next_retry_at` 的 PostgreSQL `timestamptz/text` CASE 类型冲突；修复后完整集成套件通过。
+    - 新增 `npm.cmd run test:migration:p12`：只接受名称含 `test` 的空数据库，构造 013 前历史交易图并核对 13 张业务表、Intent 回填、预算/Ledger 关联、Outbox 和八张 Robinhood 链 CHECK。
+    - Migration 013 历史演练结果：1 条历史 Attempt 对应 1 条 Intent，13 张表旧字段和行数未变化，Outbox `1 -> 1`，八张 Robinhood 链约束全部生效。
+    - 本轮未读取密钥、未调用 GMGN Swap/Strategy、未启动后端，也未修改生产数据库；生产 Migration、四链更新后真实 Buy/Close、逐链重试开放仍未执行。
+
+*   **2026-07-23 (P12 交易可靠性内核代码实施，生产验收未完成)**:
+    - 新增 Trade Intent、多 Attempt、稳定 `source_key`、活动 `scope_key`、失败证据、Retry Decision、Terminal Audit、Late Confirmation 和 Multiple Fill 事故处理。
+    - GMGN Swap/Strategy 写请求继续保持 HTTP 零自动重试；只有 `definitive_failed_no_fill` 可调度下一 Attempt，timeout、5xx、429、非 JSON 和缺 Order ID 均保持 `uncertain` 或阻断。
+    - 新增同链同钱包 Wallet Write Lane/Quarantine 与链级连续失败熔断；钱包隔离只阻断对应链钱包，链熔断只阻断故障链新 Buy，人工解除必须记录操作者、原因和证据。
+    - Chain Manifest 统一四链和 Robinhood 的链参数、交易默认值、Receipt/费用能力；Robinhood 已改为 `chainId=4663`、Gas 币 ETH，但 `enabled=false`、`retryEnabled=false`、`executionImplemented=false`。
+    - 前端设置、信号、仓位和交易记录已显示 Intent/Attempt、重试剩余次数、失败证据、费用信封、钱包隔离和链熔断，并提供带审计原因的人工处置入口。
+    - 代码复核补齐历史 Signal 来源键回填、重复 Signal 终态恢复、Provider 首响应失败进入证据队列、无 Hash 观察期钱包隔离、目标链独立 Readiness 和进程中断前置 Attempt 恢复。
+    - 离线验证通过：后端 `146/146`、前端 oxlint、TypeScript 与 production build、`132` 个 JavaScript 文件语法检查和 `git diff --check`。
+    - 该阶段仅完成代码和离线自动化验证；后续独立测试库 Migration 已通过，但四链更新后真实 Buy/Close 回归、生产指标告警和 Robinhood 真实闭环仍未完成，不能宣称 P12 全部完成。
+
+*   **2026-07-23 (P12 统一迭代方案重排与 Robinhood 只读契约确认)**:
+    - 生产数据库重新核对：SOL `4/4`、BSC `2/2`、Base `1/1`、ETH `1/1` 真实 Buy/Sell Attempt 均 confirmed，对应 Receipt 共 `16` 条 confirmed，四链 Live Position 全部 closed。
+    - 原 P12 中“Base 尚未平仓、ETH 尚未测试”的状态已作废；P12 重排为 A 架构与文档治理、B 明确失败重试、C Robinhood 接入、D 稳定与受控清理。
+    - Robinhood 官方链参数确认为 Arbitrum EVM L2、`chainId=4663`、Gas 币 ETH；GMGN Wallet、Gas、Trenches、Token、Security、Pool、Quote 和 Strategy List 只读请求均成功。
+    - Robinhood 钱包当前余额为 `0 ETH`，未调用 Swap 或其他资金写接口；代码仍保持禁用，真实接入必须经过最小 Buy/Close 和 RPC Receipt 验收。
+    - 架构图纠正 Robinhood 的建模：它是 GMGN Provider 下的 EVM Chain Manifest，不是 Robinhood Provider；Binance 不能替代 Robinhood CA 交易。
+    - 新增 `docs/README.md` 作为唯一当前文档入口；P9-P11 保留为历史证据，不再作为并行 Active Plan。
 
 *   **2026-07-22 (P9.1 严格实施完成，保持资金门禁关闭)**:
     - 完成 GMGN `/v1` Client、严格 Adapter、14 weight/s 全 Key Scheduler、四链 Execution、Attempt/Order/Strategy/Lot/Receipt/Budget、Always-on Reconciler、安全 Close、Readiness 和前端控制台的 P9.1 代码更新。

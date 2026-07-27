@@ -14,8 +14,17 @@ const { loadCachedContext, requiredCacheKeys } = require('./fast-path-context');
 const { cacheWarmer } = require('../../jobs/gmgn-cache-warmup');
 const { latestHeartbeat } = require('../../lib/service-heartbeat');
 const { probeRpc } = require('./chain-receipt-service');
+const { CHAIN_REGISTRY } = require('../../lib/chain-config');
+const { tradeRetryOrchestrator } = require('./trade-retry-orchestrator');
+const liveApproval = require('./live-approval-service');
 
-const REQUIRED_MIGRATION = '012_shadow_run_sessions.sql';
+const REQUIRED_MIGRATION = '025_p17_arm_failure_observability.sql';
+const TRANSIENT_BLOCKERS = new Set([
+  'X_6551_INGESTION_UNHEALTHY',
+  'GMGN_SCHEDULER_NOT_HEALTHY',
+  'GMGN_TRADE_WEIGHT_UNAVAILABLE',
+  'GMGN_RECENT_429'
+]);
 
 function schedulerReadiness(status) {
   const blockers = [];
@@ -29,7 +38,7 @@ function schedulerReadiness(status) {
   if (status.state === 'queued') advisories.push('GMGN_SCHEDULER_BUSY');
   return { blockers, advisories };
 }
-const CHAINS = ['sol', 'bsc', 'base', 'eth'];
+const CHAINS = Object.keys(CHAIN_REGISTRY);
 
 function enabled(value) {
   return String(value || 'false').toLowerCase() === 'true';
@@ -124,11 +133,18 @@ async function probeChains(policy, rows) {
       };
       await db.query(
         `UPDATE chain_live_readiness
-         SET implemented = true, wallet_address = $2, balances_json = $3,
+             SET implemented = CASE WHEN $5 THEN true ELSE implemented END,
+                 wallet_address = $2, balances_json = $3,
              native_balance = $4, last_error = NULL,
              last_checked_at = NOW(), updated_at = NOW()
          WHERE chain = $1`,
-        [row.chain, wallet.address, jsonb(wallet.balances || []), result[row.chain].nativeBalance]
+        [
+          row.chain,
+          wallet.address,
+          jsonb(wallet.balances || []),
+          result[row.chain].nativeBalance,
+          Boolean(CHAIN_REGISTRY[row.chain]?.executionImplemented)
+        ]
       );
     } catch (error) {
       result[row.chain] = { ok: false, error: error.code || error.message };
@@ -145,7 +161,11 @@ async function probeChains(policy, rows) {
 
 async function probeContracts(whitelists) {
   const result = {};
-  for (const whitelist of whitelists) {
+  const queue = [...whitelists];
+  const worker = async () => {
+    while (queue.length > 0) {
+      const whitelist = queue.shift();
+      if (!whitelist) return;
     try {
       const context = await loadCachedContext(whitelist);
       const inputAmountRaw = decimalToRaw(whitelist.budget_per_trade, context.chain.decimals);
@@ -175,19 +195,84 @@ async function probeContracts(whitelists) {
         error: error.code || error.message
       };
     }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(4, Math.max(1, queue.length)) },
+    () => worker()
+  ));
+  return result;
+}
+
+function strategyList(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.list)) return value.list;
+  if (Array.isArray(value?.orders)) return value.orders;
+  return value && typeof value === 'object' ? [value] : [];
+}
+
+async function probeStrategies(policy, chainProbes) {
+  const result = {};
+  for (const chain of policy.chains || []) {
+    const wallet = chainProbes[chain]?.wallet;
+    if (!wallet) {
+      result[chain] = { ok: false, error: 'CHAIN_WALLET_UNAVAILABLE' };
+      continue;
+    }
+    try {
+      const response = await gmgnHttp.getStrategyOrders(chain, {
+        from_address: wallet,
+        group_tag: 'STMix',
+        type: 'open',
+        limit: 1
+      });
+      result[chain] = { ok: true, returned: strategyList(response).length };
+    } catch (error) {
+      result[chain] = { ok: false, error: error.code || error.message };
+    }
   }
   return result;
 }
 
-async function probePolicyRpcs(policy) {
+async function probePolicyRpcs(policy, chainProbes = {}) {
   const results = await Promise.all((policy.chains || []).map(async (chain) => [
     chain,
-    await probeRpc(chain)
+    await probeRpc(chain, { walletAddress: chainProbes[chain]?.wallet })
   ]));
   return Object.fromEntries(results);
 }
 
-async function persistContractProbeEvidence(policy, whitelists, probes, chainProbes, executor = db) {
+function finiteBalance(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+async function applyRpcBalanceFallback(chainProbes, rpcProbes, executor = db) {
+  for (const [chain, chainProbe] of Object.entries(chainProbes || {})) {
+    if (!chainProbe?.ok || finiteBalance(chainProbe.nativeBalance) !== null) continue;
+    const rpcBalance = finiteBalance(rpcProbes?.[chain]?.nativeBalance);
+    if (rpcBalance === null) continue;
+    chainProbe.nativeBalance = rpcBalance;
+    chainProbe.nativeBalanceSource = 'rpc';
+    await executor.query(
+      `UPDATE chain_live_readiness
+       SET native_balance = $2, last_error = NULL, last_checked_at = NOW(), updated_at = NOW()
+       WHERE chain = $1`,
+      [chain, rpcBalance]
+    );
+  }
+  return chainProbes;
+}
+
+async function persistContractProbeEvidence(
+  policy,
+  whitelists,
+  probes,
+  chainProbes,
+  executor = db,
+  options = {}
+) {
   const evidenceByChain = {};
   for (const chain of policy.chains || []) {
     const selected = whitelists.filter((whitelist) => whitelist.chain_id === chain);
@@ -198,8 +283,15 @@ async function persistContractProbeEvidence(policy, whitelists, probes, chainPro
       ...probes[whitelist.id]
     }));
     const walletProbe = chainProbes[chain] || null;
-    const passed = Boolean(walletProbe?.ok) && contractResults.every((probe) => probe.ok);
+    const rpcProbe = options.rpcProbes?.[chain] || null;
+    const strategyProbe = options.strategyProbes?.[chain] || null;
+    const passed = Boolean(walletProbe?.ok)
+      && Boolean(rpcProbe?.ok ?? true)
+      && Boolean(strategyProbe?.ok ?? true)
+      && contractResults.every((probe) => probe.ok);
+    const context = liveApproval.contractContext(chain, selected);
     const summary = {
+      observedAt: new Date().toISOString(),
       policy: {
         provider: policy.providers,
         eventTypes: policy.eventTypes,
@@ -208,10 +300,28 @@ async function persistContractProbeEvidence(policy, whitelists, probes, chainPro
       },
       wallet: walletProbe ? {
         ok: Boolean(walletProbe.ok),
-        address: walletProbe.wallet || null,
+        reference: liveApproval.walletReference(walletProbe.wallet),
         nativeBalance: walletProbe.nativeBalance ?? null,
         error: walletProbe.error || null
       } : null,
+      rpc: rpcProbe ? {
+        ok: Boolean(rpcProbe.ok),
+        identity: rpcProbe.identity || null,
+        blockRef: rpcProbe.blockRef || null,
+        error: rpcProbe.error || null
+      } : null,
+      strategy: strategyProbe ? {
+        ok: Boolean(strategyProbe.ok),
+        returned: Number(strategyProbe.returned || 0),
+        error: strategyProbe.error || null
+      } : null,
+      context: {
+        chainId: context.chainId,
+        codeVersion: context.codeVersion,
+        migration: context.migration,
+        rpcUrlHash: context.environment.rpcUrlHash,
+        configurationFingerprint: options.configurationFingerprint || null
+      },
       contracts: contractResults
     };
     const evidenceHash = hashSnapshot({
@@ -223,10 +333,11 @@ async function persistContractProbeEvidence(policy, whitelists, probes, chainPro
     const inserted = await executor.query(
       `INSERT INTO chain_readiness_evidence(
          chain, evidence_type, whitelist_id, status, evidence_hash, summary_json,
-         migration_name, code_version, created_by
-       ) VALUES ($1, 'contract_probe', $2, $3, $4, $5, $6, $7, 'readiness_probe')
+         migration_name, code_version, created_by, context_hash, valid_until
+       ) VALUES ($1, 'contract_probe', $2, $3, $4, $5, $6, $7, 'readiness_probe',
+                 $8, NOW() + ($9::double precision * interval '1 millisecond'))
        ON CONFLICT (evidence_hash) DO NOTHING
-       RETURNING id, created_at`,
+       RETURNING id, created_at, valid_until`,
       [
         chain,
         selected.length === 1 ? selected[0].id : null,
@@ -234,33 +345,130 @@ async function persistContractProbeEvidence(policy, whitelists, probes, chainPro
         evidenceHash,
         summary,
         REQUIRED_MIGRATION,
-        process.env.XBOT_CODE_VERSION || 'local-worktree'
+        liveApproval.codeVersion(),
+        context.contextHash,
+        liveApproval.CONTRACT_EVIDENCE_TTL_MS
       ]
     );
     let evidence = inserted.rows[0];
     if (!evidence) {
       evidence = (await executor.query(
-        'SELECT id, created_at FROM chain_readiness_evidence WHERE evidence_hash = $1',
+        'SELECT id, created_at, valid_until FROM chain_readiness_evidence WHERE evidence_hash = $1',
         [evidenceHash]
       )).rows[0];
     }
-    if (passed) {
-      await executor.query(
-        `UPDATE chain_live_readiness
-         SET contract_tested = true, last_error = NULL, updated_at = NOW()
-         WHERE chain = $1`,
-        [chain]
-      );
-    }
+    await executor.query(
+      `UPDATE chain_live_readiness
+       SET contract_tested = $2,
+           last_error = CASE WHEN $2 THEN NULL ELSE 'CONTRACT_PROBE_FAILED' END,
+           updated_at = NOW()
+       WHERE chain = $1`,
+      [chain, passed]
+    );
     evidenceByChain[chain] = {
       id: evidence?.id || null,
       type: 'contract_probe',
       status: passed ? 'passed' : 'failed',
       createdAt: evidence?.created_at || null,
+      validUntil: evidence?.valid_until || null,
+      contextHash: context.contextHash,
+      codeVersion: liveApproval.codeVersion(),
       whitelistIds: selected.map((whitelist) => Number(whitelist.id))
     };
   }
   return evidenceByChain;
+}
+
+async function runDiagnostic(options = {}) {
+  const chain = String(options.chain || '').trim().toLowerCase();
+  const whitelistIds = [...new Set((options.whitelistIds || []).map(Number))]
+    .filter(Number.isInteger);
+  if (!CHAIN_REGISTRY[chain] || whitelistIds.length === 0) {
+    const error = new Error('Diagnostic requires one chain and explicit whitelist IDs');
+    error.code = 'DIAGNOSTIC_SCOPE_REQUIRED';
+    throw error;
+  }
+  const whitelistResult = await db.query(
+    `SELECT whitelist.id, whitelist.chain_id, whitelist.contract_address, whitelist.symbol,
+            whitelist.budget_per_trade, whitelist.total_budget, whitelist.auto_tp_pct,
+            whitelist.auto_sl_pct, whitelist.exit_strategy,
+            whitelist.exit_strategy_version, whitelist.slippage, whitelist.allow_repeat_buy,
+            whitelist.max_repeat_buys, whitelist.expires_at,
+            COALESCE((
+              SELECT jsonb_agg(jsonb_build_object(
+                'actor_handle', actor.x_handle,
+                'target_x_handle', relation.target_x_handle,
+                'event_types', relation.event_types
+              ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')),
+                         relation.target_x_handle)
+              FROM x_signal_relations AS relation
+              JOIN x_kol_accounts AS actor
+                ON actor.id = relation.kol_id AND actor.enabled = true
+              WHERE relation.whitelist_id = whitelist.id AND relation.enabled = true
+            ), '[]'::jsonb) AS relations,
+            COALESCE((
+              SELECT jsonb_agg(jsonb_build_object(
+                'actor_handle', actor.x_handle,
+                'event_types', rule.event_types,
+                'match_mode', rule.match_mode,
+                'source_kind', rule.source_kind
+              ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')))
+              FROM x_signal_source_rules AS rule
+              JOIN x_kol_accounts AS actor
+                ON actor.id = rule.actor_id AND actor.enabled = true
+              WHERE rule.whitelist_id = whitelist.id AND rule.enabled = true
+            ), '[]'::jsonb) AS direct_sources
+     FROM ca_whitelist AS whitelist
+     WHERE whitelist.id = ANY($1::int[]) AND whitelist.chain_id = $2
+       AND whitelist.status = 'active'
+       AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+     ORDER BY whitelist.id`,
+    [whitelistIds, chain]
+  );
+  if (whitelistResult.rows.length !== whitelistIds.length) {
+    const error = new Error('Every diagnostic whitelist must be active and belong to the requested chain');
+    error.code = 'DIAGNOSTIC_WHITELIST_INVALID';
+    throw error;
+  }
+  const readinessResult = await db.query(
+    'SELECT * FROM chain_live_readiness WHERE chain = $1',
+    [chain]
+  );
+  const policy = {
+    providers: ['6551'],
+    eventTypes: [],
+    chains: [chain],
+    whitelistIds
+  };
+  const chainProbes = await probeChains(policy, readinessResult.rows);
+  const contractProbes = await probeContracts(whitelistResult.rows);
+  const rpcProbes = {
+    [chain]: await probeRpc(chain, { walletAddress: chainProbes[chain]?.wallet })
+  };
+  await applyRpcBalanceFallback(chainProbes, rpcProbes);
+  const strategyProbes = await probeStrategies(policy, chainProbes);
+  const evidence = await persistContractProbeEvidence(
+    policy,
+    whitelistResult.rows,
+    contractProbes,
+    chainProbes,
+    db,
+    { rpcProbes, strategyProbes }
+  );
+  return {
+    chain,
+    whitelistIds,
+    wallet: chainProbes[chain] ? {
+      ok: Boolean(chainProbes[chain].ok),
+      reference: liveApproval.walletReference(chainProbes[chain].wallet),
+      nativeBalance: chainProbes[chain].nativeBalance ?? null,
+      error: chainProbes[chain].error || null
+    } : null,
+    rpc: rpcProbes[chain],
+    strategy: strategyProbes[chain],
+    contracts: contractProbes,
+    evidence: evidence[chain] || null
+  };
 }
 
 async function getSnapshot(options = {}) {
@@ -282,9 +490,9 @@ async function getSnapshot(options = {}) {
 
   const policy = await livePolicy.getPolicy();
   const [chainResult, uncertainResult, unprotectedResult, rate429Result, outboxResult,
-    reconcilerStatus, chainConfigResult, riskConfigResult, invalidWhitelistResult, whitelistResult,
+    reconcilerStatus, chainConfigResult, invalidWhitelistResult, whitelistResult,
     relationResult, latestEvidenceResult, latencyResult, tradeEvidenceResult,
-    readinessEvidenceResult] = await Promise.all([
+    readinessEvidenceResult, retryStatus, quarantineResult, acceptanceScope] = await Promise.all([
     db.query('SELECT * FROM chain_live_readiness ORDER BY chain'),
     db.query("SELECT COUNT(*)::int AS count FROM trade_attempts WHERE status IN ('submission_uncertain','reconciliation_required')"),
     db.query("SELECT COUNT(*)::int AS count FROM positions WHERE execution_mode = 'live' AND status = 'open_unprotected'"),
@@ -292,29 +500,69 @@ async function getSnapshot(options = {}) {
     db.query("SELECT COUNT(*)::int AS count FROM notification_outbox WHERE status IN ('pending','failed') AND next_attempt_at <= NOW()"),
     reconciler.getStatus(),
     db.query("SELECT value_json FROM config WHERE key = 'chain_configs'"),
-    db.query("SELECT value_json FROM config WHERE key = 'risk_config'"),
     db.query(
       `SELECT COUNT(*)::int AS count FROM ca_whitelist
        WHERE status = 'active' AND id = ANY($1::int[])
          AND (budget_per_trade <= 0 OR total_budget <= 0 OR budget_per_trade > total_budget
-              OR slippage <= 0 OR slippage > 100)`,
+              OR slippage <= 0 OR slippage > 100
+              OR exit_strategy IS NULL
+              OR CASE WHEN jsonb_typeof(exit_strategy->'legs') = 'array'
+                THEN jsonb_array_length(exit_strategy->'legs') NOT BETWEEN 1 AND 10
+                ELSE true END)`,
       [policy.whitelistIds.length > 0 ? policy.whitelistIds : [-1]]
     ),
     db.query(
-      `SELECT id, chain_id, contract_address, symbol, budget_per_trade, total_budget, slippage
-       FROM ca_whitelist
-       WHERE status = 'active' AND id = ANY($1::int[]) AND chain_id = ANY($2::text[])
-       ORDER BY id`,
+      `SELECT whitelist.id, whitelist.chain_id, whitelist.contract_address, whitelist.symbol,
+              whitelist.budget_per_trade, whitelist.total_budget, whitelist.auto_tp_pct,
+              whitelist.auto_sl_pct, whitelist.exit_strategy,
+              whitelist.exit_strategy_version, whitelist.slippage, whitelist.allow_repeat_buy,
+              whitelist.max_repeat_buys, whitelist.expires_at,
+              COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                  'actor_handle', actor.x_handle,
+                  'target_x_handle', relation.target_x_handle,
+                  'event_types', relation.event_types
+                ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')),
+                           relation.target_x_handle)
+                FROM x_signal_relations AS relation
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = relation.kol_id AND actor.enabled = true
+                WHERE relation.whitelist_id = whitelist.id AND relation.enabled = true
+              ), '[]'::jsonb) AS relations,
+              COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                  'actor_handle', actor.x_handle,
+                  'event_types', rule.event_types,
+                  'match_mode', rule.match_mode,
+                  'source_kind', rule.source_kind
+                ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')))
+                FROM x_signal_source_rules AS rule
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = rule.actor_id AND actor.enabled = true
+                WHERE rule.whitelist_id = whitelist.id AND rule.enabled = true
+              ), '[]'::jsonb) AS direct_sources
+       FROM ca_whitelist AS whitelist
+       WHERE whitelist.status = 'active' AND whitelist.id = ANY($1::int[])
+         AND whitelist.chain_id = ANY($2::text[])
+       ORDER BY whitelist.id`,
       [policy.whitelistIds.length > 0 ? policy.whitelistIds : [-1],
         policy.chains.length > 0 ? policy.chains : ['__none__']]
     ),
     db.query(
       `SELECT relation.id, relation.whitelist_id, actor.x_handle AS actor_handle,
-              relation.target_x_handle
+              relation.target_x_handle, relation.event_types, 'interaction' AS trigger_kind,
+              NULL::text AS match_mode, NULL::text AS source_kind
        FROM x_signal_relations AS relation
        JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id AND actor.enabled = true
        WHERE relation.enabled = true AND relation.whitelist_id = ANY($1::int[])
-       ORDER BY relation.whitelist_id, relation.id`,
+       UNION ALL
+       SELECT rule.id, rule.whitelist_id, actor.x_handle AS actor_handle,
+              NULL::text AS target_x_handle, rule.event_types, 'direct_source' AS trigger_kind,
+              rule.match_mode, rule.source_kind
+       FROM x_signal_source_rules AS rule
+       JOIN x_kol_accounts AS actor ON actor.id = rule.actor_id AND actor.enabled = true
+       WHERE rule.enabled = true AND rule.whitelist_id = ANY($1::int[])
+       ORDER BY whitelist_id, trigger_kind, id`,
       [policy.whitelistIds.length > 0 ? policy.whitelistIds : [-1]]
     ),
     db.query(
@@ -322,7 +570,9 @@ async function getSnapshot(options = {}) {
               signal.id AS signal_id, signal.status AS signal_status,
               attempt.id AS attempt_id, attempt.status AS attempt_status,
               orders.provider_order_id, orders.tx_hash,
-              receipt.receipt_status, signal.created_at AS signal_created_at
+              receipt.receipt_status,
+              activity.source_created_at AS signal_source_created_at,
+              signal.created_at AS signal_created_at
        FROM trade_signals AS signal
        JOIN x_activities AS activity ON activity.id = signal.activity_id
        LEFT JOIN LATERAL (
@@ -388,23 +638,66 @@ async function getSnapshot(options = {}) {
     ),
     db.query(
       `SELECT DISTINCT ON (chain, evidence_type)
-         id, chain, evidence_type, status, created_at, summary_json
+         id, chain, evidence_type, status, created_at, summary_json,
+         context_hash, valid_until, code_version
        FROM chain_readiness_evidence
        WHERE evidence_type = 'contract_probe'
        ORDER BY chain, evidence_type, created_at DESC, id DESC`
-    )
+    ),
+    tradeRetryOrchestrator.getStatus(),
+    db.query("SELECT COUNT(*)::int AS count FROM wallet_write_lanes WHERE state = 'quarantined'"),
+    liveApproval.getAcceptanceScope()
   ]);
   const chainRows = chainResult.rows;
+  const chainConfigs = chainConfigResult.rows[0]?.value_json || {};
+  const executionSettings = Object.fromEntries(Object.entries(chainConfigs).map(([chain, value]) => [
+    chain,
+    {
+      retryEnabled: Boolean(value?.retryEnabled),
+      maxRetries: Number(value?.maxRetries || 0),
+      retryWindowMs: Number(value?.retryWindowMs || 0),
+      failureEvidenceWindowMs: Number(value?.failureEvidenceWindowMs || 0),
+      feeEscalationEnabled: Boolean(value?.feeEscalationEnabled),
+      maxRetryFeeNative: Number(value?.maxRetryFeeNative || 0),
+      exitGasReserve: Number(value?.exitGasReserve || 0)
+    }
+  ]));
+  const mode = getTradingMode();
+  const liveEnabled = enabled(process.env.LIVE_TRADING_ENABLED);
+  const emergencyStop = enabled(process.env.EMERGENCY_STOP);
+  const xProvider = String(process.env.X_DATA_PROVIDER || '').toLowerCase();
+  const keyExclusive = enabled(process.env.GMGN_KEY_EXCLUSIVE);
+  const configurationFingerprint = hashSnapshot({
+    mode,
+    liveEnabled,
+    emergencyStop,
+    xProvider,
+    keyExclusive,
+    credentials: hashSnapshot({
+      apiKey: process.env.GMGN_API_KEY || '',
+      privateKey: process.env.GMGN_PRIVATE_KEY || ''
+    }),
+    executionSettings,
+    chainRuntime: Object.fromEntries(CHAINS.map((chain) => [chain, {
+      rpc: process.env[`${chain === 'sol' ? 'SOLANA' : chain.toUpperCase()}_RPC_URL`] || '',
+      feeReserve: process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`] || '',
+      minimumGasReserve: process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`] || ''
+    }]))
+  });
   const ingestionHeartbeat = await latestHeartbeat(['ingestion', 'all']).catch(() => null);
   const probes = options.probe ? await probeChains(policy, chainRows) : {};
   const contractProbes = options.probe ? await probeContracts(whitelistResult.rows) : {};
-  const rpcProbes = options.probe ? await probePolicyRpcs(policy) : {};
+  const rpcProbes = options.probe ? await probePolicyRpcs(policy, probes) : {};
+  if (options.probe) await applyRpcBalanceFallback(probes, rpcProbes);
+  const strategyProbes = options.probe ? await probeStrategies(policy, probes) : {};
   const contractEvidence = options.probe
     ? await persistContractProbeEvidence(
       policy,
       whitelistResult.rows,
       contractProbes,
-      probes
+      probes,
+      db,
+      { rpcProbes, strategyProbes, configurationFingerprint }
     )
     : {};
   const schedulerStatus = scheduler.getStatus();
@@ -418,44 +711,52 @@ async function getSnapshot(options = {}) {
   const last429At = rate429Result.rows[0].last_at;
   const recent429 = last429At && Date.now() - new Date(last429At).getTime() < 15 * 60_000;
   const providerConfigured = Boolean(process.env.GMGN_API_KEY && process.env.GMGN_PRIVATE_KEY);
-  const xProvider = String(process.env.X_DATA_PROVIDER || '').toLowerCase();
   const ingestionHealthy = xProvider !== '6551' || Boolean(
     ingestionHeartbeat?.fresh && ingestionHeartbeat.status?.wss?.status === 'subscribed'
   );
-  const keyExclusive = enabled(process.env.GMGN_KEY_EXCLUSIVE);
   const alertsVerified = enabled(process.env.TRADE_ALERTS_VERIFIED);
-  const liveEnabled = enabled(process.env.LIVE_TRADING_ENABLED);
-  const emergencyStop = enabled(process.env.EMERGENCY_STOP);
-  const mode = getTradingMode();
-  const chainConfigs = chainConfigResult.rows[0]?.value_json || {};
-  const riskConfig = riskConfigResult.rows[0]?.value_json || {};
-  const configurationFingerprint = hashSnapshot({
-    mode,
-    liveEnabled,
-    emergencyStop,
-    xProvider,
-    keyExclusive,
-    credentials: hashSnapshot({
-      apiKey: process.env.GMGN_API_KEY || '',
-      privateKey: process.env.GMGN_PRIVATE_KEY || ''
-    }),
-    policy,
-    chainConfigs,
-    riskConfig,
-    whitelists: whitelistResult.rows,
-    globalLimits: {
-      dailyUsd: process.env.GMGN_GLOBAL_DAILY_USD_LIMIT || '',
-      weeklyUsd: process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT || ''
-    },
-    chainRuntime: Object.fromEntries(CHAINS.map((chain) => [chain, {
-      rpc: process.env[`${chain === 'sol' ? 'SOLANA' : chain.toUpperCase()}_RPC_URL`] || '',
-      feeReserve: process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`] || '',
-      minimumGasReserve: process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`] || ''
-    }]))
-  });
   const tradeEvidenceByChain = new Map(
     tradeEvidenceResult.rows.map((row) => [row.chain, normalizeTradeEvidence(row)])
   );
+  const evidenceWhitelistIds = [...new Set(readinessEvidenceResult.rows.flatMap(
+    (row) => row.summary_json?.policy?.whitelistIds || []
+  ).map(Number).filter(Number.isInteger))];
+  const evidenceWhitelistRows = evidenceWhitelistIds.length > 0
+    ? (await db.query(
+      `SELECT whitelist.id, whitelist.chain_id, whitelist.contract_address,
+              whitelist.budget_per_trade, whitelist.total_budget, whitelist.auto_tp_pct,
+              whitelist.auto_sl_pct, whitelist.exit_strategy,
+              whitelist.exit_strategy_version, whitelist.slippage, whitelist.allow_repeat_buy,
+              whitelist.max_repeat_buys, whitelist.expires_at,
+              COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                  'actor_handle', actor.x_handle,
+                  'target_x_handle', relation.target_x_handle,
+                  'event_types', relation.event_types
+                ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')),
+                           relation.target_x_handle)
+                FROM x_signal_relations AS relation
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = relation.kol_id AND actor.enabled = true
+                WHERE relation.whitelist_id = whitelist.id AND relation.enabled = true
+              ), '[]'::jsonb) AS relations,
+              COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                  'actor_handle', actor.x_handle,
+                  'event_types', rule.event_types,
+                  'match_mode', rule.match_mode,
+                  'source_kind', rule.source_kind
+                ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')))
+                FROM x_signal_source_rules AS rule
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = rule.actor_id AND actor.enabled = true
+                WHERE rule.whitelist_id = whitelist.id AND rule.enabled = true
+              ), '[]'::jsonb) AS direct_sources
+       FROM ca_whitelist AS whitelist
+       WHERE whitelist.id = ANY($1::int[]) ORDER BY whitelist.id`,
+      [evidenceWhitelistIds]
+    )).rows
+    : [];
   const persistedContractEvidence = new Map(readinessEvidenceResult.rows.map((row) => [
     row.chain,
     {
@@ -463,6 +764,9 @@ async function getSnapshot(options = {}) {
       type: row.evidence_type,
       status: row.status,
       createdAt: row.created_at,
+      validUntil: row.valid_until,
+      contextHash: row.context_hash,
+      codeVersion: row.code_version,
       whitelistIds: row.summary_json?.policy?.whitelistIds || []
     }
   ]));
@@ -482,28 +786,65 @@ async function getSnapshot(options = {}) {
 
   const chains = CHAINS.map((chain) => {
     const row = chainRows.find((item) => item.chain === chain) || { chain };
-    const implemented = Boolean(row.implemented || probes[chain]?.ok);
-    const contractTested = Boolean(row.contract_tested || contractEvidence[chain]?.status === 'passed');
+    const chainDefinition = CHAIN_REGISTRY[chain];
+    const failureCircuit = retryStatus.circuits?.find((item) => item.chain === chain) || null;
+    const implemented = Boolean(chainDefinition.executionImplemented && (row.implemented || probes[chain]?.ok));
+    const evidence = contractEvidence[chain] || persistedContractEvidence.get(chain) || null;
+    const evidenceIds = new Set((evidence?.whitelistIds || []).map(Number));
+    const selectedWhitelists = contractEvidence[chain]
+      ? whitelistResult.rows.filter((item) => item.chain_id === chain)
+      : evidenceWhitelistRows.filter(
+        (item) => item.chain_id === chain && evidenceIds.has(Number(item.id))
+      );
+    const evidenceFresh = Boolean(
+      evidence?.status === 'passed'
+      && evidence?.validUntil
+      && new Date(evidence.validUntil).getTime() > Date.now()
+      && evidence?.codeVersion === liveApproval.codeVersion()
+    );
+    const expectedContext = selectedWhitelists.length > 0
+      && selectedWhitelists.length === evidenceIds.size
+      ? liveApproval.contractContext(chain, selectedWhitelists).contextHash
+      : null;
+    const evidenceCurrent = Boolean(
+      evidenceFresh && expectedContext && evidence.contextHash === expectedContext
+    );
+    const currentProbeEvidence = contractEvidence[chain] || null;
+    const contractTested = currentProbeEvidence
+      ? currentProbeEvidence.status === 'passed'
+      : Boolean(evidenceCurrent || (row.live_enabled && row.contract_tested));
+    const acceptanceAuthorized = Boolean(
+      acceptanceScope
+      && !acceptanceScope.expired
+      && acceptanceScope.chain === chain
+      && policy.whitelistIds.includes(Number(acceptanceScope.whitelist_id))
+    );
     const blockers = [];
     const advisories = [];
     if (!implemented) blockers.push('CHAIN_NOT_IMPLEMENTED');
     if (!contractTested) blockers.push('CHAIN_CONTRACT_NOT_TESTED');
+    if (!row.live_enabled && !acceptanceAuthorized) blockers.push('CHAIN_PRODUCTION_NOT_APPROVED');
     if (!row.shadow_verified) advisories.push('CHAIN_SHADOW_NOT_VERIFIED');
-    if (!row.live_enabled) advisories.push('CHAIN_LIVE_FLAG_NOT_SET');
-    if (!rpcConfig(chain).url) blockers.push('CHAIN_RPC_MISSING');
-    const limits = chainConfigs[chain] || {};
-    if (!limits.enabled) blockers.push('CHAIN_BUDGET_DISABLED');
-    if (![limits.dailyBudget, limits.weeklyBudget, limits.maxPerTrade,
-      limits.maxOpenPositions, limits.dailyLossLimit]
-      .every((value) => Number.isFinite(Number(value)) && Number(value) > 0)) {
-      blockers.push('CHAIN_HARD_LIMIT_INVALID');
+    if (failureCircuit?.state === 'tripped') blockers.push('CHAIN_CONSECUTIVE_FAILURE_LOCK');
+    if (retryStatus.quarantines?.some((item) => item.chain === chain)) {
+      blockers.push('WALLET_QUARANTINE_ACTIVE');
     }
+    if (!rpcConfig(chain).url) blockers.push('CHAIN_RPC_MISSING');
+    const feeReserveValue = Number(process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`]);
+    const minimumGasReserveValue = Number(process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`]);
+    if (!Number.isFinite(feeReserveValue) || feeReserveValue <= 0) {
+      blockers.push('CHAIN_FEE_RESERVE_MISSING');
+    }
+    if (!Number.isFinite(minimumGasReserveValue) || minimumGasReserveValue <= 0) {
+      blockers.push('CHAIN_GAS_RESERVE_MISSING');
+    }
+    const limits = chainConfigs[chain] || {};
     if (options.probe && policy.chains.includes(chain)) {
-      const chainDefinition = requireChain(chain);
       const nativeBalance = probes[chain]?.nativeBalance;
-      const minimumGasReserve = Number(process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`] || 0);
-      const feeReserve = Number(process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`] || 0);
-      const requiredBalance = Number(limits.maxPerTrade || 0) + minimumGasReserve + feeReserve;
+      const maximumWhitelistTrade = whitelistResult.rows
+        .filter((whitelist) => whitelist.chain_id === chain)
+        .reduce((maximum, whitelist) => Math.max(maximum, Number(whitelist.budget_per_trade || 0)), 0);
+      const requiredBalance = maximumWhitelistTrade + minimumGasReserveValue + feeReserveValue;
       if (!Number.isFinite(nativeBalance)) blockers.push('CHAIN_NATIVE_BALANCE_UNKNOWN');
       else if (nativeBalance < requiredBalance) blockers.push('CHAIN_NATIVE_BALANCE_INSUFFICIENT');
     }
@@ -519,11 +860,17 @@ async function getSnapshot(options = {}) {
       native_balance: probes[chain]?.ok ? probes[chain].nativeBalance : row.native_balance,
       last_error: probes[chain]?.ok ? null : (probes[chain]?.error || row.last_error || null),
       contract_tested: contractTested,
-      contract_evidence: contractEvidence[chain] || persistedContractEvidence.get(chain) || null,
+      code_capable: implemented,
+      production_approved: Boolean(row.live_enabled),
+      acceptance_status: acceptanceAuthorized ? 'active' : (acceptanceScope?.chain === chain
+        ? (acceptanceScope.expired ? 'expired' : acceptanceScope.status)
+        : 'none'),
+      contract_evidence: evidence ? { ...evidence, stale: !evidenceCurrent } : null,
       rpc_probe: rpcProbes[chain] || null,
       policy_enabled: policy.chains.includes(chain),
       trade_evidence: tradeEvidenceByChain.get(chain) || normalizeTradeEvidence(),
-      limits,
+      failure_circuit: failureCircuit,
+      limits: executionSettings[chain] || {},
       blockers,
       advisories,
       ready: blockers.length === 0 && policy.chains.includes(chain)
@@ -541,14 +888,19 @@ async function getSnapshot(options = {}) {
   if (!keyExclusive) blockers.push('GMGN_KEY_EXCLUSIVE_NOT_CONFIRMED');
   blockers.push(...schedulerGate.blockers);
   advisories.push(...schedulerGate.advisories);
-  if (options.probe && missingCacheKeys.length > 0) blockers.push('FAST_PATH_CACHE_NOT_READY');
+  if (options.probe && missingCacheKeys.length > 0) advisories.push('FAST_PATH_CACHE_NOT_READY');
   if (policy.whitelistIds.length > 0 && !cacheWarmerStatus.running) blockers.push('FAST_PATH_WARMER_NOT_RUNNING');
   if (cacheWarmerStatus.lastError) blockers.push('FAST_PATH_WARMER_ERROR');
   if (options.probe && Object.values(contractProbes).some((probe) => !probe.ok)) {
     blockers.push('CONTRACT_PROBE_FAILED');
   }
+  if (options.probe && Object.values(strategyProbes).some((probe) => !probe.ok)) {
+    blockers.push('STRATEGY_PROBE_FAILED');
+  }
+  if (acceptanceScope?.expired) blockers.push('LIVE_ACCEPTANCE_SCOPE_EXPIRED');
   if (recent429) blockers.push('GMGN_RECENT_429');
   if (Number(uncertainResult.rows[0].count) > 0) blockers.push('UNRESOLVED_TRADE_ATTEMPTS');
+  if (Number(quarantineResult.rows[0].count) > 0) advisories.push('WALLET_QUARANTINE_ACTIVE');
   if (Number(unprotectedResult.rows[0].count) > 0) blockers.push('UNPROTECTED_LIVE_POSITIONS');
   if (!Array.isArray(policy.providers) || policy.providers.length === 0
       || !Array.isArray(policy.eventTypes) || policy.eventTypes.length === 0
@@ -569,10 +921,6 @@ async function getSnapshot(options = {}) {
   if (!alertsVerified) advisories.push('TRADE_ALERTS_NOT_VERIFIED');
   if (!chains.some((chain) => chain.ready)) blockers.push('NO_LIVE_CHAIN_READY');
   if (Number(invalidWhitelistResult.rows[0].count) > 0) blockers.push('WHITELIST_HARD_LIMIT_INVALID');
-  if (Number(process.env.GMGN_GLOBAL_DAILY_USD_LIMIT || 0) <= 0
-      || Number(process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT || 0) <= 0) {
-    blockers.push('GLOBAL_USD_LIMIT_INVALID');
-  }
   if (!reconcilerStatus.running) blockers.push('RECONCILER_NOT_RUNNING');
   if (reconcilerStatus.lastError) blockers.push('RECONCILER_ERROR');
   const armedFingerprint = engineState.getConfigurationFingerprint?.();
@@ -599,10 +947,12 @@ async function getSnapshot(options = {}) {
       alertsVerified,
       recent429: Boolean(recent429),
       uncertainAttempts: Number(uncertainResult.rows[0].count),
+      walletQuarantines: Number(quarantineResult.rows[0].count),
       unprotectedPositions: Number(unprotectedResult.rows[0].count),
       pendingAlerts: Number(outboxResult.rows[0].count)
     },
     chains,
+    retry: retryStatus,
     scheduler: schedulerStatus,
     cache: cacheStatus,
     cacheRequired: {
@@ -613,7 +963,9 @@ async function getSnapshot(options = {}) {
     cacheWarmer: cacheWarmerStatus,
     latencySlo,
     contractProbes,
+    strategyProbes,
     rpcProbes,
+    acceptanceScope,
     reconciler: reconcilerStatus,
     services: {
       ingestion: ingestionHeartbeat ? {
@@ -629,7 +981,11 @@ async function getSnapshot(options = {}) {
       id: Number(row.id),
       whitelistId: Number(row.whitelist_id),
       actorHandle: row.actor_handle,
-      targetHandle: row.target_x_handle
+      targetHandle: row.target_x_handle,
+      eventTypes: row.event_types || [],
+      triggerKind: row.trigger_kind || 'interaction',
+      matchMode: row.match_mode || null,
+      sourceKind: row.source_kind || null
     })),
     latestEvidence: latestEvidenceResult.rows[0] ? {
       providerEventId: latestEvidenceResult.rows[0].provider_event_id || null,
@@ -641,6 +997,7 @@ async function getSnapshot(options = {}) {
       providerOrderId: latestEvidenceResult.rows[0].provider_order_id || null,
       txHash: latestEvidenceResult.rows[0].tx_hash || null,
       receiptStatus: latestEvidenceResult.rows[0].receipt_status || null,
+      signalSourceCreatedAt: latestEvidenceResult.rows[0].signal_source_created_at || null,
       signalCreatedAt: latestEvidenceResult.rows[0].signal_created_at || null
     } : null,
     pollingPolicy: reconcilerStatus.pollingPolicy
@@ -677,16 +1034,78 @@ class ReadinessMonitor {
         [details]
       );
     });
-    this.intervalMs = Math.max(500, Number(options.intervalMs || 5000));
+    this.onRecover = options.onRecover || (async (details) => {
+      await db.query(
+        `INSERT INTO notification_outbox(topic, aggregate_type, aggregate_id, payload)
+         VALUES ('trade.auto_resumed', 'system', 'readiness', $1)`,
+        [details]
+      );
+    });
+    this.intervalMs = Math.max(500, Number(options.intervalMs || 1000));
+    this.recoveryHealthyChecks = Math.max(1, Number(options.recoveryHealthyChecks || 3));
+    this.transientTimeoutMs = Math.max(1000, Number(options.transientTimeoutMs || 60_000));
+    this.healthyCount = 0;
     this.timer = null;
     this.lastError = null;
   }
 
   async checkOnce() {
-    if (!this.engine.getArmed()) return { status: 'skipped', reason: 'not_armed' };
+    const engineStatus = this.engine.getStatus?.() || {};
+    const transientPaused = engineStatus.status === 'paused_transient' && engineStatus.desiredRunning;
+    if (!this.engine.getArmed() && !transientPaused) {
+      this.healthyCount = 0;
+      return { status: 'skipped', reason: 'not_armed' };
+    }
     try {
       const snapshot = await this.snapshotProvider();
-      if (snapshot.readyToArm) return { status: 'ready', snapshot };
+      if (snapshot.readyToArm) {
+        if (!transientPaused) return { status: 'ready', snapshot };
+        this.healthyCount += 1;
+        if (this.healthyCount < this.recoveryHealthyChecks) {
+          return { status: 'recovering', healthyChecks: this.healthyCount, snapshot };
+        }
+        await this.engine.recoverTransient(snapshot);
+        this.healthyCount = 0;
+        await this.onRecover({
+          reason: 'TRANSIENT_READINESS_RECOVERED',
+          snapshot_hash: snapshot.snapshotHash || null,
+          generated_at: snapshot.generatedAt || new Date()
+        });
+        return { status: 'resumed', snapshot };
+      }
+      this.healthyCount = 0;
+      const blockers = [...new Set(snapshot.blockers || [])];
+      const transientOnly = blockers.length > 0
+        && blockers.every((blocker) => TRANSIENT_BLOCKERS.has(blocker));
+      if (transientOnly) {
+        const startedAt = engineStatus.transientStartedAt
+          ? new Date(engineStatus.transientStartedAt).getTime()
+          : Date.now();
+        if (transientPaused && Date.now() - startedAt >= this.transientTimeoutMs) {
+          await this.engine.setFaulted({
+            reason: 'TRANSIENT_READINESS_TIMEOUT',
+            details: { blockers, snapshot_hash: snapshot.snapshotHash }
+          });
+          await this.onDisarm({
+            reason: 'TRANSIENT_READINESS_TIMEOUT', blockers,
+            snapshot_hash: snapshot.snapshotHash || null,
+            generated_at: snapshot.generatedAt || new Date()
+          });
+          return { status: 'fault_protected', snapshot };
+        }
+        if (!transientPaused) {
+          await this.engine.pauseTransient({
+            reason: 'TRANSIENT_READINESS_FAILURE',
+            details: { blockers, snapshot_hash: snapshot.snapshotHash }
+          });
+          await this.onDisarm({
+            reason: 'TRANSIENT_READINESS_FAILURE', blockers,
+            snapshot_hash: snapshot.snapshotHash || null,
+            generated_at: snapshot.generatedAt || new Date()
+          });
+        }
+        return { status: 'paused_transient', snapshot };
+      }
       if (typeof this.engine.setFaulted === 'function') {
         await this.engine.setFaulted({
           reason: 'READINESS_FAILED',
@@ -740,11 +1159,14 @@ const monitor = new ReadinessMonitor();
 module.exports = {
   REQUIRED_MIGRATION,
   ReadinessMonitor,
+  TRANSIENT_BLOCKERS,
+  applyRpcBalanceFallback,
   assertReadyToArm,
   getSnapshot,
   schedulerReadiness,
   jsonb,
   monitor,
   normalizeTradeEvidence,
-  persistContractProbeEvidence
+  persistContractProbeEvidence,
+  runDiagnostic
 };

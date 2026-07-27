@@ -3,20 +3,25 @@ const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { cache, cacheTtls } = require('../../lib/gmgn-cache');
 const { requireChain, validateTokenAddress } = require('./chain-adapters');
 
-async function loadCachedContext(signal) {
+async function loadCachedContext(signal, options = {}) {
   const chain = requireChain(signal.chain_id);
   validateTokenAddress(chain.id, signal.contract_address);
   const ttl = cacheTtls();
+  const load = async (key, ttlMs, loader) => {
+    if (!options.fresh) return cache.getOrLoad(key, ttlMs, loader);
+    const value = await loader();
+    return { value, version: `fresh-${Date.now()}`, ageMs: 0, cacheHit: false };
+  };
   const [userEntry, tokenEntry, securityEntry, poolEntry, gasEntry, nativeTokenEntry] = await Promise.all([
-    cache.getOrLoad('user:wallets', ttl.wallet, () => gmgnHttp.getUserInfo()),
-    cache.getOrLoad(`token:${chain.id}:${signal.contract_address}`, ttl.token,
+    load('user:wallets', ttl.wallet, () => gmgnHttp.getUserInfo()),
+    load(`token:${chain.id}:${signal.contract_address}`, ttl.token,
       () => gmgnHttp.getTokenInfo(chain.id, signal.contract_address)),
-    cache.getOrLoad(`security:${chain.id}:${signal.contract_address}`, ttl.security,
+    load(`security:${chain.id}:${signal.contract_address}`, ttl.security,
       () => gmgnHttp.getTokenSecurity(chain.id, signal.contract_address)),
-    cache.getOrLoad(`pool:${chain.id}:${signal.contract_address}`, ttl.pool,
+    load(`pool:${chain.id}:${signal.contract_address}`, ttl.pool,
       () => gmgnHttp.getTokenPoolInfo(chain.id, signal.contract_address)),
-    cache.getOrLoad(`gas:${chain.id}`, ttl.gas, () => gmgnHttp.getGasPrice(chain.id)),
-    cache.getOrLoad(`native-token:${chain.id}`, ttl.token,
+    load(`gas:${chain.id}`, ttl.gas, () => gmgnHttp.getGasPrice(chain.id)),
+    load(`native-token:${chain.id}`, ttl.token,
       () => gmgnHttp.getTokenInfo(chain.id, chain.nativeToken))
   ]);
   const wallet = gmgnAdapter.selectWallet(userEntry.value, chain.id);

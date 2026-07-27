@@ -1,4 +1,3 @@
-// D:\AI_Projects\xbot\backend\lib\notifier.js
 const logger = require('./logger');
 
 class Notifier {

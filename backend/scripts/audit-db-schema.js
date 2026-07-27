@@ -1,105 +1,73 @@
-// D:\AI_Projects\xbot\backend\scripts\audit-db-schema.js
+const path = require('path');
 const { Client } = require('pg');
-require('dotenv').config();
 
-const credentials = {
+require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
+
+const database = String(process.env.DB_NAME || '').trim();
+const testDatabase = String(process.env.XBOT_TEST_DB_NAME || '').trim();
+const productionDatabase = String(process.env.XBOT_PRODUCTION_DB_NAME || '').trim();
+
+if (!database || !testDatabase || database !== testDatabase || !/test/i.test(database)
+    || (productionDatabase && database === productionDatabase)) {
+  throw new Error('Schema audit requires DB_NAME and XBOT_TEST_DB_NAME to name the same dedicated test database');
+}
+
+const client = new Client({
   host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
+  port: Number(process.env.DB_PORT || 5432),
   user: process.env.DB_USER || 'pm_user',
   password: process.env.DB_PASSWORD || '',
-  database: 'xbot'
-};
+  database
+});
 
-async function audit() {
-  console.log('=== Database Schema Audit Starting ===');
-  const client = new Client(credentials);
-  try {
-    await client.connect();
-    
-    // 1. Audit positions table
-    console.log('\n[1] Auditing "positions" table columns:');
-    const posRes = await client.query(`
-      SELECT column_name, data_type 
-      FROM information_schema.columns 
-      WHERE table_name = 'positions'
-      ORDER BY ordinal_position
-    `);
-    const posCols = posRes.rows.map(r => r.column_name);
-    console.log('Found columns:', posCols.join(', '));
-    
-    const requiredPosCols = ['id', 'sim_peaks', 'sell_tx_hash', 'buy_tx_hash', 'status', 'pnl', 'pnl_pct'];
-    const missingPos = requiredPosCols.filter(c => !posCols.includes(c));
-    if (missingPos.length === 0) {
-      console.log('✓ All critical columns present in "positions" table!');
-    } else {
-      console.error('✗ Missing critical columns in "positions":', missingPos);
-    }
-    
-    // Check type of sim_peaks
-    const simPeaksCol = posRes.rows.find(r => r.column_name === 'sim_peaks');
-    if (simPeaksCol) {
-      console.log(`- Column "sim_peaks" data type: ${simPeaksCol.data_type} (Expected: jsonb)`);
-    }
-
-    // 2. Audit budget_tracking table
-    console.log('\n[2] Auditing "budget_tracking" table columns and unique indexes:');
-    const budgetRes = await client.query(`
-      SELECT column_name, data_type 
-      FROM information_schema.columns 
-      WHERE table_name = 'budget_tracking'
-    `);
-    const budgetCols = budgetRes.rows.map(r => r.column_name);
-    console.log('Found columns:', budgetCols.join(', '));
-    if (budgetCols.includes('period_key')) {
-      console.log('✓ Column "period_key" is present!');
-    } else {
-      console.error('✗ Column "period_key" is missing from "budget_tracking"!');
-    }
-
-    // Check unique constraints on budget_tracking
-    const indexRes = await client.query(`
-      SELECT
-        t.relname as table_name,
-        i.relname as index_name,
-        a.attname as column_name
-      FROM
-        pg_class t,
-        pg_class i,
-        pg_index ix,
-        pg_attribute a
-      WHERE
-        t.oid = ix.indrelid
-        AND i.oid = ix.indexrelid
-        AND a.attrelid = t.oid
-        AND a.attnum = ANY(ix.indkey)
-        AND t.relname = 'budget_tracking'
-        AND ix.indisunique = true
-    `);
-    console.log('Unique indexes found on "budget_tracking":');
-    const indexMap = {};
-    indexRes.rows.forEach(r => {
-      if (!indexMap[r.index_name]) indexMap[r.index_name] = [];
-      indexMap[r.index_name].push(r.column_name);
-    });
-    console.log(JSON.stringify(indexMap, null, 2));
-    
-    let hasProperUnique = false;
-    Object.values(indexMap).forEach((cols) => {
-      if (cols.includes('chain_id') && cols.includes('period_type') && cols.includes('period_key')) {
-        hasProperUnique = true;
-      }
-    });
-    if (hasProperUnique) {
-      console.log('✓ Found matching UNIQUE constraint (chain_id, period_type, period_key) for dynamic upserts!');
-    } else {
-      console.error('✗ NO matching UNIQUE constraint found on (chain_id, period_type, period_key)!');
-    }
-
-  } catch (err) {
-    console.error('Audit script failed:', err.message);
-  } finally {
-    await client.end();
-    console.log('\n=== Database Schema Audit Finished ===');
-  }
+async function requireColumns(table, expected) {
+  const result = await client.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1
+       AND column_name = ANY($2::text[])`,
+    [table, expected]
+  );
+  const found = new Set(result.rows.map((row) => row.column_name));
+  const missing = expected.filter((column) => !found.has(column));
+  if (missing.length > 0) throw new Error(`${table} is missing columns: ${missing.join(', ')}`);
 }
-audit();
+
+async function main() {
+  await client.connect();
+  const migration = await client.query(
+    "SELECT name FROM schema_migrations WHERE name = '025_p17_arm_failure_observability.sql'"
+  );
+  if (migration.rows.length !== 1) throw new Error('Migration 025 is not applied');
+
+  await requireColumns('ca_whitelist', [
+    'live_activation_state', 'activation_version', 'activation_context_hash',
+    'activation_error_code', 'activation_error_detail', 'activation_checked_at', 'activated_at'
+  ]);
+  await requireColumns('trade_signals', ['activation_wait_version']);
+  await requireColumns('arm_preparations', [
+    'token_hash', 'configuration_fingerprint', 'policy_fingerprint',
+    'activation_versions', 'compact_summary', 'status', 'expires_at', 'consumed_at',
+    'failed_at', 'failure_code', 'failure_detail'
+  ]);
+  await requireColumns('whitelist_activation_outbox', [
+    'whitelist_id', 'desired_version', 'status', 'attempt_count', 'locked_at'
+  ]);
+
+  const invalidActivation = await client.query(
+    `SELECT COUNT(*)::int AS count FROM ca_whitelist
+     WHERE activation_version < 1
+        OR live_activation_state NOT IN ('syncing','live_ready','sync_failed')`
+  );
+  if (invalidActivation.rows[0].count !== 0) throw new Error('Invalid whitelist activation rows found');
+
+  process.stdout.write(`SCHEMA_AUDIT_OK=${database}\n`);
+}
+
+main()
+  .catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await client.end().catch(() => {});
+  });

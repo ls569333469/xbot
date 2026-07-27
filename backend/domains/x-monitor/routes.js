@@ -7,6 +7,7 @@ const { createXClient } = require('../../lib/x-client');
 const providerUsage = require('../../lib/provider-usage');
 const engineState = require('../../lib/engine-state');
 const { getTradingMode } = require('../../lib/runtime-mode');
+const { legacyXProvidersEnabled } = require('../../lib/legacy-features');
 const { X6551Client } = require('../../lib/x-client-6551');
 const { applyWatchPlan, getWatchPlan } = require('./6551/watch-reconciler');
 const { get6551Status } = require('./6551/status');
@@ -15,7 +16,18 @@ const {
   ingestTwitterApiEvent
 } = require('./twitterapi-webhook');
 
-router.post('/webhook/twitterapi', async (req, res) => {
+function requireLegacyXProvider(_req, res, next) {
+  if (!legacyXProvidersEnabled()) {
+    return res.status(410).json({
+      ok: false,
+      error: 'Legacy X providers are isolated from the production runtime',
+      code: 'LEGACY_X_PROVIDER_DISABLED'
+    });
+  }
+  next();
+}
+
+router.post('/webhook/twitterapi', requireLegacyXProvider, async (req, res) => {
   if (!authenticateWebhook(req)) {
     return res.status(401).json({ ok: false, error: 'Invalid webhook secret', code: 'WEBHOOK_UNAUTHORIZED' });
   }
@@ -60,7 +72,7 @@ router.get('/status', async (req, res) => {
   }
 });
 
-router.post('/poll-now', async (req, res) => {
+router.post('/poll-now', requireLegacyXProvider, async (req, res) => {
   try {
     const provider = String(process.env.X_DATA_PROVIDER || 'mock').toLowerCase();
     if (!['mock', 'socialdata'].includes(provider)) {
@@ -82,7 +94,7 @@ router.post('/poll-now', async (req, res) => {
   }
 });
 
-router.post('/poll-follows-now', async (req, res) => {
+router.post('/poll-follows-now', requireLegacyXProvider, async (req, res) => {
   try {
     const provider = String(process.env.X_DATA_PROVIDER || 'mock').toLowerCase();
     if (provider !== 'twitterapi') {
@@ -102,7 +114,7 @@ router.post('/poll-follows-now', async (req, res) => {
   }
 });
 
-router.get('/follow-polls', async (req, res) => {
+router.get('/follow-polls', requireLegacyXProvider, async (req, res) => {
   try {
     const result = await db.query(
       `SELECT p.*, k.x_handle AS kol_handle
@@ -120,6 +132,13 @@ router.get('/follow-polls', async (req, res) => {
 router.get('/provider-usage', async (req, res) => {
   try {
     const requested = String(req.query.provider || process.env.X_DATA_PROVIDER || 'mock').toLowerCase();
+    if (requested !== '6551' && !legacyXProvidersEnabled()) {
+      return res.status(410).json({
+        ok: false,
+        error: 'Legacy X provider usage is unavailable in the production runtime',
+        code: 'LEGACY_X_PROVIDER_DISABLED'
+      });
+    }
     const provider = ['twitterapi', '6551'].includes(requested) ? requested : 'twitterapi';
     const usage = await providerUsage.getDailyUsage(provider);
     res.json({ ok: true, data: usage });
@@ -128,7 +147,7 @@ router.get('/provider-usage', async (req, res) => {
   }
 });
 
-router.post('/stream/sync', async (req, res) => {
+router.post('/stream/sync', requireLegacyXProvider, async (req, res) => {
   try {
     if (String(process.env.X_DATA_PROVIDER || '').toLowerCase() !== 'twitterapi') {
       return res.status(409).json({ ok: false, error: 'Current provider does not support TwitterAPI.io Stream', code: 'STREAM_UNSUPPORTED' });

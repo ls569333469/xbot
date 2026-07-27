@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { codeVersion } = require('../lib/code-version');
 const db = require('../lib/db');
 const logger = require('../lib/logger');
 const { getTradingMode } = require('../lib/runtime-mode');
@@ -111,7 +112,7 @@ class ShadowLiveEvaluator {
          ) VALUES ($1,$2,24,50,$3,$4)
          RETURNING id, started_at`,
         [fingerprint.hash, fingerprint.normalized,
-          process.env.XBOT_CODE_VERSION || 'local-worktree', now]
+          codeVersion(), now]
       );
       this.sessionId = Number(created.rows[0].id);
       this.sessionStartedAt = created.rows[0].started_at;

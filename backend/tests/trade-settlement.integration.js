@@ -7,8 +7,10 @@ require('./integration-guard');
 const db = require('../lib/db');
 const repository = require('../domains/trade/trade-repository');
 const gmgnAdapter = require('../lib/gmgn-adapter');
+const { createTradeIntent } = require('./p12-fixtures');
 
 const createdPositions = [];
+const createdIntents = [];
 
 async function createPosition(suffix, status = 'open_unprotected') {
   const result = await db.query(
@@ -32,12 +34,21 @@ async function createPosition(suffix, status = 'open_unprotected') {
 test('confirmed partial sell updates lot, proceeds, and PnL without closing the position', async () => {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const position = await createPosition(suffix);
+  const intent = await createTradeIntent(db, {
+    suffix: `partial-${suffix}`,
+    side: 'sell',
+    positionId: position.id,
+    walletAddress: `Wallet${suffix}`,
+    contractAddress: `SettlementToken${suffix}`,
+    status: 'awaiting_result'
+  });
+  createdIntents.push(intent.id);
   const attempt = (await db.query(
     `INSERT INTO trade_attempts
-      (position_id, side, idempotency_key, chain, wallet_address,
+      (intent_id, attempt_no, position_id, side, idempotency_key, chain, wallet_address,
        input_token, output_token, input_amount_raw, status, request_fingerprint, metadata)
-     VALUES ($1,'sell',$2,'sol',$3,$4,$5,'40000000','confirming',$6,'{}') RETURNING *`,
-    [position.id, `partial-sell-${suffix}`, `Wallet${suffix}`, `SettlementToken${suffix}`,
+     VALUES ($1,1,$2,'sell',$3,'sol',$4,$5,$6,'40000000','confirming',$7,'{}') RETURNING *`,
+    [intent.id, position.id, `intent:${intent.id}:attempt:1`, `Wallet${suffix}`, `SettlementToken${suffix}`,
       'So11111111111111111111111111111111111111112', `fingerprint-${suffix}`]
   )).rows[0];
   const order = (await db.query(
@@ -84,12 +95,21 @@ test('confirmed partial sell updates lot, proceeds, and PnL without closing the 
 test('strategy trigger claims ownership before a prepared manual close can submit', async () => {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const position = await createPosition(suffix, 'open_protected');
+  const intent = await createTradeIntent(db, {
+    suffix: `manual-${suffix}`,
+    side: 'sell',
+    positionId: position.id,
+    walletAddress: `Wallet${suffix}`,
+    contractAddress: `SettlementToken${suffix}`,
+    status: 'submitting'
+  });
+  createdIntents.push(intent.id);
   const manual = (await db.query(
     `INSERT INTO trade_attempts
-      (position_id, side, idempotency_key, chain, wallet_address,
+      (intent_id, attempt_no, position_id, side, idempotency_key, chain, wallet_address,
        input_token, output_token, input_amount_raw, status, request_fingerprint, metadata)
-     VALUES ($1,'sell',$2,'sol',$3,$4,$5,'100000000','preparing',$6,'{}') RETURNING *`,
-    [position.id, `manual-sell-${suffix}`, `Wallet${suffix}`, `SettlementToken${suffix}`,
+     VALUES ($1,1,$2,'sell',$3,'sol',$4,$5,$6,'100000000','preparing',$7,'{}') RETURNING *`,
+    [intent.id, position.id, `intent:${intent.id}:attempt:1`, `Wallet${suffix}`, `SettlementToken${suffix}`,
       'So11111111111111111111111111111111111111112', `manual-fingerprint-${suffix}`]
   )).rows[0];
   const group = (await db.query(
@@ -123,6 +143,7 @@ test.after(async () => {
     const attempts = await db.query('SELECT id FROM trade_attempts WHERE position_id = ANY($1::int[])', [createdPositions]);
     const attemptIds = attempts.rows.map((row) => row.id);
     if (attemptIds.length > 0) await db.query('DELETE FROM trade_attempts WHERE id = ANY($1::bigint[])', [attemptIds]);
+    if (createdIntents.length > 0) await db.query('DELETE FROM trade_intents WHERE id = ANY($1::bigint[])', [createdIntents]);
     await db.query("DELETE FROM notification_outbox WHERE aggregate_type IN ('position','strategy_group') AND aggregate_id = ANY($1::text[])", [createdPositions.map(String)]);
     await db.query('DELETE FROM positions WHERE id = ANY($1::int[])', [createdPositions]);
   }

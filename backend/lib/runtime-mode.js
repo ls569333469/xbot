@@ -1,3 +1,5 @@
+const { legacyPaperEnabled } = require('./legacy-features');
+
 const VALID_TRADING_MODES = new Set(['signal', 'paper', 'live']);
 
 function getTradingMode(env = process.env) {
@@ -5,6 +7,11 @@ function getTradingMode(env = process.env) {
   if (!VALID_TRADING_MODES.has(mode)) {
     const error = new Error(`Unsupported TRADING_MODE: ${mode}`);
     error.code = 'INVALID_TRADING_MODE';
+    throw error;
+  }
+  if (mode === 'paper' && !legacyPaperEnabled(env)) {
+    const error = new Error('Paper trading is isolated from production; enable XBOT_LEGACY_PAPER_ENABLED explicitly');
+    error.code = 'LEGACY_PAPER_DISABLED';
     throw error;
   }
   return mode;

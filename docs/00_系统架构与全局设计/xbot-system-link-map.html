@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XBOT 系统架构与交易链路图</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c0f14;
+      --surface: #121720;
+      --surface-2: #171d27;
+      --line: #2b3544;
+      --text: #e8edf5;
+      --muted: #94a0b2;
+      --green: #21d19f;
+      --blue: #5c9dff;
+      --yellow: #f2b84b;
+      --red: #f16b6b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      padding: 28px clamp(18px, 4vw, 64px) 22px;
+      background: #10151d;
+    }
+
+    h1, h2, p { margin: 0; }
+    h1 { font-size: clamp(23px, 3vw, 34px); font-weight: 600; letter-spacing: 0; }
+    header p { margin-top: 7px; color: var(--muted); }
+
+    main { padding: 22px clamp(18px, 4vw, 64px) 48px; }
+
+    .status-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .status-item {
+      min-height: 78px;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+    }
+
+    .status-item strong { display: block; font-size: 14px; font-weight: 600; }
+    .status-item span { display: block; margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .status-item.verified strong { color: var(--green); }
+    .status-item.active strong { color: var(--blue); }
+    .status-item.pending strong { color: var(--yellow); }
+    .status-item.blocked strong { color: var(--red); }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .tabs, .zoom-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    button {
+      min-height: 34px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--surface-2);
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+    }
+
+    button:hover, button:focus-visible { border-color: var(--blue); outline: none; }
+    button.active { border-color: var(--blue); background: #1b3557; color: #dceaff; }
+    .zoom-label { min-width: 52px; color: var(--muted); text-align: center; }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .view-title { margin: 10px 0 8px; font-size: 18px; font-weight: 600; }
+    .view-note { margin-bottom: 12px; color: var(--muted); }
+
+    .diagram-viewport {
+      min-height: 720px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0f141b;
+      overscroll-behavior: contain;
+    }
+
+    .diagram-stage {
+      width: max-content;
+      min-width: 1780px;
+      min-height: 720px;
+      padding: 46px 56px 64px;
+      transform-origin: top left;
+    }
+
+    .mermaid { width: max-content; min-width: 1660px; }
+    .mermaid svg { max-width: none !important; height: auto; }
+
+    .legend {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-top: 11px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend-item { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .dot.green { background: var(--green); }
+    .dot.blue { background: var(--blue); }
+    .dot.yellow { background: var(--yellow); }
+    .dot.red { background: var(--red); }
+
+    .error {
+      max-width: 900px;
+      margin: 32px auto;
+      padding: 18px;
+      border: 1px solid var(--red);
+      color: #ffbaba;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 760px) {
+      .status-row { grid-template-columns: 1fr 1fr; }
+      .diagram-viewport { min-height: 600px; }
+      .diagram-stage { min-height: 600px; }
+    }
+
+    @media (max-width: 480px) {
+      .status-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>XBOT 系统架构与交易链路图</h1>
+    <p>四链真实交易内核、Robinhood GMGN 接入验证、6551 信号链路、链上验真与 P12 扩展边界</p>
+  </header>
+
+  <main>
+    <section class="status-row" aria-label="当前系统状态">
+      <div class="status-item verified">
+        <strong>四链真实闭环</strong>
+        <span>SOL 4/4 · BSC 2/2 · Base 1/1 · ETH 1/1</span>
+      </div>
+      <div class="status-item active">
+        <strong>运行时状态</strong>
+        <span>Engine、live_policy 与链开关以当前前端/API 为准</span>
+      </div>
+      <div class="status-item pending">
+        <strong>P12 统一迭代</strong>
+        <span>核心代码已实现；重试默认关闭，Migration 与真实回归待验收</span>
+      </div>
+      <div class="status-item pending">
+        <strong>Robinhood</strong>
+        <span>UI 与禁用态 Manifest 已接入；真实交易和重试仍锁定</span>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav class="tabs" aria-label="链路视图">
+        <button class="tab active" data-view="architecture">完整架构</button>
+        <button class="tab" data-view="buy">信号到买入</button>
+        <button class="tab" data-view="close">平仓与验真</button>
+        <button class="tab" data-view="extension">新链与新工具</button>
+      </nav>
+      <div class="zoom-controls" aria-label="图表控制">
+        <button id="zoom-out" type="button" aria-label="缩小">-</button>
+        <span id="zoom-label" class="zoom-label">100%</span>
+        <button id="zoom-in" type="button" aria-label="放大">+</button>
+        <button id="zoom-reset" type="button">重置</button>
+        <button id="fullscreen" type="button">全屏</button>
+      </div>
+    </div>
+
+    <section id="architecture" class="view active">
+      <h2 class="view-title">完整架构</h2>
+      <p class="view-note">从信号接入、匹配、交易执行到链上结算的整体关系。</p>
+      <div class="diagram-viewport">
+        <div class="diagram-stage"><div class="mermaid">
+flowchart LR
+  subgraph INGEST["信号接入层 · ingestion process"]
+    WSS["6551 Max WSS"] --> WATCH["Watch 管理\n单例连接 / 心跳 / 重连"]
+    WATCH --> INBOX["Event Inbox\n原始事件 / 去重 / 重放"]
+    INBOX --> NORM["Normalizer\n事件标准化 / Tweet 补全"]
+    NORM --> ACT["X Activity\nfollow / reply / quote / tweet"]
+  end
+
+  subgraph MATCH["信号判断层"]
+    ACT --> REL["显式关系匹配\nactor -> target"]
+    REL --> WL["Whitelist CA\n一个 CA 可绑定多个 KOL"]
+    WL --> SIGNAL["Trade Signal"]
+    SIGNAL --> POLICY["Live Policy\nprovider / chain / event / whitelist"]
+    POLICY --> RISK["Risk Manager\n税 / 流动性 / 滑点 / 余额 / 预算"]
+  end
+
+  subgraph EXEC["交易执行层 · execution process"]
+    RISK --> NOTIFY["PostgreSQL NOTIFY"]
+    NOTIFY --> QUEUE["Live Execution Queue\n并发控制 / 领取信号"]
+    QUEUE --> READY["Readiness Gate\nLive / Armed / 逐链 / 预算"]
+    READY --> PREP["Prepare Snapshot"]
+    PREP --> INTENT["Trade Intent\nsource / scope / principal reserve"]
+    INTENT --> ATTEMPT["Trade Attempt\nattempt_no / immutable snapshot"]
+    ATTEMPT --> LANE["Wallet Write Lane\n同链同钱包串行"]
+    LANE --> GMGN["GMGN Agent API\nQuote / Gas / Swap / Order"]
+    GMGN --> ORDER["Trade Order\nprovider order_id / tx_hash"]
+  end
+
+  subgraph CHAIN["多链适配与独立验真"]
+    ORDER --> ADAPTER["Chain Adapter"]
+    ADAPTER --> SOL["SOL\nSolana RPC"]
+    ADAPTER --> BSC["BSC\nEVM RPC / chainId 56"]
+    ADAPTER --> BASE["Base\nEVM RPC / chainId 8453"]
+    ADAPTER --> ETH["Ethereum\nEVM RPC / chainId 1"]
+    SOL --> RECEIPT["Chain Receipt\n确认数 / Token 转账 / 原生币到账"]
+    BSC --> RECEIPT
+    BASE --> RECEIPT
+    ETH --> RECEIPT
+  end
+
+  subgraph SETTLE["状态与结算"]
+    RECEIPT --> RECON["Always-on Reconciler\nGMGN Order + RPC Receipt"]
+    RECON --> EVIDENCE["Failure Evidence\nReceipt / nonce / balance / activity"]
+    EVIDENCE --> DECISION["Retry Decision\n仅 definitive_failed_no_fill"]
+    DECISION --> INTENT
+    EVIDENCE --> QUARANTINE["Wallet Quarantine\n状态不确定时冻结对应钱包"]
+    ATTEMPT --> LOT["Position Lots\n剩余数量 / 成本 / 收益"]
+    LOT --> POSITION["Position / History"]
+    LOT --> BUDGET["Budget Ledger\n预留 / 确认扣除 / 失败释放"]
+    RECON --> STRATEGY["TP / SL Strategy\n创建 / 取消 / 触发"]
+  end
+
+  subgraph CONTROL["控制与展示"]
+    API["REST API"] --> UI["Frontend Dashboard\nSignals / Positions / History / Settings"]
+    WSUI["WebSocket"] --> UI
+    HEART["Readiness / Heartbeat / Outbox"] --> API
+  end
+
+  POSITION --> API
+  ATTEMPT --> WSUI
+  SIGNAL --> WSUI
+
+  classDef verified fill:#123d35,stroke:#21d19f,color:#e8fff8
+  classDef active fill:#17365d,stroke:#5c9dff,color:#e8f1ff
+  classDef wait fill:#4a3715,stroke:#f2b84b,color:#fff4d6
+  classDef red fill:#4b2024,stroke:#f16b6b,color:#ffe4e4
+  classDef neutral fill:#1a202a,stroke:#64748b,color:#e8edf5
+  class WSS,INBOX,NORM,ACT,REL,WL,SIGNAL,GMGN,ORDER,SOL,BSC,BASE,ETH,RECEIPT,RECON,LOT,POSITION,UI verified
+  class POLICY,RISK,QUEUE,READY,PREP,INTENT,ATTEMPT,LANE,ADAPTER,EVIDENCE,DECISION,STRATEGY,API,WSUI,HEART active
+  class BUDGET,NOTIFY wait
+  class QUARANTINE red
+  class WATCH,CONTROL neutral
+        </div></div>
+      </div>
+    </section>
+
+    <section id="buy" class="view">
+      <h2 class="view-title">信号到真实买入</h2>
+      <p class="view-note">一次有效互动如何变成一次真实买入，以及哪些节点会阻止下单。</p>
+      <div class="diagram-viewport">
+        <div class="diagram-stage"><div class="mermaid">
+flowchart LR
+  A["6551 WSS 事件"] --> B["Inbox 去重"] --> C["标准化事件"]
+  C --> D["显式关系\nactor -> target"]
+  D --> E{"匹配白名单 CA?"}
+  E -->|否| X["记录活动\n不生成交易信号"]
+  E -->|是| F["Trade Signal"]
+  F --> G{"Live Policy 通过?"}
+  G -->|否| Y["拒绝\n记录原因"]
+  G -->|是| H["Live Queue"]
+  H --> I{"Readiness Gate"}
+  I -->|否| Z["不提交资金写请求"]
+  I -->|是| J["读取缓存上下文"]
+  J --> K["GMGN Quote / Gas / Security / Pool"]
+  K --> L{"Risk + Budget + Snapshot"}
+  L -->|失败| Y
+  L -->|通过| M["Trade Intent + Principal/Fee Reserve"]
+  M --> N["Attempt + Wallet Write Lane"]
+  N --> O["GMGN POST Swap\n单次资金写请求"]
+  O --> P{"返回 order_id?"}
+  P -->|否| XU["submission_uncertain\nWallet Quarantine"]
+  P -->|是| Q["Trade Order\n进入对账"]
+  Q --> R["GMGN query_order"]
+  R -->|pending| R
+  R -->|confirmed| S["RPC Receipt"]
+  S --> T{"Token transfer + receipt 验真"}
+  T -->|通过| U["Position open\nLot + Budget + TP/SL"]
+  T -->|不足| V["reconciliation_required"]
+  R -->|failed / expired| W["Failure Evidence\n先证明未成交"]
+  W --> WW{"definitive_failed_no_fill?"}
+  WW -->|否| XU
+  WW -->|是| WR["Retry Decision\n次数/窗口/费用/熔断"]
+  WR -->|允许| N
+  WR -->|拒绝| Y
+
+  classDef green fill:#123d35,stroke:#21d19f,color:#e8fff8
+  classDef blue fill:#17365d,stroke:#5c9dff,color:#e8f1ff
+  classDef yellow fill:#4a3715,stroke:#f2b84b,color:#fff4d6
+  classDef red fill:#4b2024,stroke:#f16b6b,color:#ffe4e4
+  class A,B,C,D,F,H,J,K,O,Q,R,S,U green
+  class G,I,L,M,N,P,T,WW,WR blue
+  class X,Y,Z,W yellow
+  class XU,V red
+        </div></div>
+      </div>
+    </section>
+
+    <section id="close" class="view">
+      <h2 class="view-title">真实平仓与链上验真</h2>
+      <p class="view-note">平仓不是点击后立即把仓位改成已关闭，而是必须等 GMGN 和链上证据完成对账。</p>
+      <div class="diagram-viewport">
+        <div class="diagram-stage"><div class="mermaid">
+flowchart LR
+  A["Frontend 平仓"] --> B["Close Prepare\n读取余额 / 份额 / Strategy"]
+  B --> C{"存在 TP/SL?"}
+  C -->|是| D["取消 Strategy"]
+  D --> E{"取消已被 GMGN 历史确认?"}
+  E -->|否| F["cancelling / uncertain\n禁止卖出"]
+  E -->|是| G["建立 Sell Attempt"]
+  C -->|否| G
+  G --> GL["Wallet Write Lane"]
+  GL --> H["GMGN Swap Sell\n一次真实资金写请求"]
+  H --> I["返回 order_id + tx_hash"]
+  I --> J["GMGN query_order"]
+  J -->|pending| J
+  J -->|confirmed| K["读取链上 Receipt"]
+  K --> L{"卖出 Token 数量准确?"}
+  L -->|否| M["reconciliation_required"]
+  L -->|是| N{"原生币到账可证明?"}
+  N -->|否| M
+  N -->|是| O["Finalize Confirmed Sell"]
+  O --> P["Position closed / partial"]
+  P --> Q["Lot 结算 + PnL + Budget"]
+  P --> R["TP/SL 策略终止"]
+  J -->|failed / expired| S["失败证据\n证明未成交后才允许重试"]
+  S --> ST{"结果确定?"}
+  ST -->|否| SU["close_uncertain\nWallet Quarantine"]
+  ST -->|是| SR["Sell Retry Attempt\n重新读 Lot 与余额"]
+  SR --> GL
+
+  subgraph PROOF["独立证据"]
+    T["SOL: Solana transaction meta"]
+    U["EVM: Receipt logs + native proceeds"]
+    V["RPC chainId + confirmations"]
+  end
+  K --> T
+  K --> U
+  K --> V
+
+  classDef green fill:#123d35,stroke:#21d19f,color:#e8fff8
+  classDef blue fill:#17365d,stroke:#5c9dff,color:#e8f1ff
+  classDef yellow fill:#4a3715,stroke:#f2b84b,color:#fff4d6
+  classDef red fill:#4b2024,stroke:#f16b6b,color:#ffe4e4
+  class A,B,D,G,GL,H,I,J,K,O,P,Q,R,T,U,V green
+  class C,E,L,N,ST,SR blue
+  class S yellow
+  class F,M,SU red
+        </div></div>
+      </div>
+    </section>
+
+    <section id="extension" class="view">
+      <h2 class="view-title">P12 架构治理、重试内核与 Robinhood</h2>
+      <p class="view-note">执行顺序固定为 P12-A 收敛 Chain/Provider 边界、P12-B 落地统一重试内核、P12-C 接入 Robinhood。Robinhood 是 GMGN 已支持的 EVM 链，不是独立交易 Provider；Binance 仅能补充已上币现货，不能替代 Robinhood 链上 CA 交易。</p>
+      <div class="diagram-viewport">
+        <div class="diagram-stage"><div class="mermaid">
+flowchart TB
+  DOMAIN["统一交易领域\nTrade Intent / Attempt / Order\nPosition / Lot / Budget / Reconciler"]
+  DOMAIN --> PROVIDER["P12-A TradingProvider 接口"]
+  DOMAIN --> CHAIN["P12-A ChainManifest 接口"]
+
+  PROVIDER --> GMGN["GMGN Provider\n已接入"]
+  PROVIDER --> JUPITER["Jupiter Provider\n未来"]
+  PROVIDER --> BINANCE["Binance Provider\n仅作为已上币现货补充"]
+
+  CHAIN --> SOL["SOL Manifest\n已接入"]
+  CHAIN --> EVM["EVM Manifest\nBSC / Base / ETH"]
+  EVM --> RHCHAIN["P12-C Robinhood EVM Manifest\nGMGN 只读已验证 / 实盘待接入"]
+  CHAIN --> NEWCHAIN["新链 Manifest\n地址 / Gas / RPC / Receipt"]
+
+  GMGN --> NORMALIZE["统一 DTO\nQuote / Order / Strategy / Balance"]
+  JUPITER --> NORMALIZE
+  BINANCE --> NORMALIZE
+  NORMALIZE --> DOMAIN
+
+  SOL --> RECEIPT["Receipt Verifier"]
+  EVM --> RECEIPT
+  RHCHAIN --> RECEIPT
+  NEWCHAIN --> RECEIPT
+  RECEIPT --> SETTLE["统一结算"]
+  DOMAIN --> SETTLE
+
+  P12["P12-B Retry Orchestrator\n只允许 definitive_failed_no_fill 后创建下一 Attempt"] --> DOMAIN
+  P12 --> RETRY["Trade Retry Decision\nAttempt No / Retry Window / Audit"]
+  RETRY --> DOMAIN
+  LANE["Wallet Write Lane / Quarantine\n同链同钱包隔离"] --> DOMAIN
+  CIRCUIT["Chain Failure Circuit\n只阻断故障链新 Buy"] --> DOMAIN
+
+  classDef green fill:#123d35,stroke:#21d19f,color:#e8fff8
+  classDef blue fill:#17365d,stroke:#5c9dff,color:#e8f1ff
+  classDef yellow fill:#4a3715,stroke:#f2b84b,color:#fff4d6
+  classDef red fill:#4b2024,stroke:#f16b6b,color:#ffe4e4
+  class DOMAIN,NORMALIZE,GMGN,SOL,EVM,RECEIPT,SETTLE green
+  class PROVIDER,CHAIN,JUPITER,BINANCE,NEWCHAIN,P12,RETRY,LANE,CIRCUIT blue
+  class RHCHAIN yellow
+        </div></div>
+      </div>
+    </section>
+
+    <div class="legend" aria-label="状态图例">
+      <span class="legend-item"><i class="dot green"></i>已接入或已验证</span>
+      <span class="legend-item"><i class="dot blue"></i>控制、门禁或扩展接口</span>
+      <span class="legend-item"><i class="dot yellow"></i>当前记录、降级或待处理</span>
+      <span class="legend-item"><i class="dot red"></i>阻断、不确定或尚未实现</span>
+    </div>
+  </main>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme: 'dark',
+      flowchart: { useMaxWidth: false, htmlLabels: true, curve: 'basis' },
+      themeVariables: {
+        background: '#0f141b',
+        primaryColor: '#17365d',
+        primaryTextColor: '#e8edf5',
+        primaryBorderColor: '#5c9dff',
+        lineColor: '#718096',
+        secondaryColor: '#1a202a',
+        tertiaryColor: '#121720',
+        clusterBkg: '#121720',
+        clusterBorder: '#2b3544',
+        fontFamily: 'Segoe UI, Microsoft YaHei, sans-serif'
+      }
+    });
+
+    const tabs = [...document.querySelectorAll('.tab')];
+    const views = [...document.querySelectorAll('.view')];
+    let zoom = 1;
+
+    function setZoom(value) {
+      zoom = Math.min(1.8, Math.max(0.55, value));
+      document.querySelectorAll('.diagram-stage').forEach(stage => {
+        stage.style.zoom = String(zoom);
+      });
+      document.getElementById('zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+    }
+
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+      const target = tab.dataset.view;
+      tabs.forEach(item => item.classList.toggle('active', item === tab));
+      views.forEach(view => view.classList.toggle('active', view.id === target));
+      setZoom(zoom);
+    }));
+
+    document.getElementById('zoom-out').addEventListener('click', () => setZoom(zoom - 0.1));
+    document.getElementById('zoom-in').addEventListener('click', () => setZoom(zoom + 0.1));
+    document.getElementById('zoom-reset').addEventListener('click', () => setZoom(1));
+    document.getElementById('fullscreen').addEventListener('click', () => {
+      const viewport = document.querySelector('.view.active .diagram-viewport');
+      if (document.fullscreenElement) document.exitFullscreen();
+      else viewport.requestFullscreen?.();
+    });
+
+    async function renderDiagrams() {
+      const nodes = [...document.querySelectorAll('.mermaid')];
+      for (const [index, node] of nodes.entries()) {
+        const source = node.textContent;
+        try {
+          const result = await mermaid.render(`xbot-diagram-${index}`, source);
+          node.innerHTML = result.svg;
+        } catch (error) {
+          node.className = 'error';
+          node.textContent = `图表渲染失败：${error.message}`;
+        }
+      }
+      setZoom(1);
+    }
+
+    renderDiagrams();
+  </script>
+</body>
+</html>

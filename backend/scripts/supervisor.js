@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const envSettings = require('../domains/system/env-settings');
 
 const ROOT = path.resolve(__dirname, '..');
 const SERVER = path.join(ROOT, 'server.js');
@@ -12,6 +13,8 @@ const expectedStops = new Set();
 let stopping = false;
 let restarting = false;
 let restartTimer = null;
+let pendingRestartRoles = new Set();
+let lastEnvValues = envSettings.readEnv();
 
 function log(message) {
   process.stdout.write(`[supervisor] ${message}\n`);
@@ -60,23 +63,27 @@ function stopChild(child) {
   });
 }
 
-async function restartAll(reason) {
+async function restartRoles(roles, reason) {
   if (stopping || restarting) return;
   restarting = true;
-  log(`Restarting all roles (${reason})`);
-  const current = [...children.values()];
+  const targets = [...new Set(roles)].filter((role) => ROLES.includes(role));
+  log(`Restarting roles ${targets.join(', ')} (${reason})`);
+  const current = targets.map((role) => children.get(role)).filter(Boolean);
   await Promise.all(current.map(stopChild));
-  children.clear();
-  if (!stopping) ROLES.forEach(spawnRole);
+  targets.forEach((role) => children.delete(role));
+  if (!stopping) targets.forEach(spawnRole);
   restarting = false;
 }
 
-function scheduleAllRestart(reason) {
+function scheduleRestart(roles, reason) {
   if (stopping) return;
+  roles.forEach((role) => pendingRestartRoles.add(role));
   if (restartTimer) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartTimer = null;
-    void restartAll(reason);
+    const targets = [...pendingRestartRoles];
+    pendingRestartRoles = new Set();
+    if (targets.length > 0) void restartRoles(targets, reason);
   }, 500);
 }
 
@@ -92,8 +99,18 @@ async function shutdown(signal) {
 
 ROLES.forEach(spawnRole);
 fs.watchFile(ENV_PATH, { interval: 500 }, (current, previous) => {
-  if (current.mtimeMs !== previous.mtimeMs) scheduleAllRestart('.env changed');
+  if (current.mtimeMs === previous.mtimeMs) return;
+  const nextValues = envSettings.readEnv();
+  const changedKeys = [...new Set([...Object.keys(lastEnvValues), ...Object.keys(nextValues)])]
+    .filter((key) => (lastEnvValues[key] || '') !== (nextValues[key] || ''));
+  lastEnvValues = nextValues;
+  changedKeys.forEach((key) => {
+    if (nextValues[key] === undefined) delete process.env[key];
+    else process.env[key] = nextValues[key];
+  });
+  const impact = envSettings.impactForKeys(changedKeys);
+  if (impact.restart_required) scheduleRestart(impact.restart_roles, `.env changed: ${impact.impact_scope}`);
+  else log(`Applied hot configuration (${impact.impact_scope})`);
 });
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
-

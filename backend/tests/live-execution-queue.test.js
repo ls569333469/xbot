@@ -68,7 +68,7 @@ test('live execution queue scans durable recorded signals only after the arm bou
   const db = {
     query: async (sql, params) => {
       calls.push({ sql, params });
-      if (sql.includes('FROM trade_signals') && sql.includes('ORDER BY created_at')) {
+      if (sql.includes('FROM trade_signals') && sql.includes('ORDER BY COALESCE')) {
         return { rows: [{ id: 43, execution_mode: 'live' }] };
       }
       if (sql.includes("status = 'pending'") && sql.includes('RETURNING')) {
@@ -98,7 +98,10 @@ test('live execution queue scans durable recorded signals only after the arm bou
   await queue.waitForIdle();
   assert.deepEqual(result, { status: 'completed', found: 1, enqueued: 1 });
   assert.deepEqual(executions, [43]);
-  assert.equal(calls.find((call) => call.sql.includes('ORDER BY created_at')).params[0], armedAt);
+  const scan = calls.find((call) => call.sql.includes('ORDER BY COALESCE'));
+  assert.equal(scan.params[0], armedAt);
+  assert.match(scan.sql, /live_activation_state = 'live_ready'/);
+  assert.match(scan.sql, /activity\.source_created_at/);
 });
 
 test('live execution queue accepts committed signal notifications from the ingestion process', async () => {
@@ -124,4 +127,29 @@ test('live execution queue accepts committed signal notifications from the inges
   await queue.waitForIdle();
   assert.deepEqual(executions, [44]);
   assert.ok(queue.getStatus().lastNotificationAt);
+});
+
+test('final policy rejection after queue claim never reaches the GMGN execution call', async () => {
+  const db = fakeDb();
+  let executed = false;
+  const error = Object.assign(new Error('KOL actor is no longer enabled'), {
+    code: 'LIVE_TRIGGER_EVENT_NOT_ALLOWED'
+  });
+  const queue = new LiveExecutionQueue({
+    db,
+    engine: { getArmed: () => true, getArmedAt: () => new Date(0) },
+    modeProvider: () => 'live',
+    execution: {
+      prepare: async () => { throw error; },
+      execute: async () => { executed = true; }
+    },
+    logger: { error() {}, warn() {} }
+  });
+  queue.enqueue([{ id: 45, execution_mode: 'live' }]);
+  await queue.waitForIdle();
+  assert.equal(executed, false);
+  assert.ok(db.calls.some((call) => (
+    call.sql.includes("status = 'rejected'")
+      && call.params[1] === 'LIVE_TRIGGER_EVENT_NOT_ALLOWED'
+  )));
 });

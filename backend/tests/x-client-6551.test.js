@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { X6551Client, normalizeWatchFlags } = require('../lib/x-client-6551');
+const { X6551Client, normalizeTweets, normalizeWatchFlags } = require('../lib/x-client-6551');
 
 function response(payload, options = {}) {
   return {
@@ -85,4 +85,70 @@ test('X6551Client does not finalize the same usage reservation twice', async () 
 
   await assert.rejects(client.getUserProfile('neet_sol'), /usage database unavailable/);
   assert.equal(finalizeCalls, 1);
+});
+
+test('X6551Client accepts a provider-confirmed profile without a numeric user ID', async () => {
+  const client = new X6551Client('test-token', {
+    usage: {
+      reserveUsage: async () => ({ reservedCredits: 0 }),
+      finalizeUsage: async () => {}
+    },
+    fetchImpl: async () => response({
+      success: true,
+      data: { screenName: 'MEADGod', name: 'MEAD' }
+    })
+  });
+
+  assert.deepEqual(await client.getUserProfile('@MEADGod'), {
+    id: 'meadgod',
+    handle: 'meadgod',
+    name: 'MEAD',
+    followers_count: 0,
+    following_count: 0
+  });
+});
+
+test('X6551Client rejects a profile response for a different account', async () => {
+  const client = new X6551Client('test-token', {
+    usage: {
+      reserveUsage: async () => ({ reservedCredits: 0 }),
+      finalizeUsage: async () => {}
+    },
+    fetchImpl: async () => response({
+      success: true,
+      data: { screenName: 'DifferentAccount', name: 'Wrong user' }
+    })
+  });
+
+  await assert.rejects(client.getUserProfile('@MEADGod'), { code: 'X6551_PROFILE_MISMATCH' });
+});
+
+test('X6551Client exposes bounded user tweet and search helpers', async () => {
+  const requests = [];
+  const client = new X6551Client('test-token', {
+    usage: {
+      reserveUsage: async () => ({ reservedCredits: 0 }),
+      finalizeUsage: async () => {}
+    },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return response({ success: true, data: { tweets: [{ id: '123', text: 'CA 0xabc', userScreenName: 'Project' }] } });
+    }
+  });
+
+  assert.deepEqual(await client.getUserTweets('@@Project', { maxResults: 500 }), [{
+    id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project'
+  }]);
+  assert.deepEqual(await client.searchTweets({ keywords: '0xabc', fromUser: '@Project', maxResults: 2 }), [{
+    id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project'
+  }]);
+  assert.match(requests[0].url, /twitter_user_tweets$/);
+  assert.equal(requests[0].body.maxResults, 100);
+  assert.deepEqual(requests[1].body, {
+    maxResults: 2,
+    product: 'Top',
+    keywords: '0xabc',
+    fromUser: 'project'
+  });
+  assert.deepEqual(normalizeTweets({ data: [{ id: 'profile-only' }] }), []);
 });

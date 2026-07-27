@@ -1136,13 +1136,25 @@ class Notifier {
 
 ### 7.8 SettingsPage 设置
 
-| 区域 | 内容 |
+设置页固定按用户任务分成三个视图，不再按照后端模块追加卡片：
+
+| 视图 | 内容 |
 |---|---|
-| 引擎控制 | 🔒锁定/🔓解锁 大按钮 + 状态指示灯 |
-| 链级配置（Tab 切换） | 启用/禁用 + 钱包 + 日/周预算 + 单笔上限 + 默认 TP/SL/滑点 |
-| 全局风控 | 安全检查开关 + 税率阈值 + 失败锁定阈值 |
-| X 监控 | 轮询间隔 + 每轮 KOL 数 |
-| API 状态（只读） | GMGN 状态 + X 数据源状态 + 绑定钱包 |
+| 交易 | 真实交易启动/停止、失败后自动重试单开关、白名单派生范围摘要 |
+| 运行状态 | GMGN、6551、五链可交易状态；正常只显示摘要，诊断详情默认折叠 |
+| 系统维护 | API Key、RPC、数据库、管理员口令、告警测试和凭据轮换 |
+
+白名单拥有 CA、链、金额、次数、滑点、TP/SL 和 X 关系事件的唯一配置权。设置页不得建立第二套业务参数。新链诊断、限时实盘验收和生产批准不提供前端入口。
+
+### 7.9 维护工具产品边界
+
+维护工具不是日常产品功能，默认只提供后端或 CLI 入口。其长期清单、调用条件和副作用以 [`maintenance_tool_registry.md`](./maintenance_tool_registry.md) 为准。
+
+1. 新链首次接入使用只读诊断、单白名单限时验收和生产批准；完成后前端不保留验收卡片。
+2. 钱包隔离解除和链熔断重置只在真实异常存在时显示，恢复后自动退出界面。
+3. 6551 Watch 正常由 Outbox 自动同步；人工 `watch-apply` 仅作为后台补偿工具。
+4. 所有涉及资金范围、凭据或生产批准的维护动作必须要求 `ADMIN_TOKEN`、显式确认和审计记录。
+5. 新增维护工具必须先登记，不得通过新增设置卡片规避产品评审。
 
 ---
 
@@ -1218,7 +1230,21 @@ class Notifier {
 | `GET` | `/api/system/engine-status` | 引擎状态 |
 | `GET` | `/api/system/budgets` | 各链预算 |
 
-### 8.2 WebSocket 事件
+### 8.2 管理员维护接口
+
+| 方法 | 路径 | 用途 | 日常前端 |
+|---|---|---|---|
+| `POST` | `/api/trade/chains/:chain/diagnose` | 新链只读诊断与证据生成 | 无 |
+| `POST` | `/api/trade/chains/:chain/acceptance/start` | 开启最长 30 分钟、单白名单验收作用域 | 无 |
+| `POST` | `/api/trade/acceptance/finish` | 结束或取消验收作用域 | 无 |
+| `POST` | `/api/trade/chains/:chain/approve` | 根据完整证据批准新链生产交易 | 无 |
+| `POST` | `/api/x-monitor/6551/watch-apply` | 自动 Watch 同步失败后的人工补偿 | 无写入按钮 |
+| `POST` | `/api/trade/wallet-lanes/release` | 有证据地解除钱包写入隔离 | 仅异常时 |
+| `POST` | `/api/trade/chain-circuits/:chain/reset` | 修复原因后重置链级失败熔断 | 仅异常时 |
+
+以上接口不得复用为普通业务流程。详细前置条件、确认文本和审计要求见维护工具登记表。
+
+### 8.3 WebSocket 事件
 
 ```
 ws://localhost:3011/ws

@@ -120,7 +120,7 @@ export default function PositionsPage() {
       bsc: 'BNB',
       base: 'ETH',
       eth: 'ETH',
-      robinhood: 'USD'
+      robinhood: 'ETH'
     };
     return symbolMap[chain] || 'SOL';
   };
@@ -151,7 +151,19 @@ export default function PositionsPage() {
     },
     {
       header: '状态',
-      accessor: (row: Position) => <StatusBadge status={row.status} />
+      accessor: (row: Position) => (
+        <div className="flex flex-col gap-xs">
+          <StatusBadge status={row.status} />
+          {row.trade_intent_id && (
+            <span className="text-xs text-secondary font-mono">
+              Intent #{row.trade_intent_id} · Attempt {row.attempt_no || '-'}
+            </span>
+          )}
+          {(row.failure_class || row.trade_error_code) && (
+            <span className="text-xs text-danger font-mono">{row.failure_class || row.trade_error_code}</span>
+          )}
+        </div>
+      )
     },
     {
       header: '入场价',

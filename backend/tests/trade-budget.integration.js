@@ -7,28 +7,20 @@ require('./integration-guard');
 const db = require('../lib/db');
 const repository = require('../domains/trade/trade-repository');
 
-test('global and chain transaction locks prevent concurrent whitelists exceeding a daily budget', async () => {
+async function approveSolForBudgetFixture() {
+  await db.query(
+    `UPDATE chain_live_readiness
+     SET implemented = true, contract_tested = true, live_enabled = true, updated_at = NOW()
+     WHERE chain = 'sol'`
+  );
+}
+
+test('independent whitelist budgets are not blocked by removed chain or global limits', async () => {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
-  const originalDaily = process.env.GMGN_GLOBAL_DAILY_USD_LIMIT;
-  const originalWeekly = process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT;
-  process.env.GMGN_GLOBAL_DAILY_USD_LIMIT = '1000';
-  process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT = '1000';
   const ids = { kol: null, activities: [], whitelists: [], signals: [] };
-  const configResult = await db.query("SELECT value_json FROM config WHERE key = 'chain_configs'");
-  const originalConfig = configResult.rows[0].value_json;
-  const chainConfigs = structuredClone(originalConfig);
-  chainConfigs.sol = {
-    ...chainConfigs.sol,
-    enabled: true,
-    dailyBudget: 0.015,
-    weeklyBudget: 1,
-    maxPerTrade: 0.02,
-    maxOpenPositions: 100,
-    dailyLossLimit: 100
-  };
 
   try {
-    await db.query("UPDATE config SET value_json = $1 WHERE key = 'chain_configs'", [chainConfigs]);
+    await approveSolForBudgetFixture();
     const kol = await db.query(
       `INSERT INTO x_kol_accounts(x_user_id, x_handle, enabled)
        VALUES ($1,$2,true) RETURNING id`,
@@ -64,7 +56,7 @@ test('global and chain transaction locks prevent concurrent whitelists exceeding
         walletNativeBalance: 1,
         inputAmountRaw: '10000000',
         budgetNative: '0.01',
-        feeReserveNative: '0',
+        feeReserveNative: '0.0002',
         budgetUsdSnapshot: 10,
         snapshotHash: `snapshot-${index}`,
         cacheMeta: {},
@@ -75,45 +67,29 @@ test('global and chain transaction locks prevent concurrent whitelists exceeding
     }
 
     const results = await Promise.allSettled(prepared.map(item => repository.createBuyAttempt(item)));
-    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
-    const rejected = results.find(result => result.status === 'rejected');
-    assert.equal(rejected.reason.code, 'CHAIN_DAILY_BUDGET_EXCEEDED');
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 20);
   } finally {
-    await db.query("UPDATE config SET value_json = $1 WHERE key = 'chain_configs'", [originalConfig]);
+    const intentIds = ids.signals.length
+      ? (await db.query(
+        'SELECT DISTINCT intent_id FROM trade_attempts WHERE signal_id = ANY($1::int[])',
+        [ids.signals]
+      )).rows.map((row) => row.intent_id)
+      : [];
     if (ids.signals.length) await db.query('DELETE FROM trade_attempts WHERE signal_id = ANY($1::int[])', [ids.signals]);
+    if (intentIds.length) await db.query('DELETE FROM trade_intents WHERE id = ANY($1::bigint[])', [intentIds]);
     if (ids.signals.length) await db.query('DELETE FROM trade_signals WHERE id = ANY($1::int[])', [ids.signals]);
     if (ids.activities.length) await db.query('DELETE FROM x_activities WHERE id = ANY($1::int[])', [ids.activities]);
     if (ids.kol) await db.query('DELETE FROM x_kol_accounts WHERE id = $1', [ids.kol]);
     if (ids.whitelists.length) await db.query('DELETE FROM ca_whitelist WHERE id = ANY($1::int[])', [ids.whitelists]);
-    if (originalDaily === undefined) delete process.env.GMGN_GLOBAL_DAILY_USD_LIMIT;
-    else process.env.GMGN_GLOBAL_DAILY_USD_LIMIT = originalDaily;
-    if (originalWeekly === undefined) delete process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT;
-    else process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT = originalWeekly;
   }
 });
 
-test('per-trade and whitelist limits compare principal while reserving fees separately', async () => {
+test('whitelist budget compares principal while reserving fees separately', async () => {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
-  const originalDaily = process.env.GMGN_GLOBAL_DAILY_USD_LIMIT;
-  const originalWeekly = process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT;
-  process.env.GMGN_GLOBAL_DAILY_USD_LIMIT = '100000';
-  process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT = '100000';
-  const configResult = await db.query("SELECT value_json FROM config WHERE key = 'chain_configs'");
-  const originalConfig = configResult.rows[0].value_json;
-  const chainConfigs = structuredClone(originalConfig);
-  chainConfigs.sol = {
-    ...chainConfigs.sol,
-    enabled: true,
-    dailyBudget: 100,
-    weeklyBudget: 100,
-    maxPerTrade: 0.005,
-    maxOpenPositions: 100,
-    dailyLossLimit: 100
-  };
   const ids = { kol: null, activity: null, whitelist: null, signal: null };
 
   try {
-    await db.query("UPDATE config SET value_json = $1 WHERE key = 'chain_configs'", [chainConfigs]);
+    await approveSolForBudgetFixture();
     ids.kol = (await db.query(
       `INSERT INTO x_kol_accounts(x_user_id, x_handle, enabled)
        VALUES ($1,$2,true) RETURNING id`,
@@ -159,16 +135,18 @@ test('per-trade and whitelist limits compare principal while reserving fees sepa
     assert.equal(Number(created.reservation.amount_native), 0.005);
     assert.equal(Number(created.reservation.fee_native), 0.0002);
   } finally {
-    await db.query("UPDATE config SET value_json = $1 WHERE key = 'chain_configs'", [originalConfig]);
+    const intentIds = ids.signal
+      ? (await db.query(
+        'SELECT DISTINCT intent_id FROM trade_attempts WHERE signal_id = $1',
+        [ids.signal]
+      )).rows.map((row) => row.intent_id)
+      : [];
     if (ids.signal) await db.query('DELETE FROM trade_attempts WHERE signal_id = $1', [ids.signal]);
+    if (intentIds.length) await db.query('DELETE FROM trade_intents WHERE id = ANY($1::bigint[])', [intentIds]);
     if (ids.signal) await db.query('DELETE FROM trade_signals WHERE id = $1', [ids.signal]);
     if (ids.activity) await db.query('DELETE FROM x_activities WHERE id = $1', [ids.activity]);
     if (ids.kol) await db.query('DELETE FROM x_kol_accounts WHERE id = $1', [ids.kol]);
     if (ids.whitelist) await db.query('DELETE FROM ca_whitelist WHERE id = $1', [ids.whitelist]);
-    if (originalDaily === undefined) delete process.env.GMGN_GLOBAL_DAILY_USD_LIMIT;
-    else process.env.GMGN_GLOBAL_DAILY_USD_LIMIT = originalDaily;
-    if (originalWeekly === undefined) delete process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT;
-    else process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT = originalWeekly;
   }
 });
 

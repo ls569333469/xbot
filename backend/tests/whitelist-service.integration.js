@@ -7,21 +7,25 @@ require('./integration-guard');
 const db = require('../lib/db');
 const whitelistService = require('../domains/whitelist/service');
 
-test('whitelist budget validation uses the same chain limit shown by the frontend', () => {
-  const chainConfigs = {
-    sol: { maxPerTrade: 0.005, nativeSymbol: 'SOL' }
-  };
+test('whitelist budget validation is owned by the CA entry', () => {
   assert.deepEqual(
     whitelistService.validateBudgetValues({
       chain_id: 'sol', budget_per_trade: 0.005, total_budget: 0.03
-    }, chainConfigs),
-    { chain_id: 'sol', budget_per_trade: 0.005, total_budget: 0.03 }
+    }),
+    {
+      chain_id: 'sol',
+      budget_per_trade: 0.005,
+      total_budget: 0.03,
+      slippage: 10,
+      allow_repeat_buy: false,
+      max_repeat_buys: 1
+    }
   );
   assert.throws(
     () => whitelistService.validateBudgetValues({
-      chain_id: 'sol', budget_per_trade: 0.1, total_budget: 0.1
-    }, chainConfigs),
-    { code: 'WHITELIST_TRADE_AMOUNT_EXCEEDS_CHAIN_LIMIT' }
+      chain_id: 'sol', budget_per_trade: 0.1, total_budget: 0.05
+    }),
+    { code: 'WHITELIST_BUDGET_INVALID' }
   );
 });
 
@@ -31,7 +35,8 @@ test('whitelist service saves and replaces explicit relations transactionally', 
   const secondActorHandle = `svcacb${suffix}`;
   const firstTarget = `svctgta${suffix}`;
   const secondTarget = `svctgtb${suffix}`;
-  const ca = `SERVICECA${suffix}`;
+  const addressSuffix = suffix.replace(/0/g, '1');
+  const ca = `1111111111111111111111111${addressSuffix}`;
   let whitelistId = null;
 
   try {

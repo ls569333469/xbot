@@ -1,9 +1,14 @@
-const { Connection } = require('@solana/web3.js');
-const { JsonRpcProvider } = require('ethers');
+const { Connection, PublicKey } = require('@solana/web3.js');
+const { formatUnits, JsonRpcProvider } = require('ethers');
 const { requireChain, rpcConfig } = require('./chain-adapters');
 
 const SOLANA_MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
-const GMGN_ROUTER_SWAP_EVENT_TOPIC = '0x8619026a40d38bedb4002fe511cea4bc4a9b336710efe8f21a61869a7ee0f02a';
+const GMGN_ROUTER_SWAP_EVENT_TOPICS = new Set([
+  // Legacy GMGN router event.
+  '0x8619026a40d38bedb4002fe511cea4bc4a9b336710efe8f21a61869a7ee0f02a',
+  // Current EVM router event emitted by the live ETH sell path.
+  '0x3145c7c5a7804148dd68148a26f9f6a2ad2816be643e0f456290a8b81b9c5154'
+]);
 
 function jsonSafe(value) {
   return JSON.parse(JSON.stringify(value, (_key, item) => (
@@ -54,7 +59,7 @@ function gmgnRouterNativeProceeds(receipt, walletAddress, dependencies = {}) {
   for (const log of receipt.logs || []) {
     const topics = Array.isArray(log.topics) ? log.topics : [];
     if (String(log.address || '').toLowerCase() !== router
-        || String(topics[0] || '').toLowerCase() !== GMGN_ROUTER_SWAP_EVENT_TOPIC
+        || !GMGN_ROUTER_SWAP_EVENT_TOPICS.has(String(topics[0] || '').toLowerCase())
         || topicAddress(topics[1]) !== wallet
         || topicAddress(topics[2]) !== wallet) continue;
     const data = String(log.data || '').replace(/^0x/, '');
@@ -68,6 +73,7 @@ function gmgnRouterNativeProceeds(receipt, walletAddress, dependencies = {}) {
         method: 'gmgn_router_swap_event',
         router,
         log_index: Number(log.index ?? -1),
+        event_topic: String(topics[0]).toLowerCase(),
         input_amount_raw: inputRaw,
         output_amount_raw: outputRaw,
         recipient: wallet
@@ -216,19 +222,34 @@ async function probeRpc(chainId, dependencies = {}) {
   try {
     if (chain.id === 'sol') {
       const connection = dependencies.connection || new Connection(config.url, 'confirmed');
-      const [genesisHash, slot] = await Promise.all([
+      const [genesisHash, slot, nativeBalanceRaw] = await Promise.all([
         connection.getGenesisHash(),
-        connection.getSlot('confirmed')
+        connection.getSlot('confirmed'),
+        dependencies.walletAddress
+          ? connection.getBalance(new PublicKey(dependencies.walletAddress), 'confirmed')
+          : null
       ]);
       if (genesisHash !== SOLANA_MAINNET_GENESIS_HASH) {
         return { ok: false, chain: chain.id, error: 'RPC_CHAIN_MISMATCH', identity: genesisHash };
       }
-      return { ok: true, chain: chain.id, identity: genesisHash, blockRef: String(slot) };
+      return {
+        ok: true,
+        chain: chain.id,
+        identity: genesisHash,
+        blockRef: String(slot),
+        ...(nativeBalanceRaw === null ? {} : {
+          nativeBalanceRaw: String(nativeBalanceRaw),
+          nativeBalance: Number(formatUnits(nativeBalanceRaw, chain.decimals))
+        })
+      };
     }
     const provider = dependencies.provider || new JsonRpcProvider(config.url);
-    const [network, blockNumber] = await Promise.all([
+    const [network, blockNumber, nativeBalanceRaw] = await Promise.all([
       provider.getNetwork(),
-      provider.getBlockNumber()
+      provider.getBlockNumber(),
+      dependencies.walletAddress
+        ? provider.getBalance(dependencies.walletAddress, 'latest')
+        : null
     ]);
     if (config.chainId && Number(network.chainId) !== Number(config.chainId)) {
       return {
@@ -242,11 +263,90 @@ async function probeRpc(chainId, dependencies = {}) {
       ok: true,
       chain: chain.id,
       identity: String(network.chainId),
-      blockRef: String(blockNumber)
+      blockRef: String(blockNumber),
+      ...(nativeBalanceRaw === null ? {} : {
+        nativeBalanceRaw: String(nativeBalanceRaw),
+        nativeBalance: Number(formatUnits(nativeBalanceRaw, chain.decimals))
+      })
     };
   } catch (error) {
     return { ok: false, chain: chain.id, error: error.code || 'CHAIN_RPC_UNAVAILABLE' };
   }
+}
+
+async function captureWalletState(chainId, walletAddress, dependencies = {}) {
+  const chain = requireChain(chainId);
+  const config = rpcConfig(chain.id);
+  if (!config.url && !dependencies.connection && !dependencies.provider) {
+    const error = new Error('Chain RPC is required for a pre-submit snapshot');
+    error.code = 'CHAIN_RPC_MISSING';
+    throw error;
+  }
+  if (chain.id === 'sol') {
+    const connection = dependencies.connection || new Connection(config.url, 'confirmed');
+    const publicKey = new PublicKey(walletAddress);
+    const [slot, nativeBalanceRaw, signatures] = await Promise.all([
+      connection.getSlot('confirmed'),
+      connection.getBalance(publicKey, 'confirmed'),
+      connection.getSignaturesForAddress(publicKey, { limit: 1 }, 'confirmed')
+    ]);
+    return {
+      kind: 'solana',
+      slot,
+      nativeBalanceRaw: String(nativeBalanceRaw),
+      signatureCursor: signatures[0]?.signature || null,
+      signatureSlot: signatures[0]?.slot || null
+    };
+  }
+  const provider = dependencies.provider || new JsonRpcProvider(config.url);
+  const [network, blockNumber, latestNonce, pendingNonce, nativeBalance] = await Promise.all([
+    provider.getNetwork(),
+    provider.getBlockNumber(),
+    provider.getTransactionCount(walletAddress, 'latest'),
+    provider.getTransactionCount(walletAddress, 'pending'),
+    provider.getBalance(walletAddress, 'latest')
+  ]);
+  if (Number(network.chainId) !== Number(config.chainId)) {
+    const error = new Error('RPC chain does not match the Chain Manifest');
+    error.code = 'RPC_CHAIN_MISMATCH';
+    throw error;
+  }
+  return {
+    kind: 'evm',
+    chainId: Number(network.chainId),
+    blockNumber,
+    latestNonce,
+    pendingNonce,
+    nativeBalanceRaw: nativeBalance.toString()
+  };
+}
+
+async function scanWalletSinceSnapshot(chainId, walletAddress, snapshot, dependencies = {}) {
+  const chain = requireChain(chainId);
+  const config = rpcConfig(chain.id);
+  if (chain.id !== 'sol') {
+    return {
+      available: false,
+      reason: 'EVM_ADDRESS_HISTORY_PROVIDER_NOT_CONFIGURED',
+      transactions: []
+    };
+  }
+  const connection = dependencies.connection || new Connection(config.url, 'confirmed');
+  const signatures = await connection.getSignaturesForAddress(
+    new PublicKey(walletAddress),
+    { limit: 100 },
+    'confirmed'
+  );
+  const newer = signatures.filter((item) => Number(item.slot) > Number(snapshot?.slot || 0));
+  return {
+    available: true,
+    transactions: newer.map((item) => ({
+      signature: item.signature,
+      slot: item.slot,
+      err: item.err,
+      blockTime: item.blockTime
+    }))
+  };
 }
 
 async function verify(chainId, txHash, dependencies = {}) {
@@ -265,9 +365,11 @@ async function verify(chainId, txHash, dependencies = {}) {
 
 module.exports = {
   closedTokenAccountRentRaw,
+  captureWalletState,
   gmgnRouterNativeProceeds,
   jsonSafe,
   probeRpc,
+  scanWalletSinceSnapshot,
   verify,
   verifyEvm,
   verifySolana

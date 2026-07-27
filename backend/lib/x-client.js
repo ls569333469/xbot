@@ -1,4 +1,3 @@
-// D:\AI_Projects\xbot\backend\lib\x-client.js
 const logger = require('./logger');
 const { normalizeXHandle, normalizeXHandles } = require('./x-handles');
 const providerUsage = require('./provider-usage');
@@ -415,6 +414,14 @@ class TwitterApiIoXClient {
 
 function createXClient() {
   const provider = process.env.X_DATA_PROVIDER || 'mock';
+  if (provider !== '6551') {
+    const { legacyXProvidersEnabled } = require('./legacy-features');
+    if (!legacyXProvidersEnabled()) {
+      const error = new Error(`Legacy X provider is disabled: ${provider}`);
+      error.code = 'LEGACY_X_PROVIDER_DISABLED';
+      throw error;
+    }
+  }
   if (provider === 'mock') {
     return new MockXClient();
   }

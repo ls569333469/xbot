@@ -1,6 +1,21 @@
 const db = require('../../lib/db');
 const signalQueries = require('./queries');
+const { matchLaunchActivity } = require('./launch-matcher');
 const { normalizeXHandles } = require('../../lib/x-handles');
+const RELATION_EVENT_TYPES = ['retweet', 'quote', 'reply', 'follow'];
+const DIRECT_SOURCE_EVENT_TYPES = ['tweet', 'retweet', 'quote', 'reply'];
+
+function relationEventTypes(relation) {
+  return Array.isArray(relation.event_types) && relation.event_types.length > 0
+    ? relation.event_types
+    : RELATION_EVENT_TYPES;
+}
+
+function sourceRuleEventTypes(rule) {
+  return Array.isArray(rule.event_types) && rule.event_types.length > 0
+    ? rule.event_types
+    : DIRECT_SOURCE_EVENT_TYPES;
+}
 
 function findMatchingProjectHandle(activity, projectHandles) {
   return findMatchingProjectHandles(activity, projectHandles)[0] || null;
@@ -19,10 +34,47 @@ function findMatchingProjectHandles(activity, projectHandles) {
 function findMatchingRelationIds(activity, whitelist, matchedHandles) {
   const handleSet = new Set(matchedHandles);
   const relations = Array.isArray(whitelist.relations) ? whitelist.relations : [];
-  const relevant = handleSet.size > 0
-    ? relations.filter((relation) => handleSet.has(normalizeXHandles([relation.target_x_handle])[0]))
-    : relations;
+  const activityType = String(activity.activity_type || '').trim().toLowerCase();
+  const relevant = relations
+    .filter((relation) => {
+      return relationEventTypes(relation).includes(activityType);
+    })
+    .filter((relation) => handleSet.size === 0
+      || handleSet.has(normalizeXHandles([relation.target_x_handle])[0]));
   return relevant.map((relation) => Number(relation.id)).filter(Number.isFinite);
+}
+
+function relationsForActivity(activity, whitelist) {
+  const activityType = String(activity.activity_type || '').trim().toLowerCase();
+  const targetHandleSet = new Set(normalizeXHandles([
+    ...(activity.target_x_handles || []),
+    activity.target_x_handle
+  ]));
+  const configuredRelations = Array.isArray(whitelist.relations) ? whitelist.relations : [];
+  const relations = configuredRelations
+    .filter((relation) => {
+      return relationEventTypes(relation).includes(activityType);
+    });
+  const targetRelations = relations.filter((relation) => targetHandleSet.has(
+    normalizeXHandles([relation.target_x_handle])[0]
+  ));
+  return { relations, targetRelations };
+}
+
+function matchingSourceRules(activity, whitelist) {
+  const activityType = String(activity.activity_type || '').trim().toLowerCase();
+  return (Array.isArray(whitelist.direct_sources) ? whitelist.direct_sources : [])
+    .filter((rule) => sourceRuleEventTypes(rule).includes(activityType))
+    .filter((rule) => rule.match_mode === 'ca_only')
+    .filter((rule) => rule.source_kind === 'ecosystem')
+    .filter(() => hasContractAddress(activity, whitelist));
+}
+
+function sourceRuleMatch(activity, whitelist) {
+  if (hasContractAddress(activity, whitelist)) {
+    return { signal_type: 'ca_mention', match_detail: whitelist.contract_address };
+  }
+  return null;
 }
 
 function hasContractAddress(activity, whitelist) {
@@ -98,25 +150,54 @@ function canonicalSignalKey(activity, whitelist) {
 function groupActivityMatches(activity, whitelists) {
   const groups = new Map();
   for (const whitelist of whitelists) {
-    const match = classifyActivityMatch(activity, whitelist);
-    if (!match) continue;
+    const { relations, targetRelations } = relationsForActivity(activity, whitelist);
+    const scopedRelations = activity.activity_type === 'tweet' ? relations : targetRelations;
     const chainId = String(whitelist.chain_id || '').trim().toLowerCase();
     const contractAddress = normalizeContractAddress(chainId, whitelist.contract_address);
     const groupKey = `${chainId}:${contractAddress}`;
-    const group = groups.get(groupKey) || {
-      whitelist,
-      matches: [],
-      matchedProjectHandles: new Set(),
-      matchedWhitelistIds: new Set(),
-      matchedRelationIds: new Set()
+    const ensureGroup = () => {
+      const group = groups.get(groupKey) || {
+        whitelist,
+        matches: [],
+        matchedProjectHandles: new Set(),
+        matchedWhitelistIds: new Set(),
+        matchedRelationIds: new Set(),
+        matchedSourceRuleIds: new Set()
+      };
+      group.matchedWhitelistIds.add(Number(whitelist.id));
+      groups.set(groupKey, group);
+      return group;
     };
-    group.matches.push(match);
-    group.matchedWhitelistIds.add(Number(whitelist.id));
-    const matchedHandles = findMatchingProjectHandles(activity, whitelist.project_x_handles);
-    matchedHandles.forEach((handle) => group.matchedProjectHandles.add(handle));
-    findMatchingRelationIds(activity, whitelist, matchedHandles)
-      .forEach((id) => group.matchedRelationIds.add(id));
-    groups.set(groupKey, group);
+
+    if (scopedRelations.length > 0) {
+      const scopedWhitelist = {
+        ...whitelist,
+        relations: scopedRelations,
+        project_x_handles: scopedRelations.map((relation) => relation.target_x_handle)
+      };
+      const match = classifyActivityMatch(activity, scopedWhitelist);
+      if (match) {
+        const group = ensureGroup();
+        group.matches.push(match);
+        const matchedHandles = findMatchingProjectHandles(activity, scopedWhitelist.project_x_handles);
+        matchedHandles.forEach((handle) => group.matchedProjectHandles.add(handle));
+        findMatchingRelationIds(activity, scopedWhitelist, matchedHandles)
+          .forEach((id) => group.matchedRelationIds.add(id));
+      }
+    }
+
+    const sourceRules = matchingSourceRules(activity, whitelist);
+    const directMatch = sourceRuleMatch(activity, whitelist);
+    if (sourceRules.length > 0 && directMatch) {
+      const group = ensureGroup();
+      group.matches.push(directMatch);
+      sourceRules.forEach((rule) => {
+        const id = Number(rule.id);
+        if (Number.isFinite(id)) group.matchedSourceRuleIds.add(id);
+        const handle = normalizeXHandles([rule.actor_handle])[0];
+        if (handle) group.matchedProjectHandles.add(handle);
+      });
+    }
   }
   return [...groups.values()];
 }
@@ -143,20 +224,52 @@ async function matchActivity(activity, executor = db, options = {}) {
   if (activity.activity_type === 'unfollow') return 0;
   const whitelistsRes = await executor.query(
     `SELECT whitelist.*,
-            array_agg(DISTINCT relation.target_x_handle ORDER BY relation.target_x_handle)
-              AS project_x_handles,
-            json_agg(json_build_object(
-              'id', relation.id,
-              'kol_id', relation.kol_id,
-              'target_x_handle', relation.target_x_handle
-            ) ORDER BY relation.id) AS relations
+            COALESCE((
+              SELECT array_agg(DISTINCT account.handle ORDER BY account.handle)
+              FROM whitelist_x_accounts AS account
+              WHERE account.whitelist_id = whitelist.id
+            ), whitelist.project_x_handles, '{}'::text[]) AS project_x_handles,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id', relation.id,
+                'kol_id', relation.kol_id,
+                'target_x_handle', relation.target_x_handle,
+                'event_types', relation.event_types
+              ) ORDER BY relation.id)
+              FROM x_signal_relations AS relation
+              JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id
+              WHERE relation.whitelist_id = whitelist.id
+                AND relation.enabled = true AND actor.enabled = true
+                AND relation.kol_id = $1
+            ), '[]'::json) AS relations,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id', rule.id,
+                'actor_id', rule.actor_id,
+                'actor_handle', actor.x_handle,
+                'event_types', rule.event_types,
+                'match_mode', rule.match_mode,
+                'source_kind', rule.source_kind
+              ) ORDER BY rule.id)
+              FROM x_signal_source_rules AS rule
+              JOIN x_kol_accounts AS actor ON actor.id = rule.actor_id
+              WHERE rule.whitelist_id = whitelist.id
+                AND rule.enabled = true AND actor.enabled = true
+                AND rule.actor_id = $1
+            ), '[]'::json) AS direct_sources
      FROM ca_whitelist AS whitelist
-     JOIN x_signal_relations AS relation
-       ON relation.whitelist_id = whitelist.id AND relation.enabled = true
-     JOIN x_kol_accounts AS actor
-       ON actor.id = relation.kol_id AND actor.enabled = true
-     WHERE whitelist.status = 'active' AND relation.kol_id = $1
-     GROUP BY whitelist.id`,
+     WHERE whitelist.status = 'active'
+       AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+       AND (
+         EXISTS(SELECT 1 FROM x_signal_relations AS relation
+           JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id
+           WHERE relation.whitelist_id = whitelist.id AND relation.kol_id = $1
+             AND relation.enabled = true AND actor.enabled = true)
+         OR EXISTS(SELECT 1 FROM x_signal_source_rules AS rule
+           JOIN x_kol_accounts AS actor ON actor.id = rule.actor_id
+           WHERE rule.whitelist_id = whitelist.id AND rule.actor_id = $1
+             AND rule.enabled = true AND actor.enabled = true)
+       )`,
     [activity.kol_id]
   );
   const whitelists = whitelistsRes.rows;
@@ -177,13 +290,22 @@ async function matchActivity(activity, executor = db, options = {}) {
         matched_project_handles: [...group.matchedProjectHandles].sort(),
         matched_whitelist_ids: [...group.matchedWhitelistIds].sort((left, right) => left - right),
         matched_relation_ids: [...group.matchedRelationIds].sort((left, right) => left - right),
-        follow_once: activity.activity_type === 'follow'
+        matched_source_rule_ids: [...group.matchedSourceRuleIds].sort((left, right) => left - right),
+        follow_once: activity.activity_type === 'follow',
+        ...(group.whitelist.live_activation_state === 'live_ready' ? {} : {
+          status: 'signal_only',
+          reject_reason: 'WHITELIST_NOT_LIVE_READY'
+        })
       }, executor, options);
     if (signal) {
       matches++;
       signals.push(signal);
     }
   }
+
+  const launchSignals = await matchLaunchActivity(activity, executor, { existingSignals: signals });
+  matches += launchSignals.length;
+  signals.push(...launchSignals);
 
   return options.returnSignals ? { count: matches, signals } : matches;
 }
@@ -197,5 +319,8 @@ module.exports = {
   groupActivityMatches,
   hasContractAddress,
   hasSymbolKeyword,
-  matchActivity
+  matchingSourceRules,
+  matchActivity,
+  relationsForActivity,
+  sourceRuleMatch
 };

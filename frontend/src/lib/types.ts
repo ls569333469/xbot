@@ -1,9 +1,13 @@
 export type ChainId = 'sol' | 'bsc' | 'base' | 'eth' | 'robinhood';
+export type EcosystemTag = ChainId | 'cross_chain';
 export type ActivityType = 'tweet' | 'retweet' | 'quote' | 'reply' | 'follow' | 'unfollow';
 export type SignalStatus = 'signal_only' | 'pending' | 'pending_risk' | 'approved' | 'execution_reserved' | 'rejected' | 'executed' | 'expired' | 'recorded';
 export type ExecutionMode = 'signal' | 'paper' | 'live' | 'unknown';
 export type PositionStatus = 'pending' | 'open' | 'open_unprotected' | 'open_protected' | 'partially_closed' | 'closing' | 'closed' | 'protection_failed' | 'close_uncertain' | 'tp_hit' | 'sl_hit' | 'manual_close' | 'failed';
 export type SignalType = 'handle_match' | 'ca_mention' | 'ticker_mention';
+export type TradeIntentStatus = 'created' | 'submitting' | 'awaiting_result' |
+  'retry_verifying' | 'retry_scheduled' | 'confirmed' | 'exhausted' |
+  'rejected' | 'uncertain' | 'cancelled';
 
 export interface XSignalRelation {
   id?: string;
@@ -12,41 +16,282 @@ export interface XSignalRelation {
   actor_handle: string;
   actor_display_name?: string;
   target_x_handle: string;
+  event_types: Array<Exclude<ActivityType, 'tweet' | 'unfollow'>>;
   enabled?: boolean;
+  watch_sync_status?: 'pending' | 'processing' | 'succeeded' | 'failed' | 'in_sync' | 'observed' | string;
+  watch_sync_error?: string | null;
+  watch_synced_at?: string | null;
+}
+
+export type ExitStrategyLeg =
+  | { type: 'take_profit'; trigger_pct: number; sell_pct: number }
+  | { type: 'stop_loss'; drop_pct: number; sell_pct: number }
+  | { type: 'trailing_take_profit'; activation_pct: number; drawdown_pct: number; sell_pct: number }
+  | { type: 'trailing_stop_loss'; drop_pct: number; drawdown_pct: number; sell_pct: number };
+
+export interface ExitStrategy {
+  version: 1;
+  sell_ratio_type: 'buy_amount';
+  legs: ExitStrategyLeg[];
+}
+
+export interface XDirectSource {
+  id?: string;
+  actor_handle: string;
+  actor_display_name?: string;
+  event_types: Array<Exclude<ActivityType, 'follow' | 'unfollow'>>;
+  match_mode: 'ca_only';
+  source_kind: 'project' | 'ecosystem' | 'launch';
+  role?: string;
+  watch_sync_status?: string;
+  watch_sync_error?: string | null;
+}
+
+export interface WhitelistProjectAccount {
+  id?: string;
+  handle: string;
+  role: string;
+  usage: 'identity' | 'direct_source' | 'interaction_target';
+  evidence_snapshot?: Record<string, unknown>;
 }
 
 export interface WhitelistEntry {
   id: string;
+  launch_rule_id?: string | null;
   contract_address: string;
   chain_id: ChainId;
   symbol: string;
   project_name: string;
   project_x_handles: string[];
   relations: XSignalRelation[];
+  direct_sources: XDirectSource[];
+  project_accounts: WhitelistProjectAccount[];
   budget_per_trade: number;
   total_budget: number;
   spent_budget: number;
   auto_tp_pct: number;
   auto_sl_pct: number;
+  exit_strategy: ExitStrategy;
+  exit_strategy_version: number;
   slippage: number;
   allow_repeat_buy: boolean;
   max_repeat_buys: number;
   current_buy_count: number;
   paper_spent_budget: number;
   paper_buy_count: number;
-  status: 'active' | 'paused' | 'exhausted' | 'expired';
+  status: 'active' | 'paused' | 'exhausted' | 'expired' | 'archived';
+  live_activation_state: 'syncing' | 'live_ready' | 'sync_failed';
+  activation_version: number;
+  activation_error_code?: string | null;
+  activation_error_detail?: string | null;
+  activation_checked_at?: string | null;
+  activated_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  token_logo_url?: string | null;
+  token_official_x_handle?: string | null;
+  token_website_url?: string | null;
+  token_metadata_source?: string | null;
+  token_metadata_fetched_at?: string | null;
+}
+
+export interface WhitelistTemplateSnapshot {
+  schema_version: 2;
+  budget_per_trade: number;
+  total_budget: number;
+  slippage: number;
+  allow_repeat_buy: boolean;
+  max_repeat_buys: number;
+  exit_strategy: ExitStrategy;
+  relation_event_types: Array<Exclude<ActivityType, 'tweet' | 'unfollow'>>;
+  direct_source_event_types: Array<Exclude<ActivityType, 'follow' | 'unfollow'>>;
+  direct_source_rule_enabled: boolean;
+  direct_source_actor_handles: string[];
+  relation_rule_enabled: boolean;
+  relation_actor_handles: string[];
+  relation_target_policy: 'all_selected_project_identities';
+}
+
+export interface WhitelistTemplate {
+  id: string;
+  name: string;
+  chain_id: ChainId;
+  template_snapshot: WhitelistTemplateSnapshot;
+  version: number;
+  is_default: boolean;
   created_at: string;
   updated_at: string;
 }
+
+export interface LaunchMonitorSource {
+  id?: string;
+  actor_handle: string;
+  actor_display_name?: string;
+  role: string;
+  event_types: Array<Exclude<ActivityType, 'follow' | 'unfollow'>>;
+  enabled?: boolean;
+}
+
+export interface LaunchMonitorRelation {
+  id?: string;
+  actor_handle: string;
+  actor_display_name?: string;
+  target_x_handle: string;
+  event_types: Array<Extract<ActivityType, 'retweet' | 'quote' | 'reply'>>;
+  enabled?: boolean;
+}
+
+export interface LaunchMonitorDiscovery {
+  id: string;
+  chain_id: ChainId;
+  contract_address: string;
+  whitelist_id: string;
+  signal_id?: string | null;
+  trigger_kind: 'project_source' | 'ecosystem_relation';
+  actor_handle: string;
+  target_x_handle?: string | null;
+  created_at: string;
+}
+
+export interface LaunchMonitor {
+  id: string;
+  chain_id: ChainId;
+  project_name?: string | null;
+  sources: LaunchMonitorSource[];
+  relations: LaunchMonitorRelation[];
+  discoveries: LaunchMonitorDiscovery[];
+  budget_per_trade: number;
+  total_budget: number;
+  slippage: number;
+  allow_repeat_buy: boolean;
+  max_repeat_buys: number;
+  exit_strategy: ExitStrategy;
+  exit_strategy_version: number;
+  status: 'active' | 'paused' | 'triggered' | 'expired';
+  discovery_count: number;
+  triggered_at?: string | null;
+  expires_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TokenMetadata {
+  chain: ChainId;
+  address: string;
+  name: string;
+  symbol: string;
+  decimals: number | null;
+  logo_url: string | null;
+  official_x_handle: string | null;
+  website_url: string | null;
+  source: 'gmgn';
+  fetched_at: string;
+}
+
+export interface ResearchCandidate {
+  handle: string;
+  display_name: string;
+  role: string;
+  organization: string;
+  association?: string;
+  confidence: 'verified' | 'high' | 'medium' | 'low' | 'unverified';
+  verified: boolean;
+  source: string;
+  evidence: Array<{ label: string; url?: string | null; tweet_id?: string | null; source?: string | null }>;
+  selected?: boolean;
+}
+
+export interface TokenResearchReport {
+  id: string;
+  chain_id: ChainId;
+  contract_address: string;
+  status: 'pending' | 'completed' | 'partial' | 'failed';
+  provider_snapshot: {
+    metadata: TokenMetadata;
+    security?: Record<string, unknown>;
+    pool?: Record<string, unknown>;
+    sources?: string[];
+    xai?: {
+      status?: 'completed' | 'failed';
+      summary?: string;
+      citations?: string[];
+      duration_ms?: number;
+      error_code?: string;
+      usage?: Record<string, number> | null;
+    };
+  };
+  candidates: ResearchCandidate[];
+  analyzer_version: string;
+  prompt_version?: string;
+  model_name?: string | null;
+  xai_duration_ms?: number | null;
+  xai_error_code?: string | null;
+  analysis_started_at?: string | null;
+  analysis_finished_at?: string | null;
+  fetched_at: string;
+  expires_at: string;
+}
+
+export interface ResearchJobItem {
+  id: string;
+  job_id: string;
+  chain_id: ChainId;
+  contract_address: string;
+  status: 'queued' | 'gmgn' | 'grok' | 'verification' | 'completed' | 'failed' | 'cancelled';
+  report_id?: string | null;
+  report?: TokenResearchReport | null;
+  attempt_count: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  duration_ms?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface ResearchJob {
+  id: string;
+  chain_id: ChainId;
+  mode: 'single' | 'batch';
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
+  total_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  concurrency_limit: number;
+  prompt_version: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  items: ResearchJobItem[];
+}
+
+export type WhitelistDraftPayload = Partial<WhitelistEntry> & {
+  candidates?: ResearchCandidate[];
+  template_id?: string | null;
+  relation_event_types?: WhitelistTemplateSnapshot['relation_event_types'];
+  direct_source_event_types?: WhitelistTemplateSnapshot['direct_source_event_types'];
+  direct_source_rule_enabled?: boolean;
+  direct_source_actor_handles?: string[];
+  relation_rule_enabled?: boolean;
+  relation_actor_handles?: string[];
+  relation_target_handles?: string[];
+  relation_target_policy?: 'all_selected_project_identities' | 'manual';
+};
 
 export interface KolAccount {
   id: string;
   x_user_id: string;
   x_handle: string;
   display_name: string;
-  chain_ids: ChainId[];
+  chain_ids: EcosystemTag[];
   weight: number;
   enabled: boolean;
+  profile_status?: 'verified' | 'pending';
+  profile_warning?: string;
+  profile_attempt_count?: number;
+  profile_last_checked_at?: string | null;
+  profile_next_retry_at?: string | null;
+  profile_verified_at?: string | null;
+  profile_last_error_code?: string | null;
   follow_baseline_completed_at?: string;
   follow_poll_status?: string;
   stream_status?: string;
@@ -101,7 +346,26 @@ export interface X6551Status {
   watches: {
     byStatus: Record<string, number>;
     total: number;
+    remoteTotal: number | null;
+    remoteAvailable: boolean;
+    remoteError: string | null;
+    registryTotal: number;
     managed: number;
+  };
+  watchSync: {
+    byStatus: Record<string, number>;
+    pending: number;
+    failed: number;
+    oldestRequestedAt: string | null;
+    runtime: {
+      enabled: boolean;
+      running: boolean;
+      active: boolean;
+      lastRunAt: string | null;
+      lastSuccessAt: string | null;
+      lastError: string | null;
+      processed: number;
+    } | null;
   };
   inbox: {
     byStatus: Record<string, number>;
@@ -178,6 +442,15 @@ export interface TradeSignal {
   observation_started_at?: string;
   observation_ended_at?: string;
   live_authorization?: 'record_only' | 'manual_allowed' | 'auto_allowed';
+  trade_intent_id?: string | null;
+  trade_intent_status?: TradeIntentStatus | null;
+  retry_count?: number;
+  max_retries?: number;
+  trade_attempt_id?: string | null;
+  attempt_no?: number | null;
+  trade_attempt_status?: string | null;
+  failure_class?: string | null;
+  trade_error_code?: string | null;
 }
 
 export interface Position {
@@ -214,14 +487,24 @@ export interface Position {
   };
   sell_tx_hash?: string;
   buy_tx_hash?: string;
+  trade_intent_id?: string | null;
+  trade_intent_status?: TradeIntentStatus | null;
+  trade_attempt_id?: string | null;
+  attempt_no?: number | null;
+  trade_attempt_status?: string | null;
+  failure_class?: string | null;
+  trade_error_code?: string | null;
 }
 
 export interface TradeAttempt {
   id: string;
+  intent_id: string;
+  attempt_no: number;
+  retry_of_attempt_id?: string | null;
   signal_id?: string;
   position_id?: string;
   side: 'buy' | 'sell' | 'strategy_create' | 'strategy_cancel';
-  chain: Exclude<ChainId, 'robinhood'>;
+  chain: ChainId;
   wallet_address: string;
   input_token: string;
   output_token: string;
@@ -229,6 +512,14 @@ export interface TradeAttempt {
   output_amount_raw?: string;
   status: string;
   error_code?: string;
+  error_class?: string;
+  failure_class?: string;
+  failure_evidence_json?: Record<string, unknown>;
+  retry_eligible?: boolean;
+  retry_decided_at?: string;
+  estimated_fee_native?: string | number | null;
+  actual_fee_native?: string | number | null;
+  fee_escalation_level?: number;
   requires_manual_review: boolean;
   created_at: string;
   submitted_at?: string;
@@ -242,6 +533,144 @@ export interface TradeAttempt {
   next_query_at?: string;
   query_count?: number;
   query_stage?: string;
+  intent_status: TradeIntentStatus;
+  retry_count: number;
+  max_retries: number;
+  retry_expires_at?: string | null;
+  next_retry_at?: string | null;
+  intent_error_code?: string | null;
+  wallet_lane_state?: WalletWriteLane['state'] | null;
+  wallet_lane_reason?: string | null;
+  principal_reserved_native?: string | number | null;
+  retry_fee_envelope_native?: string | number | null;
+  fee_used_native?: string | number | null;
+}
+
+export interface TradeIntent {
+  id: string;
+  source_key: string;
+  scope_key: string;
+  side: 'buy' | 'sell';
+  chain: ChainId;
+  wallet_address: string;
+  contract_address: string;
+  status: TradeIntentStatus;
+  max_retries: number;
+  retry_count: number;
+  expires_at?: string | null;
+  next_retry_at?: string | null;
+  principal_amount_raw?: string | null;
+  principal_amount_display?: string | number | null;
+  config_snapshot_json?: Record<string, unknown>;
+  last_error_code?: string | null;
+  confirmation_source?: string | null;
+  incident_status?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface TradeFailureEvidence {
+  id: string;
+  attempt_id: string;
+  snapshot_version: number;
+  evidence_type: string;
+  status: 'observed' | 'passed' | 'failed' | 'conflict' | 'unavailable';
+  evidence_json: Record<string, unknown>;
+  observed_at: string;
+}
+
+export interface TradeRetryDecision {
+  id: string;
+  intent_id: string;
+  attempt_id: string;
+  decision: 'retry_scheduled' | 'retry_blocked' | 'uncertain' | 'exhausted';
+  reason_code: string;
+  evidence_json: Record<string, unknown>;
+  code_version: string;
+  decided_at: string;
+}
+
+export interface TradeReconciliationIncident {
+  id: string;
+  intent_id?: string | null;
+  attempt_id?: string | null;
+  incident_type: 'late_confirmation' | 'multiple_fill' |
+    'budget_reconciliation_deficit' | 'manual_lane_release';
+  severity: 'medium' | 'high' | 'critical';
+  status: 'open' | 'acknowledged' | 'resolved';
+  details_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface BudgetReservation {
+  id: string;
+  intent_id: string;
+  amount_native: string | number;
+  fee_native: string | number;
+  fee_used_native: string | number;
+  amount_usd_snapshot: string | number;
+  status: string;
+}
+
+export interface WalletWriteLane {
+  chain: ChainId;
+  wallet_address: string;
+  wallet_masked?: string;
+  state: 'idle' | 'submitting' | 'quarantined';
+  owner_attempt_id?: string | null;
+  reason_code?: string | null;
+  evidence_json?: Record<string, unknown>;
+  lease_expires_at?: string | null;
+  quarantined_at?: string | null;
+  released_at?: string | null;
+  released_by?: string | null;
+  release_reason?: string | null;
+  updated_at: string;
+}
+
+export interface ChainTradeCircuit {
+  chain: ChainId;
+  state: 'open' | 'tripped';
+  consecutive_failures: number;
+  threshold: number;
+  reason_code?: string | null;
+  last_failure_attempt_id?: string | null;
+  last_success_attempt_id?: string | null;
+  tripped_at?: string | null;
+  updated_at: string;
+}
+
+export interface TradeRetryRuntime {
+  running: boolean;
+  active: boolean;
+  startedAt: string | null;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  processed: number;
+  succeeded: number;
+  scanIntervalMs: number;
+  maintenanceIntervalMs: number;
+  lastMaintenanceAt: string | null;
+  backlog: Array<{ status: TradeIntentStatus; count: number; oldest: string | null }>;
+  quarantines: Array<Pick<WalletWriteLane, 'chain' | 'wallet_address' | 'reason_code' | 'quarantined_at'>>;
+  circuits: ChainTradeCircuit[];
+}
+
+export interface TradeAttemptDetails extends TradeAttempt {
+  intent: TradeIntent;
+  budget_reservation?: BudgetReservation | null;
+  wallet_lane?: WalletWriteLane | null;
+  intent_sources: Array<Record<string, unknown>>;
+  failure_evidence: TradeFailureEvidence[];
+  retry_decisions: TradeRetryDecision[];
+  reconciliation_incidents: TradeReconciliationIncident[];
+  orders: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  strategy_groups: Array<Record<string, unknown>>;
+  strategy_legs: Array<Record<string, unknown>>;
+  position_lots: Array<Record<string, unknown>>;
+  chain_receipts: Array<Record<string, unknown>>;
 }
 
 export interface TradeReadiness {
@@ -255,14 +684,21 @@ export interface TradeReadiness {
   advisories: string[];
   checks: Record<string, boolean | number>;
   chains: Array<{
-    chain: 'sol' | 'bsc' | 'base' | 'eth';
+    chain: ChainId;
     implemented: boolean;
+    code_capable?: boolean;
     contract_tested: boolean;
+    production_approved?: boolean;
+    acceptance_status?: 'none' | 'active' | 'expired' | 'completed' | 'cancelled';
     contract_evidence?: {
       id: string | number | null;
       type: 'contract_probe';
       status: 'passed' | 'failed';
       createdAt: string | null;
+      validUntil?: string | null;
+      contextHash?: string;
+      codeVersion?: string;
+      stale?: boolean;
       whitelistIds: number[];
     } | null;
     policy_enabled: boolean;
@@ -286,12 +722,15 @@ export interface TradeReadiness {
       lastConfirmedAt: string | null;
     };
     limits?: {
-      enabled?: boolean;
-      maxPerTrade?: number;
-      dailyBudget?: number;
-      weeklyBudget?: number;
-      maxOpenPositions?: number;
+      retryEnabled?: boolean;
+      maxRetries?: number;
+      retryWindowMs?: number;
+      failureEvidenceWindowMs?: number;
+      feeEscalationEnabled?: boolean;
+      maxRetryFeeNative?: number;
+      exitGasReserve?: number;
     };
+    failure_circuit?: ChainTradeCircuit | null;
   }>;
   scheduler: {
     state: string;
@@ -333,11 +772,14 @@ export interface TradeReadiness {
     receiveToSwap: { count: number; p50: number | null; p95: number | null; p99: number | null };
   };
   contractProbes: Record<string, { ok: boolean; chain: string; error?: string }>;
+  strategyProbes?: Record<string, { ok: boolean; returned?: number; error?: string }>;
+  acceptanceScope?: LiveAcceptanceScope | null;
   relations: Array<{
     id: number;
     whitelistId: number;
     actorHandle: string;
     targetHandle: string;
+    eventTypes: string[];
   }>;
   latestEvidence: {
     providerEventId: string | null;
@@ -361,6 +803,7 @@ export interface TradeReadiness {
     backlog: Array<{ status: string; count: number; oldest: string | null }>;
     strategyBacklog: Array<{ status: string; count: number; oldest: string | null }>;
   };
+  retry?: TradeRetryRuntime;
   pollingPolicy: Array<{ fromSeconds: number; toSeconds: number | null; intervalMs: number | number[] }>;
   policy?: {
     providers: string[];
@@ -372,12 +815,102 @@ export interface TradeReadiness {
   };
 }
 
+export interface ArmPreparation {
+  preparation_id: number | null;
+  arm_token: string | null;
+  expires_at: string | null;
+  summary: {
+    readyToArm: boolean;
+    blockers: string[];
+    advisories: string[];
+    counts: {
+      chains: number;
+      whitelists: number;
+      watches: number;
+      relations: number;
+    };
+    chains: Array<{
+      chain: ChainId;
+      ready: boolean;
+      blockers: string[];
+      nativeBalance: number | null;
+    }>;
+  };
+}
+
+export interface RuntimeSummary {
+  generated_at: string;
+  engine: {
+    armed: boolean;
+    status: 'stopped' | 'recovering' | 'running' | 'paused_transient' | 'fault_protected';
+    desiredRunning: boolean;
+    mode: string;
+    lastError: string | null;
+    lastErrorDetails: unknown;
+    operator: string | null;
+    armedAt: string | null;
+    lastRecoveredAt: string | null;
+  };
+  counts: {
+    chains: number;
+    whitelists: number;
+    watches: number;
+    relations: number;
+    syncing: number;
+    sync_failed: number;
+  };
+  chains: Array<{
+    chain: ChainId;
+    name: string;
+    ready: boolean;
+  }>;
+}
+
+export interface RuntimePolicyDetailItem {
+  id: string | number;
+  chain_id: ChainId;
+  contract_address: string;
+  symbol?: string | null;
+  project_name?: string | null;
+  token_logo_url?: string | null;
+  budget_per_trade: number;
+  total_budget: number;
+  activation_version: number;
+  activated_at?: string | null;
+  relation_count: number;
+  source_count: number;
+  unique_actor_count: number;
+  actor_handles: string[];
+}
+
+export interface RuntimePolicyDetailPage {
+  items: RuntimePolicyDetailItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface LiveAcceptanceScope {
+  id: string | number;
+  chain: ChainId;
+  whitelist_id: string | number;
+  status: 'active' | 'completed' | 'cancelled';
+  expires_at: string;
+  created_at?: string;
+  completed_at?: string | null;
+  completion_reason?: string | null;
+  expired?: boolean;
+  symbol?: string | null;
+  contract_address?: string | null;
+}
+
 export interface TradeRuntimePolicy {
   scheduler: TradeReadiness['scheduler'];
   polling_policy: TradeReadiness['pollingPolicy'];
   readiness: TradeReadiness;
   endpoint_weights: Record<string, number>;
   new_trade_reservation_weight: number;
+  acceptance_scope?: LiveAcceptanceScope | null;
   live_queue: {
     running: boolean;
     scannerRunning: boolean;
@@ -391,16 +924,14 @@ export interface TradeRuntimePolicy {
 }
 
 export interface ChainConfig {
-  chainId: ChainId;
-  enabled: boolean;
-  dailyBudget: number;
-  weeklyBudget: number;
-  maxPerTrade: number;
-  maxOpenPositions: number;
-  dailyLossLimit: number;
-  defaultTpPercent: number;
-  defaultSlPercent: number;
-  defaultSlippagePercent: number;
+  nativeSymbol: string;
+  retryEnabled: boolean;
+  maxRetries: number;
+  retryWindowMs: number;
+  failureEvidenceWindowMs: number;
+  feeEscalationEnabled: boolean;
+  maxRetryFeeNative: number;
+  exitGasReserve: number;
 }
 
 export interface RiskConfig {
@@ -426,6 +957,7 @@ export interface ApiResponse<T> {
   meta?: {
     merged_into_existing?: boolean;
     added_relations?: number;
+    added_sources?: number;
   };
 }
 

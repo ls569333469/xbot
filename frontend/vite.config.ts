@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // Production may be mounted below /xbot/ while local development stays at /.
+  base: process.env.VITE_PUBLIC_BASE || '/',
   server: {
     proxy: {
       '/api': {

@@ -1,4 +1,3 @@
-// D:\AI_Projects\xbot\backend\jobs\signal-matcher.js
 const db = require('../lib/db');
 const logger = require('../lib/logger');
 const { matchActivity } = require('../domains/signal/matcher');
@@ -10,26 +9,43 @@ const { getTradingMode } = require('../lib/runtime-mode');
 async function claimSignals(executionMode) {
   const maxAgeSeconds = Math.max(30, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300));
   await db.query(
-    `UPDATE trade_signals
-     SET status = 'expired', reject_reason = 'SIGNAL_EXPIRED', updated_at = NOW()
-     WHERE status = 'recorded'
-       AND execution_mode = $1
-       AND created_at < NOW() - ($2 * INTERVAL '1 second')`,
+    `UPDATE trade_signals AS signal
+     SET status = 'expired',
+         reject_reason = CASE
+           WHEN lower(COALESCE(activity.provider, '')) = '6551'
+             AND activity.source_created_at IS NULL THEN 'SOURCE_EVENT_TIME_MISSING'
+           ELSE 'SIGNAL_EXPIRED'
+         END,
+         updated_at = NOW()
+     FROM x_activities AS activity
+     WHERE signal.status = 'recorded'
+       AND signal.execution_mode = $1
+       AND activity.id = signal.activity_id
+       AND (
+         (lower(COALESCE(activity.provider, '')) = '6551' AND activity.source_created_at IS NULL)
+         OR CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+           THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END
+           < NOW() - ($2 * INTERVAL '1 second')
+       )`,
     [executionMode, maxAgeSeconds]
   );
 
   const result = await db.query(
-    `UPDATE trade_signals
+    `UPDATE trade_signals AS signal
      SET status = 'pending', updated_at = NOW()
-     WHERE id IN (
-       SELECT id FROM trade_signals
-       WHERE status = 'recorded'
-         AND execution_mode = $1
-       ORDER BY created_at ASC
+     WHERE signal.id IN (
+       SELECT queued.id
+       FROM trade_signals AS queued
+       LEFT JOIN x_activities AS activity ON activity.id = queued.activity_id
+       WHERE queued.status = 'recorded'
+         AND queued.execution_mode = $1
+         AND NOT (lower(COALESCE(activity.provider, '')) = '6551'
+           AND activity.source_created_at IS NULL)
+       ORDER BY COALESCE(activity.source_created_at, queued.created_at) ASC
        FOR UPDATE SKIP LOCKED
        LIMIT 20
      )
-     RETURNING *`,
+     RETURNING signal.*`,
     [executionMode]
   );
   return result.rows;
@@ -157,4 +173,4 @@ async function run(deps) {
   }
 }
 
-module.exports = { run };
+module.exports = { claimSignals, run };

@@ -10,18 +10,24 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('./lib/logger');
 const { getProcessRole, roleCapabilities } = require('./lib/process-role');
+const { legacyShadowEnabled, legacyXProvidersEnabled } = require('./lib/legacy-features');
 const { consumer: x6551Consumer } = require('./domains/x-monitor/6551/wss-consumer');
+const { watchSyncWorker } = require('./jobs/6551-watch-sync');
 const { reconciler } = require('./domains/trade/reconciliation-service');
+const { tradeRetryOrchestrator } = require('./domains/trade/trade-retry-orchestrator');
 const {
   getSnapshot: getReadinessSnapshot,
   monitor: readinessMonitor
 } = require('./domains/trade/readiness-service');
 const { outboxWorker } = require('./jobs/notification-outbox');
 const { cacheWarmer } = require('./jobs/gmgn-cache-warmup');
+const { whitelistActivationWorker } = require('./jobs/whitelist-activation');
 const { liveExecutionQueue } = require('./domains/trade/live-execution-queue');
 const { shadowLiveEvaluator } = require('./jobs/shadow-live-evaluator');
 const providerRateRecorder = require('./lib/provider-rate-recorder');
 const { serviceHeartbeat } = require('./lib/service-heartbeat');
+const { researchQueue } = require('./domains/research/queue');
+const { kolProfileEnrichmentWorker } = require('./jobs/kol-profile-enrichment');
 const processRole = getProcessRole();
 const capabilities = roleCapabilities(processRole);
 
@@ -57,7 +63,9 @@ app.use(express.json());
 // Auth middleware
 app.use((req, res, next) => {
   if (req.path === '/api/health') return next();
-  if (req.path === '/api/x-monitor/webhook/twitterapi') return next();
+  if (req.path === '/api/x-monitor/webhook/twitterapi'
+      && legacyXProvidersEnabled()
+      && String(process.env.X_DATA_PROVIDER || '').toLowerCase() === 'twitterapi') return next();
   if (req.path.startsWith('/api/')) {
     const token = req.headers.authorization;
     const expected = `Bearer ${process.env.ADMIN_TOKEN}`;
@@ -70,6 +78,8 @@ app.use((req, res, next) => {
 
 // Domain routers
 app.use('/api/whitelist', require('./domains/whitelist/routes'));
+app.use('/api/launch-monitors', require('./domains/launch-monitor/routes'));
+app.use('/api/research', require('./domains/research/routes'));
 app.use('/api/x-monitor', require('./domains/x-monitor/routes'));
 app.use('/api/config', require('./domains/config/routes'));
 app.use('/api/system', require('./domains/system/routes'));
@@ -142,15 +152,20 @@ async function gracefulShutdown(signal) {
   shuttingDown = true;
   logger.info('server', `Received ${signal}. Starting graceful shutdown...`);
   if (capabilities.ingestion) {
+    watchSyncWorker.stop();
     await x6551Consumer.stop().catch((error) => {
       logger.error('server', `Failed to stop 6551 consumer: ${error.message}`);
     });
   }
   if (capabilities.execution) {
+    kolProfileEnrichmentWorker.stop();
+    researchQueue.stop();
     reconciler.stop();
+    tradeRetryOrchestrator.stop();
     readinessMonitor.stop();
     outboxWorker.stop();
     cacheWarmer.stop();
+    whitelistActivationWorker.stop();
     await liveExecutionQueue.stop();
     shadowLiveEvaluator.stop();
     providerRateRecorder.stop();
@@ -181,16 +196,22 @@ async function startServer() {
     // Recovery completes once before the new-order gate can become ready.
     await reconciler.runOnce();
     reconciler.start({ wsBroadcast, intervalMs: 1000 });
+    await tradeRetryOrchestrator.runOnce();
+    tradeRetryOrchestrator.start({ intervalMs: 100 });
     providerRateRecorder.start({ wsBroadcast });
     outboxWorker.start({ wsBroadcast, intervalMs: 2000 });
     cacheWarmer.start({ intervalMs: 2000 });
+    whitelistActivationWorker.start({ intervalMs: 1000 });
     liveExecutionQueue.configure({ wsBroadcast });
     await liveExecutionQueue.start({ intervalMs: 500 });
-    if (String(process.env.SHADOW_LIVE_ENABLED || 'false').toLowerCase() === 'true'
+    if (legacyShadowEnabled()
+        && String(process.env.SHADOW_LIVE_ENABLED || 'false').toLowerCase() === 'true'
         && String(process.env.TRADING_MODE || '').toLowerCase() !== 'live') {
       shadowLiveEvaluator.start({ intervalMs: 500 });
     }
     readinessMonitor.start();
+    researchQueue.start({ intervalMs: 1000 });
+    kolProfileEnrichmentWorker.start({ intervalMs: 5000 });
   }
 
   if (capabilities.api) {
@@ -219,6 +240,7 @@ async function startServer() {
     } catch (error) {
       logger.error('6551-wss', `Consumer startup failed: ${error.message}`);
     }
+    watchSyncWorker.start({ intervalMs: 1000 });
   }
 
   serviceHeartbeat.start({
@@ -226,13 +248,19 @@ async function startServer() {
     statusProvider: async () => ({
       status: 'running',
       processRole,
-      ...(capabilities.ingestion ? { wss: x6551Consumer.getStatus() } : {}),
+      ...(capabilities.ingestion ? {
+        wss: x6551Consumer.getStatus(),
+        watchSync: watchSyncWorker.getStatus()
+      } : {}),
       ...(capabilities.execution ? {
         engine: {
           armed: require('./lib/engine-state').getArmed(),
           liveQueue: liveExecutionQueue.getStatus(),
-          reconciler: await reconciler.getStatus()
-        }
+          reconciler: await reconciler.getStatus(),
+          retryOrchestrator: await tradeRetryOrchestrator.getStatus(),
+          whitelistActivation: whitelistActivationWorker.getStatus()
+        },
+        kolProfileEnrichment: kolProfileEnrichmentWorker.getStatus()
       } : {})
     })
   });
@@ -254,10 +282,14 @@ async function startServer() {
 
 startServer().catch(err => {
   void x6551Consumer.stop().catch(() => {});
+  watchSyncWorker.stop();
   reconciler.stop();
+  tradeRetryOrchestrator.stop();
   readinessMonitor.stop();
   outboxWorker.stop();
   cacheWarmer.stop();
+  whitelistActivationWorker.stop();
+  kolProfileEnrichmentWorker.stop();
   providerRateRecorder.stop();
   shadowLiveEvaluator.stop();
   void serviceHeartbeat.stop();

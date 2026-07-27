@@ -1,4 +1,3 @@
-// D:\AI_Projects\xbot\backend\domains\signal\risk-manager.js
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
 const configService = require('../config/service');

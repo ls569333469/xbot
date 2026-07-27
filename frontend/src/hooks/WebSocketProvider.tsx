@@ -19,7 +19,11 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const token = encodeURIComponent(authToken);
-      const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`;
+      const configuredPath = import.meta.env.VITE_WS_PATH;
+      const mountedPath = `${import.meta.env.BASE_URL}ws`.replace(/\/+/g, '/');
+      const wsPath = configuredPath || mountedPath;
+      const normalizedPath = wsPath.startsWith('/') ? wsPath : `/${wsPath}`;
+      const wsUrl = `${protocol}//${window.location.host}${normalizedPath}?token=${token}`;
       setStatus('connecting');
       const ws = new WebSocket(wsUrl);
 

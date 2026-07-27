@@ -1,8 +1,10 @@
-// D:\AI_Projects\xbot\backend\scripts\db-setup.js
 require('dotenv').config();
 const { Client } = require('pg');
 const fs = require('fs');
 const path = require('path');
+
+const databaseName = process.env.DB_NAME || 'xbot';
+const quotedDatabaseName = `"${databaseName.replace(/"/g, '""')}"`;
 
 const credentials = {
   host: process.env.DB_HOST || 'localhost',
@@ -12,21 +14,20 @@ const credentials = {
 };
 
 async function setup() {
-  console.log('开始连接 Default Postgres 检查并创建数据库 xbot...');
+  console.log(`开始连接 Default Postgres 检查并创建数据库 ${databaseName}...`);
   
   // 1. 连接到 postgres 默认库
   const client = new Client({ ...credentials, database: 'postgres' });
   try {
     await client.connect();
     
-    // 检查 xbot 库是否存在
-    const res = await client.query("SELECT 1 FROM pg_database WHERE datname = 'xbot'");
+    const res = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [databaseName]);
     if (res.rows.length === 0) {
-      console.log('检测到 xbot 数据库不存在，正在创建...');
-      await client.query('CREATE DATABASE xbot');
-      console.log('数据库 xbot 创建成功！');
+      console.log(`检测到 ${databaseName} 数据库不存在，正在创建...`);
+      await client.query(`CREATE DATABASE ${quotedDatabaseName}`);
+      console.log(`数据库 ${databaseName} 创建成功！`);
     } else {
-      console.log('数据库 xbot 已存在。');
+      console.log(`数据库 ${databaseName} 已存在。`);
     }
   } catch (err) {
     console.error('连接 postgres 默认库失败:', err.message);
@@ -35,27 +36,23 @@ async function setup() {
     await client.end();
   }
 
-  // 2. 连接到 xbot 库导入表结构和数据
-  console.log('连接 xbot 数据库导入表结构...');
-  const xbotClient = new Client({ ...credentials, database: 'xbot' });
+  const { runMigrations } = require('../lib/migrations');
+  const applied = await runMigrations();
+  console.log(`数据库迁移完成：${applied.length > 0 ? applied.join(', ') : '无待执行迁移'}`);
+
+  // Seed 只允许写入完全空的配置表，避免覆盖生产设置。
+  const xbotClient = new Client({ ...credentials, database: databaseName });
   try {
     await xbotClient.connect();
-
-    // 读取 init.sql 并执行
-    const initSqlPath = path.join(__dirname, '../db/init.sql');
-    console.log(`正在读取并导入: ${initSqlPath}`);
-    const initSql = fs.readFileSync(initSqlPath, 'utf8');
-    await xbotClient.query(initSql);
-    console.log('表结构及索引 init.sql 导入成功！');
-
-    // 读取 seed.sql 并执行
-    const seedSqlPath = path.join(__dirname, '../db/seed.sql');
-    console.log(`正在读取并导入: ${seedSqlPath}`);
-    const seedSql = fs.readFileSync(seedSqlPath, 'utf8');
-    await xbotClient.query(seedSql);
-    console.log('种子配置数据 seed.sql 导入成功！');
-
-    console.log('🎉 数据库初始化全部完成！');
+    const configCount = await xbotClient.query('SELECT COUNT(*)::int AS count FROM config');
+    if (Number(configCount.rows[0].count) === 0) {
+      const seedSqlPath = path.join(__dirname, '../db/seed.sql');
+      await xbotClient.query(fs.readFileSync(seedSqlPath, 'utf8'));
+      console.log('空配置库已写入默认运行配置。');
+    } else {
+      console.log('检测到现有配置，跳过 Seed。');
+    }
+    console.log('数据库初始化完成。');
   } catch (err) {
     console.error('初始化 xbot 库数据失败:', err.message);
     process.exit(1);
@@ -63,10 +60,6 @@ async function setup() {
     await xbotClient.end();
   }
 
-  // Fresh databases and existing databases use the same ordered migration runner.
-  const { runMigrations } = require('../lib/migrations');
-  const applied = await runMigrations();
-  console.log(`数据库迁移完成：${applied.length > 0 ? applied.join(', ') : '无待执行迁移'}`);
   const db = require('../lib/db');
   await db.pool.end();
 }

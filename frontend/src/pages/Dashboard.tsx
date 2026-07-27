@@ -3,15 +3,18 @@ import { api } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { ChainIcon } from '../components/ui/ChainIcon';
-import { ProgressBar } from '../components/ui/ProgressBar';
 import { CardSkeleton, Skeleton } from '../components/ui/Skeleton';
 import { Activity, DollarSign, Target, TrendingUp } from 'lucide-react';
 import { TradeSignal } from '../lib/types';
 import { signalTypeLabel } from '../lib/display-labels';
 
 export default function Dashboard() {
-  const [stats, setStats] = useState({ signalsToday: 0, tradesToday: 0, activePositions: 0, totalPnl: 0 });
-  const [chainConfigs, setChainConfigs] = useState<any>(null);
+  const [stats, setStats] = useState({
+    signalsToday: 0,
+    tradesToday: 0,
+    activePositions: 0,
+    pnlByChain: [] as Array<{ chain: string; nativeSymbol: string; pnlNative: number }>
+  });
   const [budgetsSpent, setBudgetsSpent] = useState<any[]>([]);
   const [recentSignals, setRecentSignals] = useState<TradeSignal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,12 +23,10 @@ export default function Dashboard() {
   const fetchDashboardData = useCallback(() => {
     Promise.all([
       api.system.dashboard(),
-      api.config.getChains(),
       api.system.budgets(),
       api.signals.list({ pageSize: '20' }),
-    ]).then(([dashRes, chainsRes, budgetsRes, signalsRes]) => {
+    ]).then(([dashRes, budgetsRes, signalsRes]) => {
       if (dashRes.ok && dashRes.data) setStats(dashRes.data);
-      if (chainsRes.ok && chainsRes.data) setChainConfigs(chainsRes.data);
       if (budgetsRes.ok && budgetsRes.data) setBudgetsSpent(budgetsRes.data);
       if (signalsRes.ok && signalsRes.data) setRecentSignals(signalsRes.data as unknown as TradeSignal[]);
       setLoading(false);
@@ -62,16 +63,9 @@ export default function Dashboard() {
     }
   }, [lastEvent]);
 
-  const budgets = chainConfigs
-    ? Object.entries(chainConfigs).filter(([, v]: any) => (v as any).enabled).map(([k, v]: any) => {
-        const spentEntry = budgetsSpent.find(b => b.chain_id === k && b.period_type === 'daily');
-        return {
-          chain: k,
-          total: v.dailyBudget || 0,
-          spent: spentEntry ? parseFloat(spentEntry.spent) : 0,
-        };
-      })
-    : [];
+  const pnlSummary = stats.pnlByChain
+    .map(item => `${item.pnlNative >= 0 ? '+' : ''}${item.pnlNative.toFixed(6)} ${item.nativeSymbol}`)
+    .join(' · ');
 
   if (loading) {
     return (
@@ -125,23 +119,27 @@ export default function Dashboard() {
           <div className="text-2xl font-bold">{stats.activePositions}</div>
         </div>
         <div className="card flex flex-col gap-sm">
-          <div className="text-secondary text-sm flex items-center gap-xs"><DollarSign size={16} /> 累计盈亏（美元）</div>
-          <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-success' : 'text-danger'}`}>
-            {stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}
+          <div className="text-secondary text-sm flex items-center gap-xs"><DollarSign size={16} /> 已实现盈亏（原生币）</div>
+          <div className="text-sm font-bold font-mono" style={{ overflowWrap: 'anywhere' }}>
+            {pnlSummary || '-'}
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-lg">
         <div className="card flex flex-col gap-md">
-          <h3 className="text-lg font-bold border-b pb-2" style={{ borderColor: 'var(--color-border)' }}>当日预算进度</h3>
+          <h3 className="text-lg font-bold border-b pb-2" style={{ borderColor: 'var(--color-border)' }}>今日实盘资金流水</h3>
           <div className="flex flex-col gap-md">
-            {budgets.length === 0 && <div className="text-secondary text-sm">无启用链</div>}
-            {budgets.map(b => (
-              <div key={b.chain} className="flex items-center gap-md">
-                <ChainIcon chain={b.chain as any} />
-                <div className="flex-1">
-                  <ProgressBar value={b.spent} max={b.total} />
+            {budgetsSpent.length === 0 && <div className="text-secondary text-sm">今日暂无资金流水</div>}
+            {budgetsSpent.map(item => (
+              <div key={item.chain_id} className="flex items-center justify-between gap-md">
+                <div className="flex items-center gap-sm">
+                  <ChainIcon chain={item.chain_id as any} />
+                  <span className="font-mono text-sm">{item.chain_id.toUpperCase()}</span>
+                </div>
+                <div className="text-right font-mono text-xs">
+                  <div>已成交 {Number(item.principal_committed || 0).toFixed(6)}</div>
+                  <div className="text-secondary">预留 {Number(item.principal_reserved || 0).toFixed(6)} {item.native_symbol}</div>
                 </div>
               </div>
             ))}

@@ -1,10 +1,8 @@
-// D:\AI_Projects\xbot\backend\jobs\price-monitor.js
 const db = require('../lib/db');
 const logger = require('../lib/logger');
 const gmgnHttp = require('../lib/gmgn-http');
 const gmgnAdapter = require('../lib/gmgn-adapter');
 const paperEngine = require('../domains/trade/paper-engine');
-const engineState = require('../lib/engine-state');
 const { getTradingMode } = require('../lib/runtime-mode');
 
 function tokenPriceUsd(rawTokenInfo) {
@@ -19,10 +17,6 @@ async function run(deps) {
   if (executionMode === 'signal') {
     return { status: 'skipped', reason: 'signal_mode' };
   }
-  if (executionMode === 'live' && !engineState.getArmed()) {
-    return { status: 'skipped', reason: 'engine_locked' };
-  }
-
   try {
     // 1. 查询所有处于 open 状态的模拟仓位
     const statuses = executionMode === 'live'

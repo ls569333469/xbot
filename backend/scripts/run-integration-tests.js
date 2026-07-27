@@ -4,7 +4,7 @@ const { spawnSync } = require('child_process');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
-const testDatabase = String(process.env.XBOT_TEST_DB_NAME || '').trim();
+const testDatabase = String(process.argv[2] || process.env.XBOT_TEST_DB_NAME || '').trim();
 const productionDatabase = String(process.env.DB_NAME || '').trim();
 
 if (!testDatabase || !/test/i.test(testDatabase) || testDatabase === productionDatabase) {
@@ -25,19 +25,38 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const result = spawnSync(
-  process.execPath,
-  ['--test', '--test-concurrency=1', ...files],
-  {
-    cwd: path.resolve(__dirname, '..'),
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      DB_NAME: testDatabase,
-      XBOT_PRODUCTION_DB_NAME: productionDatabase
-    },
-    stdio: 'inherit'
-  }
-);
+async function main() {
+  const testEnv = {
+    ...process.env,
+    NODE_ENV: 'test',
+    DB_NAME: testDatabase,
+    XBOT_TEST_DB_NAME: testDatabase,
+    XBOT_PRODUCTION_DB_NAME: productionDatabase
+  };
 
-process.exit(result.status ?? 1);
+  Object.assign(process.env, testEnv);
+  const { runMigrations } = require('../lib/migrations');
+  const db = require('../lib/db');
+  try {
+    await runMigrations();
+  } finally {
+    await db.pool.end();
+  }
+
+  const result = spawnSync(
+    process.execPath,
+    ['--test', '--test-concurrency=1', ...files],
+    {
+      cwd: path.resolve(__dirname, '..'),
+      env: testEnv,
+      stdio: 'inherit'
+    }
+  );
+
+  process.exitCode = result.status ?? 1;
+}
+
+main().catch((error) => {
+  process.stderr.write(`${error.stack || error.message}\n`);
+  process.exitCode = 1;
+});

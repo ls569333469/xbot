@@ -33,13 +33,15 @@ test('scheduler readiness still blocks real cooldowns and undersized capacity', 
   ]);
 });
 
-test('readiness monitor automatically disarms and reports blockers', async () => {
+test('readiness monitor pauses transient blockers and reports them once', async () => {
   let armed = true;
+  let status = 'running';
   const alerts = [];
   const monitor = new ReadinessMonitor({
     engine: {
       getArmed: () => armed,
-      setArmed: async (value) => { armed = value; }
+      getStatus: () => ({ status, desiredRunning: true }),
+      pauseTransient: async () => { armed = false; status = 'paused_transient'; }
     },
     snapshotProvider: async () => ({
       readyToArm: false,
@@ -49,9 +51,59 @@ test('readiness monitor automatically disarms and reports blockers', async () =>
     onDisarm: async (details) => alerts.push(details)
   });
   const result = await monitor.checkOnce();
-  assert.equal(result.status, 'disarmed');
+  assert.equal(result.status, 'paused_transient');
   assert.equal(armed, false);
   assert.deepEqual(alerts[0].blockers, ['GMGN_RECENT_429']);
+});
+
+test('readiness monitor automatically faults critical blockers', async () => {
+  let armed = true;
+  const alerts = [];
+  const monitor = new ReadinessMonitor({
+    engine: {
+      getArmed: () => armed,
+      getStatus: () => ({ status: armed ? 'running' : 'fault_protected', desiredRunning: true }),
+      setArmed: async (value) => { armed = value; }
+    },
+    snapshotProvider: async () => ({
+      readyToArm: false,
+      blockers: ['MIGRATION_NOT_CURRENT'],
+      snapshotHash: 'snapshot-critical'
+    }),
+    onDisarm: async (details) => alerts.push(details)
+  });
+  const result = await monitor.checkOnce();
+  assert.equal(result.status, 'disarmed');
+  assert.equal(armed, false);
+  assert.deepEqual(alerts[0].blockers, ['MIGRATION_NOT_CURRENT']);
+});
+
+test('readiness monitor requires three healthy checks before transient recovery', async () => {
+  let recovered = 0;
+  const recoveredEvents = [];
+  const monitor = new ReadinessMonitor({
+    engine: {
+      getArmed: () => false,
+      getStatus: () => ({
+        status: 'paused_transient', desiredRunning: true,
+        transientStartedAt: new Date().toISOString()
+      }),
+      recoverTransient: async () => { recovered += 1; }
+    },
+    snapshotProvider: async () => ({
+      readyToArm: true,
+      blockers: [],
+      snapshotHash: 'snapshot-ready'
+    }),
+    onDisarm: async () => {},
+    onRecover: async (details) => recoveredEvents.push(details),
+    recoveryHealthyChecks: 3
+  });
+  assert.equal((await monitor.checkOnce()).status, 'recovering');
+  assert.equal((await monitor.checkOnce()).status, 'recovering');
+  assert.equal((await monitor.checkOnce()).status, 'resumed');
+  assert.equal(recovered, 1);
+  assert.equal(recoveredEvents.length, 1);
 });
 
 test('readiness monitor does nothing while the new-order gate is locked', async () => {

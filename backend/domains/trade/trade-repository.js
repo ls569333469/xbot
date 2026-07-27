@@ -1,7 +1,14 @@
 const crypto = require('crypto');
 const db = require('../../lib/db');
 const { decimalToRaw, rawToDecimal } = require('../../lib/decimal-units');
+const { ledgerUsdAmount, unusedFeeEnvelope } = require('./budget-accounting');
+const { tradeCircuitBreaker } = require('./trade-circuit-breaker');
+const liveApproval = require('./live-approval-service');
+const { walletWriteLane } = require('./wallet-write-lane');
 const { requireChain } = require('./chain-adapters');
+const intentRepository = require('./trade-intent-repository');
+const { persistManualE2eEvidence } = require('./manual-e2e-evidence');
+const { legacyPercentages } = require('./exit-strategy-compiler');
 
 function fingerprint(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -18,16 +25,35 @@ function strategyLegAmountRaw(totalAmountRaw, condition = {}) {
 }
 
 function principalUsdCost(inputDisplay, reservation = {}) {
-  const input = Number(inputDisplay);
-  const principal = Number(reservation.amount_native);
-  const fee = Number(reservation.fee_native || 0);
-  const totalUsd = Number(reservation.amount_usd_snapshot);
-  const reservedTotal = principal + fee;
-  if (![input, principal, fee, totalUsd, reservedTotal].every(Number.isFinite)
-      || input < 0 || principal <= 0 || fee < 0 || totalUsd <= 0 || reservedTotal <= 0) {
-    return null;
-  }
-  return input * totalUsd / reservedTotal;
+  return ledgerUsdAmount(reservation, inputDisplay, 0);
+}
+
+function submittedOrderStatus(status) {
+  if (status === 'confirmed') return 'chain_verifying';
+  if (['failed', 'expired'].includes(status)) return 'failure_verifying';
+  return status;
+}
+
+async function recordUnusedFeeRelease(executor, reservation, intentId, attemptId, reason) {
+  const unusedFee = unusedFeeEnvelope(reservation);
+  if (unusedFee <= 0) return null;
+  const result = await executor.query(
+    `INSERT INTO budget_ledger(
+       reservation_id, intent_id, attempt_id, whitelist_id, chain, entry_type,
+       amount_native, fee_native, amount_usd_snapshot, reason
+     ) VALUES ($1,$2,$3,$4,$5,'release',0,$6,$7,$8) RETURNING *`,
+    [
+      reservation.id,
+      intentId,
+      attemptId,
+      reservation.whitelist_id,
+      reservation.chain,
+      unusedFee,
+      ledgerUsdAmount(reservation, 0, unusedFee),
+      reason
+    ]
+  );
+  return result.rows[0] || null;
 }
 
 async function getSignalForExecution(signalId, executor = db) {
@@ -36,11 +62,13 @@ async function getSignalForExecution(signalId, executor = db) {
             signal.status AS signal_status,
             signal.execution_mode AS signal_execution_mode,
             signal.created_at AS signal_created_at,
+            activity.source_created_at,
             signal.activity_id,
             signal.whitelist_id,
             signal.signal_type,
             signal.kol_handle,
             signal.matched_relation_ids,
+            signal.matched_source_rule_ids,
             activity.provider,
             activity.activity_type,
             whitelist.symbol,
@@ -53,6 +81,8 @@ async function getSignalForExecution(signalId, executor = db) {
             whitelist.slippage,
             whitelist.auto_tp_pct,
             whitelist.auto_sl_pct,
+            whitelist.exit_strategy,
+            whitelist.exit_strategy_version,
             whitelist.current_buy_count,
             whitelist.status AS whitelist_status
      FROM trade_signals AS signal
@@ -92,12 +122,69 @@ async function writeOutbox(executor, topic, aggregateType, aggregateId, payload)
   );
 }
 
+async function createObservedSellAttempt(executor, values) {
+  const intentResult = await intentRepository.createSellIntent(executor, {
+    position: values.position,
+    chain: values.chain,
+    wallet: { address: values.walletAddress },
+    inputAmountRaw: values.inputAmountRaw,
+    inputAmountDisplay: values.inputAmountDisplay,
+    slippage: 0,
+    snapshotHash: values.requestFingerprint
+  }, {
+    enabled: true,
+    retryEnabled: false,
+    maxRetries: 0,
+    retryWindowMs: 30000,
+    failureEvidenceWindowMs: 30000,
+    feeEscalationEnabled: false,
+    maxRetryFeeNative: 0,
+    exitGasReserve: 0
+  });
+  if (intentResult.merged) {
+    const error = new Error('Observed sell conflicts with an active sell intent');
+    error.code = 'OBSERVED_SELL_INTENT_CONFLICT';
+    throw error;
+  }
+  const attempt = await intentRepository.insertAttempt(executor, intentResult.intent, {
+    signalId: values.position.signal_id,
+    whitelistId: values.position.whitelist_id,
+    positionId: values.position.id,
+    inputToken: values.inputToken,
+    outputToken: values.outputToken,
+    inputAmountRaw: values.inputAmountRaw,
+    inputAmountDisplay: values.inputAmountDisplay,
+    requestFingerprint: values.requestFingerprint,
+    metadata: values.metadata,
+    status: 'confirming'
+  });
+  const updated = await executor.query(
+    `UPDATE trade_attempts
+     SET output_amount_raw = $2, output_amount_display = $3,
+         submitted_at = $4, funds_write_started_at = $4,
+         funds_write_completed_at = $4, last_reconciled_at = NOW(), updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [attempt.id, values.outputAmountRaw, values.outputAmountDisplay, values.submittedAt]
+  );
+  await executor.query(
+    `UPDATE trade_intents
+     SET status = 'awaiting_result', updated_at = NOW()
+     WHERE id = $1 AND status = 'created'`,
+    [intentResult.intent.id]
+  );
+  return updated.rows[0];
+}
+
 async function createBuyAttempt(prepared) {
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('xbot:budget:global'))");
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`xbot:budget:${prepared.chain.id}`]);
+    const chainDefinition = requireChain(prepared.chain.id);
+    if (!chainDefinition.executionImplemented) {
+      const error = new Error(`Live execution is not implemented for ${prepared.chain.id}`);
+      error.code = 'CHAIN_NOT_IMPLEMENTED';
+      throw error;
+    }
     const signal = await getSignalForExecution(prepared.signal.signal_id, client);
     if (!signal || signal.whitelist_status !== 'active') {
       const error = new Error('Signal or active whitelist not found');
@@ -105,14 +192,81 @@ async function createBuyAttempt(prepared) {
       throw error;
     }
     const lockedWhitelist = await client.query(
-      'SELECT * FROM ca_whitelist WHERE id = $1 FOR UPDATE',
+      `SELECT whitelist.*,
+              COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                  'actor_handle', actor.x_handle,
+                  'target_x_handle', relation.target_x_handle,
+                  'event_types', relation.event_types
+                ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')),
+                           relation.target_x_handle)
+                FROM x_signal_relations AS relation
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = relation.kol_id AND actor.enabled = true
+                WHERE relation.whitelist_id = whitelist.id AND relation.enabled = true
+              ), '[]'::jsonb) AS relations
+       FROM ca_whitelist AS whitelist WHERE whitelist.id = $1 FOR UPDATE`,
       [signal.whitelist_id]
     );
     const whitelist = lockedWhitelist.rows[0];
+    const authorizationResult = await client.query(
+      `WITH acceptance_scope AS (
+         SELECT chain, whitelist_id, expires_at, context_hash
+         FROM live_acceptance_scopes
+         WHERE status = 'active'
+         ORDER BY id DESC LIMIT 1
+       )
+       SELECT readiness.live_enabled,
+              (SELECT chain FROM acceptance_scope) AS scope_chain,
+              (SELECT whitelist_id FROM acceptance_scope) AS scope_whitelist_id,
+              (SELECT expires_at FROM acceptance_scope) AS scope_expires_at,
+              (SELECT context_hash FROM acceptance_scope) AS scope_context_hash
+       FROM chain_live_readiness AS readiness
+       WHERE readiness.chain = $1
+       FOR SHARE`,
+      [prepared.chain.id]
+    );
+    const authorization = authorizationResult.rows[0];
+    const hasAcceptanceScope = Boolean(authorization?.scope_chain);
+    const acceptanceValid = hasAcceptanceScope
+      && authorization.scope_chain === prepared.chain.id
+      && Number(authorization.scope_whitelist_id) === Number(signal.whitelist_id)
+      && new Date(authorization.scope_expires_at).getTime() > Date.now()
+      && authorization.scope_context_hash === liveApproval.contractContext(
+        prepared.chain.id,
+        [whitelist]
+      ).contextHash;
+    if ((!hasAcceptanceScope && !authorization?.live_enabled)
+        || (hasAcceptanceScope && !acceptanceValid)) {
+      const error = new Error('Chain or limited acceptance scope is not authorized for this buy');
+      error.code = hasAcceptanceScope ? 'ACCEPTANCE_SCOPE_MISMATCH' : 'CHAIN_PRODUCTION_NOT_APPROVED';
+      throw error;
+    }
     if (String(process.env.EMERGENCY_STOP || 'false').toLowerCase() === 'true') {
       const error = new Error('Emergency stop is active');
       error.code = 'EMERGENCY_STOP_ACTIVE';
       throw error;
+    }
+    const chainConfigResult = await client.query(
+      "SELECT value_json FROM config WHERE key = 'chain_configs' FOR SHARE"
+    );
+    const chainConfig = chainConfigResult.rows[0]?.value_json?.[prepared.chain.id] || {};
+    await tradeCircuitBreaker.assertBuyAllowed(prepared.chain.id, client);
+    const intentResult = await intentRepository.createBuyIntent(
+      client,
+      prepared,
+      signal,
+      chainConfig
+    );
+    if (intentResult.merged || intentResult.duplicate) {
+      await client.query('COMMIT');
+      return {
+        intent: intentResult.intent,
+        attempt: null,
+        reservation: null,
+        merged: intentResult.merged,
+        duplicate: intentResult.duplicate
+      };
     }
     const activeBuyAttempts = await client.query(
       `SELECT COUNT(*)::int AS count
@@ -132,27 +286,6 @@ async function createBuyAttempt(prepared) {
       error.code = 'CA_BUY_LIMIT_REACHED';
       throw error;
     }
-    const chainConfigResult = await client.query(
-      "SELECT value_json FROM config WHERE key = 'chain_configs' FOR SHARE"
-    );
-    const chainConfig = chainConfigResult.rows[0]?.value_json?.[prepared.chain.id];
-    if (!chainConfig?.enabled) {
-      const error = new Error('Chain budget configuration is disabled');
-      error.code = 'CHAIN_BUDGET_DISABLED';
-      throw error;
-    }
-    const idempotencyKey = `signal:${signal.signal_id}:buy`;
-    const existing = await client.query(
-      'SELECT * FROM trade_attempts WHERE idempotency_key = $1',
-      [idempotencyKey]
-    );
-    if (existing.rows.length > 0) {
-      const error = new Error(`Signal already has buy attempt #${existing.rows[0].id}`);
-      error.code = 'TRADE_ATTEMPT_EXISTS';
-      error.attempt = existing.rows[0];
-      throw error;
-    }
-
     const activeReservations = await client.query(
       `SELECT COALESCE(SUM(amount_native), 0) AS principal_total
        FROM budget_reservations
@@ -160,8 +293,16 @@ async function createBuyAttempt(prepared) {
       [signal.whitelist_id]
     );
     const principal = Number(prepared.budgetNative);
-    const planned = principal + Number(prepared.feeReserveNative || 0);
-    const plannedUsd = Number(prepared.budgetUsdSnapshot);
+    const policy = intentRepository.retryPolicy(prepared.chain.id, chainConfig);
+    const initialFeeReserve = Number(prepared.feeReserveNative || 0);
+    const retryFeeEnvelope = policy.retryEnabled
+      ? policy.maxRetries * policy.maxRetryFeeNative
+      : 0;
+    const feeEnvelope = initialFeeReserve + retryFeeEnvelope;
+    const planned = principal + feeEnvelope;
+    const plannedUsd = Number.isFinite(Number(prepared.nativeUsd))
+      ? planned * Number(prepared.nativeUsd)
+      : Number(prepared.budgetUsdSnapshot);
     const committed = Number(whitelist.spent_budget || 0);
     const reservedPrincipal = Number(activeReservations.rows[0].principal_total || 0);
     if (!Number.isFinite(principal) || principal <= 0
@@ -175,95 +316,17 @@ async function createBuyAttempt(prepared) {
       error.code = 'USD_BUDGET_SNAPSHOT_REQUIRED';
       throw error;
     }
-    const maxPerTrade = Number(chainConfig.maxPerTrade);
-    const dailyBudget = Number(chainConfig.dailyBudget);
-    const weeklyBudget = Number(chainConfig.weeklyBudget);
-    const maxOpenPositions = Number(chainConfig.maxOpenPositions);
-    const dailyLossLimit = Number(chainConfig.dailyLossLimit);
-    if (![maxPerTrade, dailyBudget, weeklyBudget, maxOpenPositions, dailyLossLimit].every((value) => Number.isFinite(value) && value > 0)) {
-      const error = new Error('Chain hard limits are missing or invalid');
-      error.code = 'CHAIN_HARD_LIMIT_INVALID';
-      throw error;
-    }
-    if (principal > maxPerTrade) {
-      const error = new Error('Per-trade chain limit exceeded');
-      error.code = 'CHAIN_PER_TRADE_LIMIT_EXCEEDED';
-      throw error;
-    }
-    const activePositions = await client.query(
-      `SELECT COUNT(*)::int AS count
-       FROM positions
-       WHERE chain_id = $1 AND execution_mode = 'live'
-         AND status IN ('open','open_unprotected','open_protected','partially_closed','closing','close_uncertain')`,
-      [prepared.chain.id]
+    const configuredMinimumGasReserve = Number(
+      process.env[`GMGN_MIN_GAS_RESERVE_${prepared.chain.id.toUpperCase()}`] || 0
     );
-    if (Number(activePositions.rows[0].count) >= maxOpenPositions) {
-      const error = new Error('Maximum open positions reached for chain');
-      error.code = 'MAX_OPEN_POSITIONS_REACHED';
-      throw error;
-    }
-    const dailyLoss = await client.query(
-      `SELECT COALESCE(SUM(pnl), 0) AS pnl
-       FROM positions
-       WHERE chain_id = $1 AND execution_mode = 'live' AND closed_at >= date_trunc('day', NOW())`,
-      [prepared.chain.id]
-    );
-    if (Number(dailyLoss.rows[0].pnl || 0) <= -dailyLossLimit) {
-      const error = new Error('Daily chain loss limit reached');
-      error.code = 'CHAIN_DAILY_LOSS_LIMIT_REACHED';
-      throw error;
-    }
-    const periodUsage = await client.query(
-      `SELECT
-         COALESCE((SELECT SUM(amount_native + fee_native) FROM budget_ledger
-           WHERE chain = $1 AND entry_type = 'commit' AND created_at >= date_trunc('day', NOW())), 0) AS daily_committed,
-         COALESCE((SELECT SUM(amount_native + fee_native) FROM budget_ledger
-           WHERE chain = $1 AND entry_type = 'commit' AND created_at >= date_trunc('week', NOW())), 0) AS weekly_committed,
-         COALESCE((SELECT SUM(amount_native + fee_native) FROM budget_reservations
-           WHERE chain = $1 AND status = 'reserved'), 0) AS reserved_native,
-         COALESCE((SELECT SUM(amount_usd_snapshot) FROM budget_ledger
-           WHERE entry_type = 'commit' AND created_at >= date_trunc('day', NOW())), 0) AS global_daily_usd,
-         COALESCE((SELECT SUM(amount_usd_snapshot) FROM budget_ledger
-           WHERE entry_type = 'commit' AND created_at >= date_trunc('week', NOW())), 0) AS global_weekly_usd,
-         COALESCE((SELECT SUM(amount_usd_snapshot) FROM budget_reservations
-           WHERE status = 'reserved'), 0) AS global_reserved_usd`,
-      [prepared.chain.id]
-    );
-    const usage = periodUsage.rows[0];
-    const reservedNative = Number(usage.reserved_native || 0);
-    if (Number(usage.daily_committed || 0) + reservedNative + planned > dailyBudget) {
-      const error = new Error('Daily chain budget exceeded');
-      error.code = 'CHAIN_DAILY_BUDGET_EXCEEDED';
-      throw error;
-    }
-    if (Number(usage.weekly_committed || 0) + reservedNative + planned > weeklyBudget) {
-      const error = new Error('Weekly chain budget exceeded');
-      error.code = 'CHAIN_WEEKLY_BUDGET_EXCEEDED';
-      throw error;
-    }
-    const globalDailyUsdLimit = Number(process.env.GMGN_GLOBAL_DAILY_USD_LIMIT || 0);
-    const globalWeeklyUsdLimit = Number(process.env.GMGN_GLOBAL_WEEKLY_USD_LIMIT || 0);
-    if (globalDailyUsdLimit <= 0 || globalWeeklyUsdLimit <= 0) {
-      const error = new Error('Global USD hard limits are not configured');
-      error.code = 'GLOBAL_USD_LIMIT_INVALID';
-      throw error;
-    }
-    const globalReservedUsd = Number(usage.global_reserved_usd || 0);
-    if (Number(usage.global_daily_usd || 0) + globalReservedUsd + plannedUsd > globalDailyUsdLimit) {
-      const error = new Error('Global daily USD budget exceeded');
-      error.code = 'GLOBAL_DAILY_USD_BUDGET_EXCEEDED';
-      throw error;
-    }
-    if (Number(usage.global_weekly_usd || 0) + globalReservedUsd + plannedUsd > globalWeeklyUsdLimit) {
-      const error = new Error('Global weekly USD budget exceeded');
-      error.code = 'GLOBAL_WEEKLY_USD_BUDGET_EXCEEDED';
-      throw error;
-    }
-    const minimumGasReserve = Number(process.env[`GMGN_MIN_GAS_RESERVE_${prepared.chain.id.toUpperCase()}`] || 0);
-    if (!Number.isFinite(minimumGasReserve) || minimumGasReserve < 0
-        || Number(prepared.walletNativeBalance) - planned < minimumGasReserve) {
+    const exitGasReserve = Number(chainConfig.exitGasReserve || 0);
+    const requiredGasReserve = Math.max(configuredMinimumGasReserve, exitGasReserve);
+    if (![configuredMinimumGasReserve, exitGasReserve, requiredGasReserve]
+      .every((value) => Number.isFinite(value) && value >= 0)
+        || Number(prepared.walletNativeBalance) - planned < requiredGasReserve) {
       const error = new Error('Minimum native gas reserve would be breached');
       error.code = 'MINIMUM_GAS_RESERVE_BREACH';
+      error.details = { requiredGasReserve, exitGasReserve };
       throw error;
     }
 
@@ -277,63 +340,55 @@ async function createBuyAttempt(prepared) {
       slippage: Number(signal.slippage),
       snapshotHash: prepared.snapshotHash
     });
-    const attemptResult = await client.query(
-      `INSERT INTO trade_attempts
-        (signal_id, whitelist_id, side, idempotency_key, chain, wallet_address,
-         input_token, output_token, input_amount_raw, input_amount_display,
-         status, request_fingerprint, metadata)
-       VALUES ($1,$2,'buy',$3,$4,$5,$6,$7,$8,$9,'reserved',$10,$11)
-       RETURNING *`,
-      [
-        signal.signal_id,
-        signal.whitelist_id,
-        idempotencyKey,
-        prepared.chain.id,
-        prepared.wallet.address,
-        prepared.chain.nativeToken,
-        signal.contract_address,
-        prepared.inputAmountRaw,
-        prepared.budgetNative,
-        requestFingerprint,
-        {
-          snapshot_hash: prepared.snapshotHash,
-          cache: prepared.cacheMeta,
-          condition_orders: prepared.conditionOrders,
-          token_decimals: prepared.token.decimals,
-          token_symbol: prepared.token.symbol
-        }
-      ]
-    );
-    const attempt = attemptResult.rows[0];
+    const attempt = await intentRepository.insertAttempt(client, intentResult.intent, {
+      signalId: signal.signal_id,
+      whitelistId: signal.whitelist_id,
+      inputToken: prepared.chain.nativeToken,
+      outputToken: signal.contract_address,
+      inputAmountRaw: prepared.inputAmountRaw,
+      inputAmountDisplay: prepared.budgetNative,
+      requestFingerprint,
+      metadata: {
+        snapshot_hash: prepared.snapshotHash,
+        cache: prepared.cacheMeta,
+        condition_orders: prepared.conditionOrders,
+        exit_strategy: signal.exit_strategy,
+        exit_strategy_version: signal.exit_strategy_version,
+        token_decimals: prepared.token.decimals,
+        token_symbol: prepared.token.symbol
+      }
+    });
     const reservationResult = await client.query(
       `INSERT INTO budget_reservations
-        (attempt_id, whitelist_id, chain, native_symbol, amount_native,
+        (attempt_id, intent_id, whitelist_id, chain, native_symbol, amount_native,
          fee_native, amount_usd_snapshot)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        RETURNING *`,
       [
         attempt.id,
+        intentResult.intent.id,
         signal.whitelist_id,
         prepared.chain.id,
         prepared.chain.nativeSymbol,
         prepared.budgetNative,
-        prepared.feeReserveNative || 0,
-        prepared.budgetUsdSnapshot
+        feeEnvelope,
+        plannedUsd
       ]
     );
     await client.query(
       `INSERT INTO budget_ledger
-        (reservation_id, attempt_id, whitelist_id, chain, entry_type,
+        (reservation_id, intent_id, attempt_id, whitelist_id, chain, entry_type,
          amount_native, fee_native, amount_usd_snapshot, reason)
-       VALUES ($1,$2,$3,$4,'reserve',$5,$6,$7,'PRE_SUBMIT_RESERVATION')`,
+       VALUES ($1,$2,$3,$4,$5,'reserve',$6,$7,$8,'PRE_SUBMIT_RESERVATION')`,
       [
         reservationResult.rows[0].id,
+        intentResult.intent.id,
         attempt.id,
         signal.whitelist_id,
         prepared.chain.id,
         prepared.budgetNative,
-        prepared.feeReserveNative || 0,
-        prepared.budgetUsdSnapshot
+        feeEnvelope,
+        plannedUsd
       ]
     );
     await client.query(
@@ -346,7 +401,7 @@ async function createBuyAttempt(prepared) {
       summary: { reservation_id: reservationResult.rows[0].id }
     });
     await client.query('COMMIT');
-    return { attempt, reservation: reservationResult.rows[0] };
+    return { intent: intentResult.intent, attempt, reservation: reservationResult.rows[0], merged: false };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -369,60 +424,46 @@ async function createSellAttempt(prepared) {
       error.code = 'POSITION_NOT_CLOSABLE';
       throw error;
     }
-    const active = await client.query(
-      `SELECT id FROM trade_attempts
-       WHERE position_id = $1 AND side = 'sell'
-         AND status IN ('reserved','preparing','submitting','submitted','confirming','submission_uncertain')
-       LIMIT 1`,
-      [position.id]
-    );
-    if (active.rows.length > 0) {
-      const error = new Error(`Position already has active sell attempt #${active.rows[0].id}`);
-      error.code = 'SELL_ATTEMPT_EXISTS';
-      throw error;
-    }
     if (!prepared.closeIntentId) {
       const error = new Error('Close attempt requires a consumed prepare intent');
       error.code = 'CLOSE_INTENT_MISSING';
       throw error;
     }
-    const idempotencyKey = `position:${position.id}:sell:prepare:${prepared.closeIntentId}`;
-    const attemptResult = await client.query(
-      `INSERT INTO trade_attempts
-        (signal_id, whitelist_id, position_id, side, idempotency_key, chain,
-         wallet_address, input_token, output_token, input_amount_raw,
-         input_amount_display, status, request_fingerprint, metadata)
-       VALUES ($1,$2,$3,'sell',$4,$5,$6,$7,$8,$9,$10,'reserved',$11,$12)
-       ON CONFLICT (idempotency_key) DO NOTHING
-       RETURNING *`,
-      [
-        position.signal_id,
-        position.whitelist_id,
-        position.id,
-        idempotencyKey,
-        position.chain_id,
-        prepared.wallet.address,
-        position.contract_address,
-        prepared.chain.nativeToken,
-        prepared.inputAmountRaw,
-        prepared.inputAmountDisplay,
-        fingerprint({ position: position.id, amount: prepared.inputAmountRaw, snapshot: prepared.snapshotHash }),
-        { snapshot_hash: prepared.snapshotHash, token_decimals: prepared.tokenDecimals }
-      ]
+    const chainConfigResult = await client.query(
+      "SELECT value_json FROM config WHERE key = 'chain_configs' FOR SHARE"
     );
-    if (attemptResult.rows.length === 0) {
-      const error = new Error('This position amount already has a sell attempt');
-      error.code = 'SELL_ATTEMPT_EXISTS';
-      throw error;
+    const chainConfig = chainConfigResult.rows[0]?.value_json?.[prepared.chain.id] || {};
+    const intentResult = await intentRepository.createSellIntent(client, prepared, chainConfig);
+    if (intentResult.merged) {
+      const existingAttempt = await client.query(
+        `SELECT * FROM trade_attempts WHERE intent_id = $1 ORDER BY attempt_no DESC LIMIT 1`,
+        [intentResult.intent.id]
+      );
+      await client.query('COMMIT');
+      return { intent: intentResult.intent, attempt: existingAttempt.rows[0] || null, merged: true };
     }
-    const attempt = attemptResult.rows[0];
+    const attempt = await intentRepository.insertAttempt(client, intentResult.intent, {
+      signalId: position.signal_id,
+      whitelistId: position.whitelist_id,
+      positionId: position.id,
+      inputToken: position.contract_address,
+      outputToken: prepared.chain.nativeToken,
+      inputAmountRaw: prepared.inputAmountRaw,
+      inputAmountDisplay: prepared.inputAmountDisplay,
+      requestFingerprint: fingerprint({
+        position: position.id,
+        amount: prepared.inputAmountRaw,
+        snapshot: prepared.snapshotHash
+      }),
+      metadata: { snapshot_hash: prepared.snapshotHash, token_decimals: prepared.tokenDecimals }
+    });
     await client.query(
       `UPDATE positions SET status = 'closing', updated_at = NOW() WHERE id = $1`,
       [position.id]
     );
     await addAttemptEvent(client, attempt.id, null, 'reserved', { actor: prepared.operatorId });
     await client.query('COMMIT');
-    return attempt;
+    return { intent: intentResult.intent, attempt, merged: false };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -442,6 +483,7 @@ async function transitionAttempt(attemptId, expectedStatuses, nextStatus, detail
            error_class = COALESCE($3, error_class),
            requires_manual_review = COALESCE($4, requires_manual_review),
            submit_started_at = CASE WHEN $1 = 'submitting' THEN NOW() ELSE submit_started_at END,
+           funds_write_started_at = CASE WHEN $1 = 'submitting' THEN NOW() ELSE funds_write_started_at END,
            submitted_at = CASE WHEN $1 = 'submitted' THEN NOW() ELSE submitted_at END,
            confirmed_at = CASE WHEN $1 = 'confirmed' THEN NOW() ELSE confirmed_at END,
            last_reconciled_at = CASE WHEN $1 IN ('confirming','confirmed','failed','reconciliation_required') THEN NOW() ELSE last_reconciled_at END,
@@ -463,6 +505,22 @@ async function transitionAttempt(attemptId, expectedStatuses, nextStatus, detail
       throw error;
     }
     const attempt = result.rows[0];
+    const intentStatus = {
+      submitting: 'submitting',
+      submitted: 'awaiting_result',
+      confirming: 'awaiting_result',
+      submission_uncertain: 'uncertain',
+      reconciliation_required: 'uncertain'
+    }[nextStatus];
+    if (intentStatus) {
+      await intentRepository.setIntentStatusForAttempt(
+        client,
+        attemptId,
+        ['created', 'submitting', 'awaiting_result', 'retry_verifying', 'uncertain'],
+        intentStatus,
+        { errorCode: details.errorCode }
+      );
+    }
     if (nextStatus === 'submitting' && attempt.signal_id) {
       await client.query(
         `UPDATE x_provider_events AS provider_event
@@ -500,7 +558,7 @@ async function recordSubmittedOrder(attemptId, normalizedOrder, quote, responseM
     await client.query('BEGIN');
     const attemptResult = await client.query(
       `UPDATE trade_attempts
-       SET status = 'submitted', submitted_at = NOW(), updated_at = NOW()
+       SET status = 'submitted', submitted_at = NOW(), funds_write_completed_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND status = 'submitting'
        RETURNING *`,
       [attemptId]
@@ -510,6 +568,7 @@ async function recordSubmittedOrder(attemptId, normalizedOrder, quote, responseM
       error.code = 'TRADE_ATTEMPT_CAS_FAILED';
       throw error;
     }
+    const persistedOrderStatus = submittedOrderStatus(normalizedOrder.status);
     const orderResult = await client.query(
       `INSERT INTO trade_orders
         (attempt_id, provider_order_id, auth_client_id, tx_hash, provider_status,
@@ -525,12 +584,18 @@ async function recordSubmittedOrder(attemptId, normalizedOrder, quote, responseM
         responseMeta?.authClientId || null,
         normalizedOrder.txHash,
         normalizedOrder.providerStatus,
-        normalizedOrder.status === 'confirmed' ? 'chain_verifying' : normalizedOrder.status,
+        persistedOrderStatus,
         normalizedOrder.report.outputAmountRaw,
         quote.raw || {},
         normalizedOrder.report.raw || {},
         normalizedOrder.raw || {}
       ]
+    );
+    await intentRepository.setIntentStatusForAttempt(
+      client,
+      attemptId,
+      ['submitting', 'awaiting_result'],
+      'awaiting_result'
     );
     await addAttemptEvent(client, attemptId, 'submitting', 'submitted', {
       providerRequestId: normalizedOrder.providerOrderId,
@@ -576,21 +641,37 @@ async function releaseRejectedAttempt(attemptId, error) {
     const reservation = await client.query(
       `UPDATE budget_reservations
        SET status = 'released', released_at = NOW(), updated_at = NOW()
-       WHERE attempt_id = $1 AND status = 'reserved'
+       WHERE intent_id = $1 AND status = 'reserved'
        RETURNING *`,
-      [attemptId]
+      [attemptResult.rows[0].intent_id]
     );
     if (reservation.rows[0]) {
       const row = reservation.rows[0];
+      const unusedFee = unusedFeeEnvelope(row);
       await client.query(
         `INSERT INTO budget_ledger
-          (reservation_id, attempt_id, whitelist_id, chain, entry_type,
+          (reservation_id, intent_id, attempt_id, whitelist_id, chain, entry_type,
            amount_native, fee_native, amount_usd_snapshot, reason)
-         VALUES ($1,$2,$3,$4,'release',$5,$6,$7,$8)`,
-        [row.id, attemptId, row.whitelist_id, row.chain, row.amount_native, row.fee_native,
-          row.amount_usd_snapshot, error.code || 'TRADE_REJECTED']
+         VALUES ($1,$2,$3,$4,$5,'release',$6,$7,$8,$9)`,
+        [
+          row.id,
+          attemptResult.rows[0].intent_id,
+          attemptId,
+          row.whitelist_id,
+          row.chain,
+          row.amount_native,
+          unusedFee,
+          ledgerUsdAmount(row, row.amount_native, unusedFee),
+          error.code || 'TRADE_REJECTED'
+        ]
       );
     }
+    await client.query(
+      `UPDATE trade_intents SET status = 'rejected', last_error_code = $2,
+       completed_at = NOW(), next_retry_at = NULL, updated_at = NOW()
+       WHERE id = $1`,
+      [attemptResult.rows[0].intent_id, error.code || 'TRADE_REJECTED']
+    );
     await client.query(
       `UPDATE trade_signals SET status = 'rejected', reject_reason = $2, updated_at = NOW()
        WHERE id = $1`,
@@ -613,13 +694,29 @@ async function releaseRejectedAttempt(attemptId, error) {
 async function listDueOrders(limit = 20) {
   const result = await db.query(
     `SELECT orders.*, attempts.chain, attempts.wallet_address, attempts.signal_id,
-            attempts.side,
+            attempts.side, attempts.intent_id, attempts.attempt_no,
             attempts.whitelist_id, attempts.position_id,
             attempts.metadata AS attempt_metadata,
-            attempts.status AS attempt_status
+            attempts.status AS attempt_status,
+            attempts.input_token, attempts.output_token,
+            attempts.input_amount_raw AS attempt_input_amount_raw,
+            attempts.output_amount_raw AS attempt_output_amount_raw,
+            attempts.pre_submit_snapshot_json, attempts.snapshot_version,
+            attempts.failure_evidence_started_at,
+            intent.config_snapshot_json, intent.status AS intent_status,
+            intent.max_retries, intent.retry_count, intent.expires_at
      FROM trade_orders AS orders
      JOIN trade_attempts AS attempts ON attempts.id = orders.attempt_id
-     WHERE orders.normalized_status IN ('submitted','pending','chain_verifying','unknown')
+     JOIN trade_intents AS intent ON intent.id = attempts.intent_id
+     WHERE orders.normalized_status IN (
+       'submitted','pending','chain_verifying','failure_verifying',
+       'definitive_failed_no_fill','unknown'
+     )
+       AND (
+         orders.normalized_status <> 'definitive_failed_no_fill'
+         OR attempts.terminal_audit_until IS NULL
+         OR attempts.terminal_audit_until > NOW()
+       )
        AND orders.next_query_at <= NOW()
      ORDER BY orders.next_query_at ASC
      LIMIT $1`,
@@ -739,6 +836,128 @@ function sellSettlementOutputRaw(chain, receipt, reportOutputRaw, storedOutputRa
   return String(reportOutputRaw || storedOutputRaw || '');
 }
 
+async function finalizeAdditionalBuyFill(client, row, position, normalizedOrder, receipt) {
+  const report = normalizedOrder.report;
+  const inputRaw = report.inputAmountRaw || row.input_amount_raw;
+  const outputRaw = report.outputAmountRaw || row.output_amount_raw;
+  const inputDecimals = Number(report.inputDecimals ?? row.input_decimals);
+  const outputDecimals = Number(report.outputDecimals ?? row.output_decimals ?? row.metadata?.token_decimals);
+  if (!/^\d+$/.test(String(inputRaw || '')) || !/^\d+$/.test(String(outputRaw || ''))
+      || !Number.isInteger(inputDecimals) || !Number.isInteger(outputDecimals)) {
+    const error = new Error('Additional confirmed fill lacks exact raw amounts or decimals');
+    error.code = 'CONFIRMED_REPORT_INCOMPLETE';
+    throw error;
+  }
+  const inputDisplay = rawToDecimal(inputRaw, inputDecimals, 18);
+  const outputDisplay = rawToDecimal(outputRaw, outputDecimals, 18);
+  await client.query(
+    `INSERT INTO position_lots(
+       position_id, buy_order_id, chain, wallet_address, token_address,
+       token_decimals, opened_amount_raw, remaining_amount_raw,
+       reserved_by_strategy_raw, cost_native, cost_usd, fee_native
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'0',$8,$9,$10)`,
+    [
+      position.id, row.id, row.chain, row.wallet_address, row.output_token,
+      outputDecimals, outputRaw, inputDisplay,
+      principalUsdCost(inputDisplay, {
+        amount_native: row.reserved_principal_native,
+        fee_native: row.reserved_fee_native,
+        amount_usd_snapshot: row.reserved_usd_snapshot
+      }),
+      report.gasNative
+    ]
+  );
+  await client.query(
+    `UPDATE positions SET amount_in = amount_in + $2,
+     amount_out = amount_out + $3, updated_at = NOW() WHERE id = $1`,
+    [position.id, inputDisplay, outputDisplay]
+  );
+  await client.query(
+    `UPDATE trade_orders SET normalized_status = 'confirmed', confirmed_at = NOW(),
+     input_amount_raw = $2, output_amount_raw = $3, input_decimals = $4,
+     output_decimals = $5, input_amount_display = $6, output_amount_display = $7,
+     price_usd = COALESCE($8, price_usd), gas_native = COALESCE($9, gas_native),
+     gas_usd = COALESCE($10, gas_usd), updated_at = NOW() WHERE id = $1`,
+    [
+      row.id, inputRaw, outputRaw, inputDecimals, outputDecimals, inputDisplay,
+      outputDisplay, report.priceUsd, report.gasNative, report.gasUsd
+    ]
+  );
+  await client.query(
+    `UPDATE trade_attempts SET status = 'confirmed', position_id = $2,
+     output_amount_raw = $3, output_amount_display = $4, confirmed_at = NOW(),
+     requires_manual_review = true, error_code = 'MULTIPLE_FILL_INCIDENT',
+     last_reconciled_at = NOW(), updated_at = NOW() WHERE id = $1`,
+    [row.attempt_id, position.id, outputRaw, outputDisplay]
+  );
+  await client.query(
+    `UPDATE trade_intents SET status = 'confirmed', incident_status = 'multiple_fill',
+     confirmation_source = 'late_chain_receipt', completed_at = NOW(), updated_at = NOW()
+     WHERE id = $1`,
+    [row.intent_id]
+  );
+  await client.query(
+    `INSERT INTO budget_ledger(
+       reservation_id, intent_id, attempt_id, whitelist_id, chain, entry_type,
+       amount_native, fee_native, amount_usd_snapshot, reason
+     ) VALUES ($1,$2,$3,$4,$5,'deficit',$6,$7,$8,'MULTIPLE_CONFIRMED_FILL')`,
+    [
+      row.reservation_id, row.intent_id, row.attempt_id, row.whitelist_id,
+      row.chain, inputDisplay, report.gasNative || 0,
+      ledgerUsdAmount({
+        amount_native: row.reserved_principal_native,
+        fee_native: row.reserved_fee_native,
+        amount_usd_snapshot: row.reserved_usd_snapshot
+      }, inputDisplay, report.gasNative || 0)
+    ]
+  );
+  await client.query(
+    `UPDATE budget_reservations
+     SET fee_used_native = fee_used_native + $2, updated_at = NOW()
+     WHERE intent_id = $1`,
+    [row.intent_id, report.gasNative || 0]
+  );
+  await client.query(
+    `UPDATE ca_whitelist SET spent_budget = spent_budget + $1, updated_at = NOW()
+     WHERE id = $2`,
+    [inputDisplay, row.whitelist_id]
+  );
+  await client.query(
+    `INSERT INTO trade_reconciliation_incidents(
+       intent_id, attempt_id, incident_type, severity, details_json
+     ) VALUES ($1,$2,'multiple_fill','critical',$3)`,
+    [row.intent_id, row.attempt_id, {
+      position_id: position.id,
+      order_id: row.id,
+      tx_hash: normalizedOrder.txHash,
+      input_amount_raw: inputRaw,
+      output_amount_raw: outputRaw
+    }]
+  );
+  await client.query(
+    `INSERT INTO wallet_write_lanes(
+       chain, wallet_address, lane_key, state, owner_attempt_id,
+       reason_code, evidence_json, quarantined_at
+     ) VALUES ($1,$2,$3,'quarantined',$4,'MULTIPLE_FILL_INCIDENT',$5,NOW())
+     ON CONFLICT (chain, wallet_address) DO UPDATE
+     SET state = 'quarantined', owner_attempt_id = EXCLUDED.owner_attempt_id,
+         reason_code = EXCLUDED.reason_code, evidence_json = EXCLUDED.evidence_json,
+         quarantined_at = COALESCE(wallet_write_lanes.quarantined_at, NOW()),
+         lease_expires_at = NULL, updated_at = NOW()`,
+    [
+      row.chain, row.wallet_address,
+      `wallet_lane:${row.chain}:${row.chain === 'sol' ? row.wallet_address : row.wallet_address.toLowerCase()}`,
+      row.attempt_id,
+      { intent_id: row.intent_id, order_id: row.id, tx_hash: normalizedOrder.txHash }
+    ]
+  );
+  await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'confirmed', {
+    reason: 'MULTIPLE_FILL_INCIDENT',
+    summary: { position_id: position.id, chain_receipt: receipt.status }
+  });
+  return { ...position, amount_in: Number(position.amount_in) + Number(inputDisplay), amount_out: Number(position.amount_out) + Number(outputDisplay) };
+}
+
 async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
   if (receipt.status !== 'confirmed') {
     const error = new Error('Chain receipt is not confirmed');
@@ -751,17 +970,23 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
     const result = await client.query(
       `SELECT orders.*, attempt.signal_id, attempt.whitelist_id, attempt.chain,
               attempt.wallet_address, attempt.input_token, attempt.output_token, attempt.side,
+              attempt.intent_id, attempt.attempt_no,
               attempt.input_amount_display AS planned_input_display,
               attempt.metadata, attempt.status AS attempt_status,
+              intent.status AS intent_status,
               whitelist.symbol, whitelist.auto_tp_pct, whitelist.auto_sl_pct,
+              reservation.id AS reservation_id,
+              reservation.status AS reservation_status,
               reservation.amount_native AS reserved_principal_native,
               reservation.fee_native AS reserved_fee_native,
+              reservation.fee_used_native AS reserved_fee_used_native,
               reservation.amount_usd_snapshot AS reserved_usd_snapshot
        FROM trade_orders AS orders
        JOIN trade_attempts AS attempt ON attempt.id = orders.attempt_id
+       JOIN trade_intents AS intent ON intent.id = attempt.intent_id
        LEFT JOIN ca_whitelist AS whitelist ON whitelist.id = attempt.whitelist_id
-       LEFT JOIN budget_reservations AS reservation ON reservation.attempt_id = attempt.id
-       WHERE orders.id = $1 FOR UPDATE OF orders, attempt`,
+       LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
+       WHERE orders.id = $1 FOR UPDATE OF orders, attempt, intent`,
       [orderId]
     );
     const row = result.rows[0];
@@ -770,10 +995,22 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
       await client.query('ROLLBACK');
       return finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt);
     }
+    if (row.normalized_status === 'confirmed' && row.attempt_status === 'confirmed') {
+      const settled = await client.query('SELECT * FROM positions WHERE signal_id = $1', [row.signal_id]);
+      await client.query('COMMIT');
+      return settled.rows[0] || null;
+    }
     const existing = await client.query('SELECT * FROM positions WHERE signal_id = $1 FOR UPDATE', [row.signal_id]);
     if (existing.rows.length > 0) {
+      const additional = await finalizeAdditionalBuyFill(
+        client,
+        row,
+        existing.rows[0],
+        normalizedOrder,
+        receipt
+      );
       await client.query('COMMIT');
-      return existing.rows[0];
+      return additional;
     }
 
     const report = normalizedOrder.report;
@@ -798,6 +1035,10 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
         ? 'PROTECTION_STRATEGY_AMBIGUOUS'
         : 'PROTECTION_STRATEGY_MISSING'
       : null;
+    const strategySnapshot = row.metadata?.exit_strategy || null;
+    const legacySnapshot = strategySnapshot
+      ? legacyPercentages(strategySnapshot)
+      : { auto_tp_pct: row.auto_tp_pct, auto_sl_pct: row.auto_sl_pct };
     const positionResult = await client.query(
       `INSERT INTO positions
         (signal_id, whitelist_id, contract_address, chain_id, symbol,
@@ -817,8 +1058,8 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
         report.priceUsd || row.price_usd || 0,
         normalizedOrder.txHash || row.tx_hash,
         normalizedOrder.providerOrderId || row.provider_order_id,
-        row.auto_tp_pct,
-        row.auto_sl_pct,
+        legacySnapshot.auto_tp_pct,
+        legacySnapshot.auto_sl_pct,
         normalizedOrder.strategyOrderId,
         protectedPosition ? 'ok' : 'failed',
         protectedPosition ? 'open_protected' : 'open_unprotected'
@@ -861,7 +1102,12 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
           row.attempt_id,
           normalizedOrder.strategyOrderId,
           outputRaw,
-          { sell_ratio_type: 'buy_amount', condition_orders: row.metadata?.condition_orders || [] },
+          {
+            sell_ratio_type: 'buy_amount',
+            condition_orders: row.metadata?.condition_orders || [],
+            exit_strategy: strategySnapshot,
+            exit_strategy_version: row.metadata?.exit_strategy_version || null
+          },
           normalizedOrder.raw || {}
         ]
       );
@@ -910,22 +1156,73 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
         protectionErrorCode, Boolean(protectionErrorCode)]
     );
     const reservationResult = await client.query(
-      `UPDATE budget_reservations
-       SET status = 'committed', amount_native = $2,
-           fee_native = COALESCE($3, fee_native), committed_at = NOW(), updated_at = NOW()
-       WHERE attempt_id = $1 AND status = 'reserved'
+       `UPDATE budget_reservations
+        SET status = 'committed', amount_native = $2,
+            fee_used_native = fee_used_native + COALESCE($3::numeric, 0::numeric),
+            committed_at = NOW(), updated_at = NOW()
+       WHERE intent_id = $1 AND status IN ('reserved','released')
        RETURNING *`,
-      [row.attempt_id, inputDisplay, report.gasNative]
+      [row.intent_id, inputDisplay, report.gasNative]
     );
     if (reservationResult.rows[0]) {
       const reservation = reservationResult.rows[0];
+      const lateBudget = row.reservation_status === 'released';
+      const confirmedFee = Number(report.gasNative || 0);
       await client.query(
         `INSERT INTO budget_ledger
-          (reservation_id, attempt_id, whitelist_id, chain, entry_type,
+          (reservation_id, intent_id, attempt_id, whitelist_id, chain, entry_type,
            amount_native, fee_native, amount_usd_snapshot, reason)
-         VALUES ($1,$2,$3,$4,'commit',$5,$6,$7,'ORDER_AND_CHAIN_CONFIRMED')`,
-        [reservation.id, row.attempt_id, row.whitelist_id, row.chain, inputDisplay,
-          report.gasNative || 0, reservation.amount_usd_snapshot]
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          reservation.id, row.intent_id, row.attempt_id, row.whitelist_id, row.chain,
+          lateBudget ? 'deficit' : 'commit', inputDisplay,
+          confirmedFee, ledgerUsdAmount(reservation, inputDisplay, confirmedFee),
+          lateBudget ? 'LATE_CONFIRMATION_AFTER_BUDGET_RELEASE' : 'ORDER_AND_CHAIN_CONFIRMED'
+        ]
+      );
+      if (!lateBudget) {
+        await recordUnusedFeeRelease(
+          client,
+          reservation,
+          row.intent_id,
+          row.attempt_id,
+          'UNUSED_RETRY_FEE_ENVELOPE'
+        );
+      }
+      if (Number(reservation.fee_used_native || 0) > Number(reservation.fee_native || 0)) {
+        await client.query(
+          `INSERT INTO trade_reconciliation_incidents(
+             intent_id, attempt_id, incident_type, severity, details_json
+           ) VALUES ($1,$2,'budget_reconciliation_deficit','high',$3)`,
+          [row.intent_id, row.attempt_id, {
+            fee_envelope_native: reservation.fee_native,
+            fee_used_native: reservation.fee_used_native,
+            order_id: orderId
+          }]
+        );
+      }
+    }
+    const lateConfirmation = ['cancelled', 'exhausted', 'rejected'].includes(row.intent_status);
+    await client.query(
+      `UPDATE trade_intents SET status = 'confirmed', confirmation_source = $2,
+       incident_status = CASE WHEN $3 THEN 'late_confirmation' ELSE incident_status END,
+       next_retry_at = NULL, retry_claimed_at = NULL, completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [row.intent_id, lateConfirmation ? 'late_chain_receipt' : 'chain_receipt', lateConfirmation]
+    );
+    await tradeCircuitBreaker.recordConfirmedTrade(row.chain, row.attempt_id, client);
+    await walletWriteLane.resolveEvidenceQuarantine(row.attempt_id, client);
+    if (lateConfirmation) {
+      await client.query(
+        `INSERT INTO trade_reconciliation_incidents(
+           intent_id, attempt_id, incident_type, severity, details_json
+         ) VALUES ($1,$2,'late_confirmation','high',$3)`,
+        [row.intent_id, row.attempt_id, {
+          previous_intent_status: row.intent_status,
+          order_id: row.id,
+          tx_hash: normalizedOrder.txHash,
+          budget_was_released: row.reservation_status === 'released'
+        }]
       );
     }
     await client.query(
@@ -966,11 +1263,14 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
     await client.query('BEGIN');
     const result = await client.query(
       `SELECT orders.*, attempt.position_id, attempt.status AS attempt_status,
+              attempt.intent_id, attempt.attempt_no,
               attempt.input_amount_raw AS planned_input_raw, attempt.chain,
-              attempt.metadata
+              attempt.metadata, attempt.wallet_address,
+              intent.status AS intent_status
        FROM trade_orders AS orders
        JOIN trade_attempts AS attempt ON attempt.id = orders.attempt_id
-       WHERE orders.id = $1 FOR UPDATE`,
+       JOIN trade_intents AS intent ON intent.id = attempt.intent_id
+       WHERE orders.id = $1 FOR UPDATE OF orders, attempt, intent`,
       [orderId]
     );
     const row = result.rows[0];
@@ -996,6 +1296,77 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
     const chain = requireChain(row.chain);
     const outputDecimals = Number(report.outputDecimals ?? row.output_decimals ?? chain.decimals);
     const outputDisplay = rawToDecimal(outputRaw, outputDecimals, 18);
+    const previousConfirmed = await client.query(
+      `SELECT COUNT(*)::int AS count FROM trade_attempts
+       WHERE intent_id = $1 AND id <> $2 AND status = 'confirmed'`,
+      [row.intent_id, row.attempt_id]
+    );
+    if (Number(previousConfirmed.rows[0].count) > 0) {
+      await client.query(
+        `UPDATE trade_orders SET normalized_status = 'confirmed', confirmed_at = NOW(),
+         input_amount_raw = $2, output_amount_raw = $3, output_decimals = $4,
+         output_amount_display = $5, report_json = $6, updated_at = NOW()
+         WHERE id = $1`,
+        [orderId, soldRaw, outputRaw, outputDecimals, outputDisplay, report.raw || {}]
+      );
+      await client.query(
+        `UPDATE trade_attempts SET status = 'confirmed', confirmed_at = NOW(),
+         output_amount_raw = $2, output_amount_display = $3,
+         error_code = 'MULTIPLE_FILL_INCIDENT', requires_manual_review = true,
+         last_reconciled_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [row.attempt_id, outputRaw, outputDisplay]
+      );
+      await client.query(
+        `UPDATE trade_intents SET status = 'confirmed', incident_status = 'multiple_fill',
+         confirmation_source = 'late_chain_receipt', completed_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [row.intent_id]
+      );
+      await client.query(
+        `UPDATE positions SET status = 'close_uncertain', updated_at = NOW() WHERE id = $1`,
+        [row.position_id]
+      );
+      await client.query(
+        `INSERT INTO trade_reconciliation_incidents(
+           intent_id, attempt_id, incident_type, severity, details_json
+         ) VALUES ($1,$2,'multiple_fill','critical',$3)`,
+        [row.intent_id, row.attempt_id, {
+          position_id: row.position_id,
+          order_id: orderId,
+          tx_hash: normalizedOrder.txHash,
+          sold_amount_raw: soldRaw,
+          proceeds_raw: outputRaw
+        }]
+      );
+      await client.query(
+        `INSERT INTO wallet_write_lanes(
+           chain, wallet_address, lane_key, state, owner_attempt_id,
+           reason_code, evidence_json, quarantined_at
+         ) VALUES ($1,$2,$3,'quarantined',$4,'MULTIPLE_FILL_INCIDENT',$5,NOW())
+         ON CONFLICT (chain, wallet_address) DO UPDATE
+         SET state = 'quarantined', owner_attempt_id = EXCLUDED.owner_attempt_id,
+             reason_code = EXCLUDED.reason_code, evidence_json = EXCLUDED.evidence_json,
+             quarantined_at = COALESCE(wallet_write_lanes.quarantined_at, NOW()),
+             lease_expires_at = NULL, updated_at = NOW()`,
+        [
+          row.chain, row.wallet_address,
+          `wallet_lane:${row.chain}:${row.chain === 'sol' ? row.wallet_address : row.wallet_address.toLowerCase()}`,
+          row.attempt_id,
+          { intent_id: row.intent_id, order_id: orderId, tx_hash: normalizedOrder.txHash }
+        ]
+      );
+      await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'confirmed', {
+        reason: 'MULTIPLE_FILL_INCIDENT',
+        summary: { position_id: row.position_id, chain_receipt: receipt.status }
+      });
+      await writeOutbox(client, 'trade.multiple_fill', 'trade_intent', row.intent_id, {
+        intent_id: row.intent_id,
+        attempt_id: row.attempt_id,
+        position_id: row.position_id
+      });
+      await client.query('COMMIT');
+      return { id: row.position_id, status: 'close_uncertain', incident: 'multiple_fill' };
+    }
     let remainingToApply = BigInt(soldRaw);
     const lotsResult = await client.query(
       `SELECT * FROM position_lots WHERE position_id = $1 ORDER BY id ASC FOR UPDATE`,
@@ -1066,6 +1437,29 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
        WHERE id = $1`,
       [row.attempt_id, outputRaw, outputDisplay]
     );
+    const lateConfirmation = ['cancelled', 'exhausted', 'rejected'].includes(row.intent_status);
+    await client.query(
+      `UPDATE trade_intents SET status = 'confirmed', confirmation_source = $2,
+       incident_status = CASE WHEN $3 THEN 'late_confirmation' ELSE incident_status END,
+       next_retry_at = NULL, retry_claimed_at = NULL, completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [row.intent_id, lateConfirmation ? 'late_chain_receipt' : 'chain_receipt', lateConfirmation]
+    );
+    await tradeCircuitBreaker.recordConfirmedTrade(row.chain, row.attempt_id, client);
+    await walletWriteLane.resolveEvidenceQuarantine(row.attempt_id, client);
+    if (lateConfirmation) {
+      await client.query(
+        `INSERT INTO trade_reconciliation_incidents(
+           intent_id, attempt_id, incident_type, severity, details_json
+         ) VALUES ($1,$2,'late_confirmation','high',$3)`,
+        [row.intent_id, row.attempt_id, {
+          previous_intent_status: row.intent_status,
+          position_id: row.position_id,
+          order_id: orderId,
+          tx_hash: normalizedOrder.txHash
+        }]
+      );
+    }
     const strategyGroupId = Number(row.metadata?.strategy_group_id || 0);
     if (strategyGroupId > 0) {
       const strategyGroupStatus = row.metadata?.strategy_terminal ? 'completed' : 'partially_filled';
@@ -1107,6 +1501,9 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
       proceeds_native: outputDisplay,
       pnl_native: pnl
     });
+    if (positionStatus === 'closed') {
+      await persistManualE2eEvidence(client, row.position_id, orderId);
+    }
     await client.query('COMMIT');
     return { id: row.position_id, status: positionStatus };
   } catch (error) {
@@ -1128,6 +1525,11 @@ async function markSellUncertain(attemptId, positionId, error) {
       [attemptId, error.code || 'GMGN_SUBMISSION_UNCERTAIN', error.name || 'Error']
     );
     if (attempt.rows.length === 0) throw new Error('Sell attempt state changed concurrently');
+    await client.query(
+      `UPDATE trade_intents SET status = 'uncertain', last_error_code = $2,
+       next_retry_at = NULL, updated_at = NOW() WHERE id = $1`,
+      [attempt.rows[0].intent_id, error.code || 'GMGN_SUBMISSION_UNCERTAIN']
+    );
     await client.query(
       `UPDATE positions SET status = 'close_uncertain', updated_at = NOW() WHERE id = $1`,
       [positionId]
@@ -1155,10 +1557,16 @@ async function rejectSellAttempt(attemptId, positionId, error, fallbackStatus = 
       `UPDATE trade_attempts SET status = 'rejected', error_code = $2,
        error_class = $3, updated_at = NOW()
        WHERE id = $1 AND status IN ('reserved','preparing','submitting')
-       RETURNING id`,
+       RETURNING id, intent_id`,
       [attemptId, error.code || 'SELL_REJECTED', error.name || 'Error']
     );
     if (rejected.rows.length > 0) {
+      await client.query(
+        `UPDATE trade_intents SET status = 'rejected', last_error_code = $2,
+         completed_at = NOW(), next_retry_at = NULL, updated_at = NOW()
+         WHERE id = $1`,
+        [rejected.rows[0].intent_id, error.code || 'SELL_REJECTED']
+      );
       await client.query(
         `UPDATE positions SET status = $2, updated_at = NOW()
          WHERE id = $1 AND status = 'closing'`,
@@ -1470,13 +1878,16 @@ async function claimStrategyClose(groupId, normalized) {
     const group = result.rows[0];
     if (!group) throw new Error(`Strategy group ${groupId} not found`);
 
-    const idempotencyKey = `position:${group.position_id}:strategy-close:${groupId}:${normalized.closeTxHash}`;
+    const requestFingerprint = fingerprint({
+      strategy_group_id: groupId,
+      close_tx_hash: normalized.closeTxHash
+    });
     const existing = await client.query(
       `SELECT attempt.*, orders.id AS order_id
        FROM trade_attempts AS attempt
        LEFT JOIN trade_orders AS orders ON orders.attempt_id = attempt.id
-       WHERE attempt.idempotency_key = $1`,
-      [idempotencyKey]
+       WHERE attempt.request_fingerprint = $1`,
+      [requestFingerprint]
     );
     if (existing.rows.length > 0) {
       await client.query('COMMIT');
@@ -1524,38 +1935,31 @@ async function claimStrategyClose(groupId, normalized) {
       ? String(normalized.closeOutputAmountRaw)
       : null;
     const closeAt = providerTimestamp(normalized.closeTime) || new Date();
-    const attemptResult = await client.query(
-      `INSERT INTO trade_attempts
-        (signal_id, whitelist_id, position_id, side, idempotency_key, chain,
-         wallet_address, input_token, output_token, input_amount_raw,
-         input_amount_display, output_amount_raw, status, request_fingerprint,
-         metadata, submitted_at, last_reconciled_at)
-       VALUES ($1,$2,$3,'sell',$4,$5,$6,$7,$8,$9,$10,$11,'confirming',$12,$13,$14,NOW())
-       RETURNING *`,
-      [
-        group.signal_id,
-        group.whitelist_id,
-        group.position_id,
-        idempotencyKey,
-        group.chain_id,
-        group.wallet_address,
-        group.contract_address,
-        chain.nativeToken,
-        normalized.closeAmountRaw,
-        rawToDecimal(normalized.closeAmountRaw, group.token_decimals, 18),
-        closeOutputRaw,
-        fingerprint({ strategy_group_id: groupId, close_tx_hash: normalized.closeTxHash }),
-        {
-          source: 'gmgn_strategy',
-          strategy_group_id: groupId,
-          strategy_provider_order_id: group.provider_order_id,
-          strategy_terminal: normalized.providerStatus === 'closed',
-          token_decimals: group.token_decimals
-        },
-        closeAt
-      ]
-    );
-    const attempt = attemptResult.rows[0];
+    const attempt = await createObservedSellAttempt(client, {
+      position: {
+        id: group.position_id,
+        signal_id: group.signal_id,
+        whitelist_id: group.whitelist_id,
+        contract_address: group.contract_address
+      },
+      chain,
+      walletAddress: group.wallet_address,
+      inputToken: group.contract_address,
+      outputToken: chain.nativeToken,
+      inputAmountRaw: normalized.closeAmountRaw,
+      inputAmountDisplay: rawToDecimal(normalized.closeAmountRaw, group.token_decimals, 18),
+      outputAmountRaw: closeOutputRaw,
+      outputAmountDisplay: null,
+      requestFingerprint,
+      metadata: {
+        source: 'gmgn_strategy',
+        strategy_group_id: groupId,
+        strategy_provider_order_id: group.provider_order_id,
+        strategy_terminal: normalized.providerStatus === 'closed',
+        token_decimals: group.token_decimals
+      },
+      submittedAt: closeAt
+    });
     const report = {
       input_amount: normalized.closeAmountRaw,
       output_amount: closeOutputRaw,
@@ -1907,12 +2311,15 @@ async function claimExternalClose(positionId, activity) {
       error.code = 'EXTERNAL_SELL_EXCEEDS_POSITION';
       throw error;
     }
-    const idempotencyKey = `position:${positionId}:external-sell:${activity.txHash}`;
+    const requestFingerprint = fingerprint({
+      source: 'gmgn_wallet_activity',
+      tx_hash: activity.txHash
+    });
     const existing = await client.query(
       `SELECT attempt.*, orders.id AS order_id FROM trade_attempts AS attempt
        LEFT JOIN trade_orders AS orders ON orders.attempt_id = attempt.id
-       WHERE attempt.idempotency_key = $1`,
-      [idempotencyKey]
+       WHERE attempt.request_fingerprint = $1`,
+      [requestFingerprint]
     );
     if (existing.rows.length > 0) {
       await client.query('COMMIT');
@@ -1930,27 +2337,22 @@ async function claimExternalClose(positionId, activity) {
       throw error;
     }
     const chain = requireChain(position.chain_id);
-    const attemptResult = await client.query(
-      `INSERT INTO trade_attempts
-        (signal_id, whitelist_id, position_id, side, idempotency_key, chain,
-         wallet_address, input_token, output_token, input_amount_raw,
-         input_amount_display, output_amount_raw, output_amount_display,
-         status, request_fingerprint, metadata, submitted_at, last_reconciled_at)
-       VALUES ($1,$2,$3,'sell',$4,$5,$6,$7,$8,$9,$10,$11,$12,
-               'confirming',$13,$14,$15,NOW()) RETURNING *`,
-      [position.signal_id, position.whitelist_id, position.id, idempotencyKey,
-        position.chain_id, walletAddress, position.contract_address,
-        chain.nativeToken, activity.inputAmountRaw,
-        rawToDecimal(activity.inputAmountRaw, tokenDecimals, 18),
-        activity.outputAmountRaw,
-        activity.outputAmountRaw
-          ? rawToDecimal(activity.outputAmountRaw, activity.outputDecimals, 18)
-          : null,
-        fingerprint({ source: 'gmgn_wallet_activity', tx_hash: activity.txHash }),
-        { source: 'gmgn_wallet_activity', provider_activity: activity.raw || {} },
-        activity.submittedAt]
-    );
-    const attempt = attemptResult.rows[0];
+    const attempt = await createObservedSellAttempt(client, {
+      position,
+      chain,
+      walletAddress,
+      inputToken: position.contract_address,
+      outputToken: chain.nativeToken,
+      inputAmountRaw: activity.inputAmountRaw,
+      inputAmountDisplay: rawToDecimal(activity.inputAmountRaw, tokenDecimals, 18),
+      outputAmountRaw: activity.outputAmountRaw,
+      outputAmountDisplay: activity.outputAmountRaw
+        ? rawToDecimal(activity.outputAmountRaw, activity.outputDecimals, 18)
+        : null,
+      requestFingerprint,
+      metadata: { source: 'gmgn_wallet_activity', provider_activity: activity.raw || {} },
+      submittedAt: activity.submittedAt
+    });
     const report = {
       input_amount: activity.inputAmountRaw,
       output_amount: activity.outputAmountRaw,
@@ -2029,58 +2431,24 @@ async function failOrder(orderId, normalizedOrder) {
     const row = result.rows[0];
     if (!row) throw new Error('Trade order not found');
     await client.query(
-      `UPDATE trade_orders SET normalized_status = $2, provider_status = $3,
-       last_response_json = $4, updated_at = NOW() WHERE id = $1`,
-      [orderId, normalizedOrder.status, normalizedOrder.providerStatus, normalizedOrder.raw || {}]
+      `UPDATE trade_orders SET normalized_status = 'failure_verifying', provider_status = $2,
+       last_response_json = $3, updated_at = NOW() WHERE id = $1`,
+      [orderId, normalizedOrder.providerStatus, normalizedOrder.raw || {}]
     );
     await client.query(
-      `UPDATE trade_attempts SET status = 'failed', error_code = $2,
+      `UPDATE trade_attempts SET status = 'failure_verifying', error_code = $2,
+       failure_evidence_started_at = COALESCE(failure_evidence_started_at, NOW()),
        last_reconciled_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [row.attempt_id, normalizedOrder.errorCode || `GMGN_ORDER_${normalizedOrder.status.toUpperCase()}`]
     );
-    const reservation = await client.query(
-      `UPDATE budget_reservations SET status = 'released', released_at = NOW(), updated_at = NOW()
-       WHERE attempt_id = $1 AND status = 'reserved' RETURNING *`,
-      [row.attempt_id]
+    await client.query(
+      `UPDATE trade_intents AS intent SET status = 'retry_verifying',
+       last_error_code = $2, updated_at = NOW()
+       FROM trade_attempts AS attempt
+       WHERE attempt.id = $1 AND attempt.intent_id = intent.id`,
+      [row.attempt_id, normalizedOrder.errorCode || 'ORDER_FAILED']
     );
-    if (reservation.rows[0]) {
-      const item = reservation.rows[0];
-      await client.query(
-        `INSERT INTO budget_ledger
-          (reservation_id, attempt_id, whitelist_id, chain, entry_type,
-           amount_native, fee_native, amount_usd_snapshot, reason)
-         VALUES ($1,$2,$3,$4,'release',$5,$6,$7,$8)`,
-        [item.id, row.attempt_id, item.whitelist_id, item.chain, item.amount_native,
-          item.fee_native, item.amount_usd_snapshot, normalizedOrder.errorCode || 'ORDER_FAILED']
-      );
-    }
-    if (row.side === 'sell') {
-      await client.query(
-        `UPDATE positions
-         SET status = CASE
-               WHEN EXISTS (
-                 SELECT 1 FROM strategy_groups
-                 WHERE position_id = $1 AND status IN ('running','partially_filled','triggered')
-               ) THEN 'open_protected'
-               ELSE 'open_unprotected'
-             END,
-             updated_at = NOW()
-         WHERE id = $1 AND status IN ('closing','close_uncertain')`,
-        [row.position_id]
-      );
-      await writeOutbox(client, 'position.close_failed', 'position', row.position_id, {
-        position_id: row.position_id,
-        attempt_id: row.attempt_id,
-        code: normalizedOrder.errorCode || 'ORDER_FAILED'
-      });
-    } else {
-      await client.query(
-        `UPDATE trade_signals SET status = 'rejected', reject_reason = $2, updated_at = NOW()
-         WHERE id = $1`,
-        [row.signal_id, normalizedOrder.errorCode || 'ORDER_FAILED']
-      );
-    }
-    await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'failed', {
+    await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'failure_verifying', {
       reason: normalizedOrder.errorCode || normalizedOrder.providerStatus
     });
     await client.query('COMMIT');
@@ -2100,6 +2468,26 @@ async function getAttempt(attemptId) {
 async function getAttemptDetails(attemptId) {
   const result = await db.query(
     `SELECT attempt.*,
+            row_to_json(intent) AS intent,
+            row_to_json(reservation) AS budget_reservation,
+            row_to_json(wallet_lane) AS wallet_lane,
+            COALESCE((
+              SELECT json_agg(source ORDER BY source.id)
+              FROM trade_intent_sources AS source WHERE source.intent_id = attempt.intent_id
+            ), '[]') AS intent_sources,
+            COALESCE((
+              SELECT json_agg(evidence ORDER BY evidence.id)
+              FROM trade_failure_evidence AS evidence WHERE evidence.attempt_id = attempt.id
+            ), '[]') AS failure_evidence,
+            COALESCE((
+              SELECT json_agg(decision ORDER BY decision.id)
+              FROM trade_retry_decisions AS decision WHERE decision.intent_id = attempt.intent_id
+            ), '[]') AS retry_decisions,
+            COALESCE((
+              SELECT json_agg(incident ORDER BY incident.id)
+              FROM trade_reconciliation_incidents AS incident
+              WHERE incident.intent_id = attempt.intent_id
+            ), '[]') AS reconciliation_incidents,
             COALESCE((
               SELECT json_agg(orders ORDER BY orders.id)
               FROM trade_orders AS orders WHERE orders.attempt_id = attempt.id
@@ -2133,6 +2521,10 @@ async function getAttemptDetails(attemptId) {
               WHERE receipt_order.attempt_id = attempt.id
             ), '[]') AS chain_receipts
      FROM trade_attempts AS attempt
+     JOIN trade_intents AS intent ON intent.id = attempt.intent_id
+     LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
+     LEFT JOIN wallet_write_lanes AS wallet_lane
+       ON wallet_lane.chain = attempt.chain AND wallet_lane.wallet_address = attempt.wallet_address
      WHERE attempt.id = $1`,
     [attemptId]
   );
@@ -2142,17 +2534,30 @@ async function getAttemptDetails(attemptId) {
 async function listAttempts(limit = 100) {
   const result = await db.query(
     `SELECT attempt.*,
+            intent.status AS intent_status, intent.retry_count, intent.max_retries,
+            intent.expires_at AS retry_expires_at, intent.next_retry_at,
+            intent.last_error_code AS intent_error_code,
+            wallet_lane.state AS wallet_lane_state,
+            wallet_lane.reason_code AS wallet_lane_reason,
+            reservation.amount_native AS principal_reserved_native,
+            reservation.fee_native AS retry_fee_envelope_native,
+            reservation.fee_used_native,
             orders.id AS order_id, orders.provider_order_id, orders.tx_hash,
             orders.provider_status, orders.normalized_status AS order_status,
              orders.last_queried_at, orders.next_query_at, orders.query_count,
              CASE
                WHEN orders.normalized_status IN ('confirmed','failed','expired') THEN 'stopped'
+               WHEN orders.normalized_status = 'definitive_failed_no_fill' THEN 'terminal_audit_15_30m'
                WHEN NOW() - orders.submitted_at < INTERVAL '10 seconds' THEN 'hot_1s'
                WHEN NOW() - orders.submitted_at < INTERVAL '30 seconds' THEN 'warm_2s'
                WHEN NOW() - orders.submitted_at < INTERVAL '120 seconds' THEN 'cool_5s'
                ELSE 'stable_15_30s'
              END AS query_stage
      FROM trade_attempts AS attempt
+     JOIN trade_intents AS intent ON intent.id = attempt.intent_id
+     LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
+     LEFT JOIN wallet_write_lanes AS wallet_lane
+       ON wallet_lane.chain = attempt.chain AND wallet_lane.wallet_address = attempt.wallet_address
      LEFT JOIN LATERAL (
        SELECT * FROM trade_orders WHERE attempt_id = attempt.id ORDER BY id DESC LIMIT 1
      ) orders ON true
@@ -2195,6 +2600,7 @@ module.exports = {
   persistStrategySnapshot,
   principalUsdCost,
   strategyLegAmountRaw,
+  submittedOrderStatus,
   transitionAttempt,
   touchAttemptReconciliation,
   updateOrderAfterQuery,

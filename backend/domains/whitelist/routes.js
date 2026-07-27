@@ -1,6 +1,51 @@
 const express = require('express');
 const router = express.Router();
 const service = require('./service');
+const templates = require('./templates');
+
+router.get('/templates', async (req, res) => {
+  try {
+    const items = await templates.listTemplates(req.query.chain_id);
+    res.json({ ok: true, data: items });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
+
+router.post('/templates', async (req, res) => {
+  try {
+    const item = await templates.createTemplate(req.body);
+    res.json({ ok: true, data: item });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
+
+router.put('/templates/:id', async (req, res) => {
+  try {
+    const item = await templates.updateTemplate(req.params.id, req.body);
+    res.json({ ok: true, data: item });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
+
+router.delete('/templates/:id', async (req, res) => {
+  try {
+    res.json({ ok: true, data: { success: await templates.deleteTemplate(req.params.id) } });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
+
+router.post('/watch-impact', async (req, res) => {
+  try {
+    const data = await service.previewWatchImpact(req.body);
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
@@ -36,7 +81,8 @@ router.post('/', async (req, res) => {
       data: result.item,
       meta: {
         merged_into_existing: result.mergedIntoExisting,
-        added_relations: result.addedRelations
+        added_relations: result.addedRelations,
+        added_sources: result.addedSources
       }
     });
   } catch (err) {
@@ -59,6 +105,15 @@ router.patch('/:id/status', async (req, res) => {
     res.json({ ok: true, data: item });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message, code: 'BAD_REQUEST' });
+  }
+});
+
+router.post('/:id/activation/retry', async (req, res) => {
+  try {
+    const item = await service.retryActivation(req.params.id);
+    res.json({ ok: true, data: item });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
   }
 });
 

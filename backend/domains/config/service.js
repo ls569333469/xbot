@@ -1,9 +1,11 @@
 const db = require('../../lib/db');
+const { CHAIN_REGISTRY, getExecutionChains } = require('../../lib/chain-config');
 
-const CONFIG_KEYS = new Set(['chain_configs', 'live_policy', 'risk_config', 'x_monitor_config']);
+const CONFIG_KEYS = new Set(['chain_configs', 'live_policy', 'risk_config']);
 const LIVE_PROVIDERS = new Set(['6551']);
 const LIVE_EVENT_TYPES = new Set(['tweet', 'retweet', 'quote', 'reply', 'follow']);
-const LIVE_CHAINS = new Set(['sol', 'bsc', 'base', 'eth']);
+const LIVE_CHAINS = new Set(getExecutionChains().map((chain) => chain.id));
+const CONFIGURABLE_CHAINS = new Set(Object.keys(CHAIN_REGISTRY));
 
 function configError(message, code = 'CONFIG_VALUE_INVALID') {
   const error = new Error(message);
@@ -54,34 +56,119 @@ function validateChainConfigs(value) {
     throw configError('chain_configs must be an object');
   }
   const normalized = {};
+  const operationalFields = new Set([
+    'retryEnabled', 'maxRetries', 'retryWindowMs',
+    'failureEvidenceWindowMs', 'feeEscalationEnabled', 'maxRetryFeeNative',
+    'exitGasReserve'
+  ]);
+  const legacyFields = new Set([
+    'enabled', 'nativeSymbol', 'dailyBudget', 'weeklyBudget', 'maxPerTrade',
+    'maxOpenPositions', 'dailyLossLimit', 'defaultTpPct', 'defaultSlPct',
+    'defaultSlippage'
+  ]);
   for (const [chain, config] of Object.entries(value)) {
-    if (chain === 'robinhood' && config && typeof config === 'object' && !Array.isArray(config)) {
-      if (config.enabled) throw configError('Legacy robinhood configuration cannot be enabled by P9.1');
-      normalized[chain] = { ...config, enabled: false };
-      continue;
-    }
-    if (!LIVE_CHAINS.has(chain) || !config || typeof config !== 'object' || Array.isArray(config)) {
+    if (!CONFIGURABLE_CHAINS.has(chain) || !config || typeof config !== 'object' || Array.isArray(config)) {
       throw configError(`Unsupported chain configuration: ${chain}`);
     }
-    const next = { ...config, enabled: Boolean(config.enabled) };
-    for (const field of ['dailyBudget', 'weeklyBudget', 'maxPerTrade', 'maxOpenPositions', 'dailyLossLimit']) {
-      const numeric = Number(config[field]);
-      if (!Number.isFinite(numeric) || numeric <= 0) {
-        throw configError(`chain_configs.${chain}.${field} must be a positive number`);
-      }
-      next[field] = numeric;
+    const unknownFields = Object.keys(config)
+      .filter((field) => !operationalFields.has(field) && !legacyFields.has(field));
+    if (unknownFields.length > 0) {
+      throw configError(`chain_configs.${chain} contains unsupported fields: ${unknownFields.join(', ')}`);
     }
-    if (!Number.isInteger(next.maxOpenPositions)) {
-      throw configError(`chain_configs.${chain}.maxOpenPositions must be an integer`);
+    const next = { retryEnabled: Boolean(config.retryEnabled) };
+    const defaults = CHAIN_REGISTRY[chain].retryDefault;
+    const maxRetries = Number(config.maxRetries ?? defaults.maxRetries);
+    const retryWindowMs = Number(config.retryWindowMs ?? defaults.retryWindowMs);
+    const failureEvidenceWindowMs = Number(
+      config.failureEvidenceWindowMs ?? defaults.failureEvidenceWindowMs
+    );
+    const maxRetryFeeNative = Number(config.maxRetryFeeNative ?? 0);
+    const exitGasReserve = Number(config.exitGasReserve ?? 0);
+    if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 2) {
+      throw configError(`chain_configs.${chain}.maxRetries must be an integer between 0 and 2`);
     }
-    if (next.maxPerTrade > next.dailyBudget || next.dailyBudget > next.weeklyBudget) {
-      throw configError(
-        `chain_configs.${chain} must satisfy maxPerTrade <= dailyBudget <= weeklyBudget`
-      );
+    if (!Number.isInteger(retryWindowMs) || retryWindowMs < 1000 || retryWindowMs > 300000) {
+      throw configError(`chain_configs.${chain}.retryWindowMs must be between 1000 and 300000`);
     }
+    if (!Number.isInteger(failureEvidenceWindowMs)
+        || failureEvidenceWindowMs < 5000 || failureEvidenceWindowMs > 600000) {
+      throw configError(`chain_configs.${chain}.failureEvidenceWindowMs must be between 5000 and 600000`);
+    }
+    if (![maxRetryFeeNative, exitGasReserve].every((number) => Number.isFinite(number) && number >= 0)) {
+      throw configError(`chain_configs.${chain} retry fee and exit reserve must be non-negative`);
+    }
+    if (next.retryEnabled && (maxRetries === 0 || maxRetryFeeNative <= 0)) {
+      throw configError(`chain_configs.${chain} retry requires retries and a fee cap`);
+    }
+    if (!CHAIN_REGISTRY[chain].executionImplemented && next.retryEnabled) {
+      throw configError(`chain_configs.${chain}.retryEnabled is not available before live validation`);
+    }
+    next.maxRetries = maxRetries;
+    next.retryWindowMs = retryWindowMs;
+    next.failureEvidenceWindowMs = failureEvidenceWindowMs;
+    next.feeEscalationEnabled = Boolean(config.feeEscalationEnabled);
+    if (next.feeEscalationEnabled && !next.retryEnabled) {
+      throw configError(`chain_configs.${chain}.feeEscalationEnabled requires retryEnabled`);
+    }
+    next.maxRetryFeeNative = maxRetryFeeNative;
+    next.exitGasReserve = exitGasReserve;
+    next.nativeSymbol = CHAIN_REGISTRY[chain].nativeSymbol;
     normalized[chain] = next;
   }
   return normalized;
+}
+
+function positiveManagedLimit(env, key) {
+  const value = Number(env[key]);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw configError(`${key} must be configured before enabling automatic retry`, 'CONFIG_RETRY_LIMIT_MISSING');
+  }
+  return value;
+}
+
+function buildManagedRetryConfigs(value, enabled, env = process.env) {
+  const current = validateChainConfigs(value || {});
+  const next = { ...current };
+
+  for (const chain of getExecutionChains()) {
+    const existing = current[chain.id] || {};
+    const defaults = chain.retryDefault;
+    if (!enabled) {
+      next[chain.id] = {
+        ...existing,
+        retryEnabled: false,
+        feeEscalationEnabled: false
+      };
+      continue;
+    }
+
+    const suffix = chain.id.toUpperCase();
+    const configuredFeeCap = positiveManagedLimit(env, `GMGN_MAX_FEE_RESERVE_${suffix}`);
+    const configuredGasReserve = positiveManagedLimit(env, `GMGN_MIN_GAS_RESERVE_${suffix}`);
+    const existingFeeCap = Number(existing.maxRetryFeeNative);
+    const existingGasReserve = Number(existing.exitGasReserve);
+    const existingRetries = Number(existing.maxRetries);
+
+    next[chain.id] = {
+      ...existing,
+      retryEnabled: true,
+      maxRetries: Number.isInteger(existingRetries) && existingRetries > 0
+        ? Math.min(existingRetries, 2)
+        : Math.max(1, Math.min(Number(defaults.maxRetries) || 1, 2)),
+      retryWindowMs: Number(existing.retryWindowMs) || defaults.retryWindowMs,
+      failureEvidenceWindowMs: Number(existing.failureEvidenceWindowMs)
+        || defaults.failureEvidenceWindowMs,
+      feeEscalationEnabled: chain.feeCapabilities.length > 0,
+      maxRetryFeeNative: Number.isFinite(existingFeeCap) && existingFeeCap > 0
+        ? Math.min(existingFeeCap, configuredFeeCap)
+        : configuredFeeCap,
+      exitGasReserve: Number.isFinite(existingGasReserve) && existingGasReserve > 0
+        ? Math.max(existingGasReserve, configuredGasReserve)
+        : configuredGasReserve
+    };
+  }
+
+  return validateChainConfigs(next);
 }
 
 function validateNumericObject(value, key) {
@@ -111,42 +198,12 @@ function validateRiskConfig(value) {
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) throw configError(`Unsupported risk_config field: ${key}`);
   }
-  if (value.security_check_enabled !== undefined && typeof value.security_check_enabled !== 'boolean') {
-    throw configError('risk_config.security_check_enabled must be true or false');
+  const consecutiveFailureLock = Number(value.consecutive_failure_lock ?? 3);
+  if (!Number.isInteger(consecutiveFailureLock)
+      || consecutiveFailureLock < 1 || consecutiveFailureLock > 100) {
+    throw configError('risk_config.consecutive_failure_lock must be an integer between 1 and 100');
   }
-  const defaults = {
-    security_check_enabled: true,
-    max_buy_tax: 5,
-    max_sell_tax: 10,
-    max_rug_ratio: 0.3,
-    consecutive_failure_lock: 3,
-    reject_cooldown_ms: 600000,
-    min_liquidity_usd: 10000,
-    max_slippage_pct: 15,
-    consecutive_loss_limit: 5,
-    ca_cooldown_min: 30
-  };
-  const source = { ...defaults, ...value };
-  const normalized = { ...source, security_check_enabled: true };
-  const ranges = {
-    max_buy_tax: [0, 100],
-    max_sell_tax: [0, 100],
-    max_rug_ratio: [0, 1],
-    consecutive_failure_lock: [1, 100],
-    reject_cooldown_ms: [0, 86_400_000],
-    min_liquidity_usd: [0, 1_000_000_000],
-    max_slippage_pct: [0, 100],
-    consecutive_loss_limit: [1, 100],
-    ca_cooldown_min: [0, 10_080]
-  };
-  for (const [field, [minimum, maximum]] of Object.entries(ranges)) {
-    const numeric = Number(source[field]);
-    if (!Number.isFinite(numeric) || numeric < minimum || numeric > maximum) {
-      throw configError(`risk_config.${field} must be between ${minimum} and ${maximum}`);
-    }
-    normalized[field] = numeric;
-  }
-  return normalized;
+  return { consecutive_failure_lock: consecutiveFailureLock };
 }
 
 function validateConfig(key, value) {
@@ -176,6 +233,7 @@ module.exports = {
   assertConfigKey,
   get,
   set,
+  buildManagedRetryConfigs,
   validateChainConfigs,
   validateConfig,
   validateLivePolicy,

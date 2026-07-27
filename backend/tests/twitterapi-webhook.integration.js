@@ -67,6 +67,7 @@ test('webhook ingestion creates one signal and ignores a replayed tweet', async 
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
   const handle = `p7webhookkol${suffix}`;
   const projectHandle = `p7webhookproject${suffix}`;
+  const contractAddress = `0x${suffix.padStart(40, '2').slice(-40)}`;
   const ids = { kol: null, whitelist: null, activity: null };
   const previousMode = process.env.TRADING_MODE;
   process.env.TRADING_MODE = 'signal';
@@ -83,15 +84,16 @@ test('webhook ingestion creates one signal and ignores a replayed tweet', async 
       `INSERT INTO ca_whitelist
         (contract_address, chain_id, symbol, project_name, project_x_handles,
          budget_per_trade, total_budget, status)
-       VALUES ($1, 'sol', $2, 'P7 Webhook Test', ARRAY[$3], 0.001, 0.01, 'active')
+       VALUES ($1, 'base', $2, 'P7 Webhook Test', ARRAY[$3], 0.001, 0.01, 'active')
        RETURNING id`,
-      [`P7WEBHOOKCA${suffix}`, `P7WEBHOOK${suffix}`, projectHandle]
+      [contractAddress, `P7WEBHOOK${suffix}`, projectHandle]
     );
     ids.whitelist = whitelistResult.rows[0].id;
     await db.query(
-      `INSERT INTO x_signal_relations (whitelist_id, kol_id, target_x_handle)
-       VALUES ($1, $2, $3)`,
-      [ids.whitelist, ids.kol, projectHandle]
+      `INSERT INTO x_signal_source_rules
+        (whitelist_id, actor_id, event_types, match_mode, source_kind)
+       VALUES ($1, $2, ARRAY['tweet'], 'ca_only', 'ecosystem')`,
+      [ids.whitelist, ids.kol]
     );
 
     const now = Date.now();
@@ -102,7 +104,7 @@ test('webhook ingestion creates one signal and ignores a replayed tweet', async 
         id: `204587934${suffix}`,
         screen_name: handle,
         user_id: `p7-webhook-user-${suffix}`,
-        text: `Watching @${projectHandle}`,
+        text: `Watching @${projectHandle} ${contractAddress}`,
         type: 'tweet',
         created_ms: now - 100,
         mentions: [projectHandle]

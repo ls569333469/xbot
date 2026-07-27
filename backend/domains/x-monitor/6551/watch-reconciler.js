@@ -16,19 +16,27 @@ function flagsEqual(left, right) {
   return Object.keys(normalizedLeft).every((key) => normalizedLeft[key] === normalizedRight[key]);
 }
 
+function remoteFlagsCoverDesired(desired, remote) {
+  const normalizedDesired = normalizeWatchFlags(desired);
+  const normalizedRemote = normalizeWatchFlags(remote);
+  return Object.keys(normalizedDesired).every(
+    (key) => normalizedDesired[key] !== true || normalizedRemote[key] === true
+  );
+}
+
 function roleFlags(role, options = {}) {
   const flags = normalizeWatchFlags();
   if (role === 'kol') {
-    flags.newTweetBol = true;
-    flags.newTweetReplyBol = true;
-    flags.newTweetQuoteBol = true;
-    flags.newRetweetBol = true;
-    flags.newCaBol = true;
-    flags.newFlwBol = true;
-    flags.newUnFlwBol = options.observeUnfollow === true;
-  } else if (role === 'project') {
-    // 6551 forces Tweet monitoring on every Watch, even when addWatch sends false.
-    flags.newTweetBol = true;
+    const eventTypes = new Set(Array.isArray(options.eventTypes)
+      ? options.eventTypes
+      : ['tweet', 'retweet', 'quote', 'reply', 'follow']);
+    flags.newTweetBol = eventTypes.has('tweet');
+    flags.newTweetReplyBol = eventTypes.has('reply');
+    flags.newTweetQuoteBol = eventTypes.has('quote');
+    flags.newRetweetBol = eventTypes.has('retweet');
+    flags.newCaBol = ['tweet', 'reply', 'quote'].some((eventType) => eventTypes.has(eventType));
+    flags.newFlwBol = eventTypes.has('follow');
+    flags.newUnFlwBol = eventTypes.has('follow') && options.observeUnfollow === true;
   }
   return flags;
 }
@@ -51,28 +59,58 @@ async function loadDesiredWatches(executor = db) {
   const options = {
     observeUnfollow: String(process.env.X_6551_WATCH_UNFOLLOW_ENABLED || 'false').toLowerCase() === 'true'
   };
-  const [kols, projects] = await Promise.all([
-    executor.query(
-      `SELECT DISTINCT actor.x_handle
+  const kols = await executor.query(
+    `SELECT x_handle, array_agg(DISTINCT event_type ORDER BY event_type) AS event_types
+     FROM (
+       SELECT actor.x_handle, event_type
        FROM x_signal_relations AS relation
        JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id
        JOIN ca_whitelist AS whitelist ON whitelist.id = relation.whitelist_id
+       CROSS JOIN LATERAL unnest(relation.event_types) AS event_type
        WHERE relation.enabled = true
          AND actor.enabled = true
-         AND whitelist.status = 'active'`
-    ),
-    executor.query(
-      `SELECT DISTINCT relation.target_x_handle AS x_handle
-       FROM x_signal_relations AS relation
-       JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id
-       JOIN ca_whitelist AS whitelist ON whitelist.id = relation.whitelist_id
+         AND whitelist.status = 'active'
+         AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+       UNION ALL
+       SELECT actor.x_handle, event_type
+       FROM x_signal_source_rules AS rule
+       JOIN x_kol_accounts AS actor ON actor.id = rule.actor_id
+       JOIN ca_whitelist AS whitelist ON whitelist.id = rule.whitelist_id
+       CROSS JOIN LATERAL unnest(rule.event_types) AS event_type
+       WHERE rule.enabled = true
+         AND actor.enabled = true
+         AND rule.source_kind = 'ecosystem'
+         AND whitelist.status = 'active'
+         AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+       UNION ALL
+       SELECT actor.x_handle, event_type
+       FROM project_launch_sources AS source
+       JOIN x_kol_accounts AS actor ON actor.id = source.actor_id
+       JOIN project_launch_rules AS rule ON rule.id = source.launch_rule_id
+       CROSS JOIN LATERAL unnest(source.event_types) AS event_type
+       WHERE source.enabled = true
+         AND actor.enabled = true
+         AND rule.status = 'active'
+         AND rule.discovery_count = 0
+         AND (rule.expires_at IS NULL OR rule.expires_at > NOW())
+       UNION ALL
+       SELECT actor.x_handle, event_type
+       FROM project_launch_relations AS relation
+       JOIN x_kol_accounts AS actor ON actor.id = relation.actor_id
+       JOIN project_launch_rules AS rule ON rule.id = relation.launch_rule_id
+       CROSS JOIN LATERAL unnest(relation.event_types) AS event_type
        WHERE relation.enabled = true
          AND actor.enabled = true
-         AND whitelist.status = 'active'`
-    )
-  ]);
-  kols.rows.forEach((row) => addDesiredRole(desired, row.x_handle, 'kol', options));
-  projects.rows.forEach((row) => addDesiredRole(desired, row.x_handle, 'project', options));
+         AND rule.status = 'active'
+         AND rule.discovery_count = 0
+         AND (rule.expires_at IS NULL OR rule.expires_at > NOW())
+     ) AS desired
+     GROUP BY x_handle`
+  );
+  kols.rows.forEach((row) => addDesiredRole(desired, row.x_handle, 'kol', {
+    ...options,
+    eventTypes: row.event_types
+  }));
   return [...desired.values()].sort((left, right) => left.username.localeCompare(right.username));
 }
 
@@ -95,9 +133,9 @@ function buildWatchPlan({ desired = [], remote = [], local = [] }) {
     if (desiredItem && !remoteItem) {
       action = 'add';
       estimatedPoints = 10;
-    } else if (desiredItem && remoteItem && flagsEqual(desiredItem.flags, remoteItem.flags)) {
+    } else if (desiredItem && remoteItem && remoteFlagsCoverDesired(desiredItem.flags, remoteItem.flags)) {
       if (!managed) action = 'adopt_required';
-    } else if (desiredItem && remoteItem && !flagsEqual(desiredItem.flags, remoteItem.flags)) {
+    } else if (desiredItem && remoteItem && !remoteFlagsCoverDesired(desiredItem.flags, remoteItem.flags)) {
       if (managed) {
         action = 'update';
         estimatedPoints = 10;
@@ -213,14 +251,15 @@ async function applyWatchPlan(client, options = {}, executor = db) {
   }
 
   const plan = await getWatchPlan(client, executor);
-  if (plan.blockers.length > 0) {
+  const adopt = new Set((options.adopt || []).map(normalizeXHandle).filter(Boolean));
+  const unresolvedBlockers = plan.blockers.filter((entry) => !adopt.has(entry.username));
+  if (unresolvedBlockers.length > 0 && options.allowUnresolvedBlockers !== true) {
     const error = new Error('Watch plan contains unmanaged flag conflicts');
     error.code = 'X6551_WATCH_PLAN_BLOCKED';
-    error.plan = plan;
+    error.plan = { ...plan, blockers: unresolvedBlockers };
     throw error;
   }
 
-  const adopt = new Set((options.adopt || []).map(normalizeXHandle));
   const results = [];
   for (const entry of plan.adoptionRequired) {
     if (!adopt.has(entry.username)) continue;
@@ -230,6 +269,32 @@ async function applyWatchPlan(client, options = {}, executor = db) {
       remoteFlags: entry.remoteFlags
     }, executor);
     results.push({ username: entry.username, action: 'adopt', status: 'completed' });
+  }
+
+  // An unmanaged Watch with different flags requires an explicit takeover.
+  // Delete and recreate it so the remote flags are known to match XBOT's desired state.
+  for (const entry of plan.blockers) {
+    if (!adopt.has(entry.username)) continue;
+    try {
+      await client.deleteWatch(entry.remoteUsername || entry.username);
+      await client.addWatch(entry.username, entry.desiredFlags);
+      await setWatchResult(entry.username, {
+        managed: true,
+        status: 'in_sync',
+        remoteFlags: entry.desiredFlags
+      }, executor);
+      results.push({ username: entry.username, action: 'takeover_update', status: 'completed' });
+    } catch (error) {
+      await setWatchResult(entry.username, {
+        managed: false,
+        status: 'error',
+        remoteFlags: entry.remoteFlags || {},
+        error: error.message
+      }, executor);
+      error.code ||= 'X6551_WATCH_APPLY_FAILED';
+      error.results = results;
+      throw error;
+    }
   }
 
   for (const entry of plan.actions) {
@@ -286,5 +351,6 @@ module.exports = {
   getWatchPlan,
   loadDesiredWatches,
   mergeFlags,
+  remoteFlagsCoverDesired,
   roleFlags
 };

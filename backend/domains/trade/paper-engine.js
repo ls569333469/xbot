@@ -1,4 +1,3 @@
-// D:\AI_Projects\xbot\backend\domains\trade\paper-engine.js
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
 const gmgnHttp = require('../../lib/gmgn-http');

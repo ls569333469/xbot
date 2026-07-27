@@ -2,8 +2,11 @@ const db = require('../../lib/db');
 const { hydrateWhitelistRelations } = require('./relations');
 
 async function getAll(filters) {
-  let query = 'SELECT * FROM ca_whitelist WHERE 1=1';
-  let countQuery = 'SELECT COUNT(*) FROM ca_whitelist WHERE 1=1';
+  const baseWhere = filters.status === 'archived'
+    ? ' WHERE 1=1'
+    : " WHERE status <> 'archived'";
+  let query = `SELECT * FROM ca_whitelist${baseWhere}`;
+  let countQuery = `SELECT COUNT(*) FROM ca_whitelist${baseWhere}`;
   let params = [];
   let countParams = [];
   let paramIndex = 1;
@@ -52,7 +55,7 @@ async function getById(id, executor = db) {
 }
 
 async function getActiveByContract(contractAddress, chainId, executor = db, options = {}) {
-  const evmChain = ['bsc', 'base', 'eth'].includes(String(chainId).toLowerCase());
+  const evmChain = ['bsc', 'base', 'eth', 'robinhood'].includes(String(chainId).toLowerCase());
   const addressMatch = evmChain
     ? 'lower(contract_address) = lower($1)'
     : 'contract_address = $1';
@@ -70,14 +73,24 @@ async function getActiveByContract(contractAddress, chainId, executor = db, opti
 async function create(data, executor = db) {
   const res = await executor.query(
     `INSERT INTO ca_whitelist 
-    (contract_address, chain_id, symbol, project_name, project_x_handles, budget_per_trade, total_budget, auto_tp_pct, auto_sl_pct, slippage, allow_repeat_buy, max_repeat_buys, status, source, expires_at) 
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
+    (contract_address, chain_id, symbol, project_name, project_x_handles,
+     budget_per_trade, total_budget, auto_tp_pct, auto_sl_pct, exit_strategy,
+     exit_strategy_version, slippage, allow_repeat_buy, max_repeat_buys, status,
+     source, expires_at, token_logo_url, token_official_x_handle,
+     token_website_url, token_metadata_source, token_metadata_fetched_at,
+     launch_rule_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+            $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING *`,
     [
       data.contract_address, data.chain_id, data.symbol, data.project_name, 
       data.project_x_handles || [], data.budget_per_trade, data.total_budget, 
-      data.auto_tp_pct || 100, data.auto_sl_pct || 20, data.slippage || 10, 
+      data.auto_tp_pct || 100, data.auto_sl_pct || 20, data.exit_strategy,
+      data.exit_strategy_version || 1, data.slippage || 10,
       data.allow_repeat_buy || false, data.max_repeat_buys || 1, 
-      data.status || 'active', data.source || 'manual', data.expires_at
+      data.status || 'active', data.source || 'manual', data.expires_at,
+      data.token_logo_url || null, data.token_official_x_handle || null,
+      data.token_website_url || null, data.token_metadata_source || null,
+      data.token_metadata_fetched_at || null, data.launch_rule_id || null
     ]
   );
   return res.rows[0];
@@ -93,32 +106,48 @@ async function update(id, data, executor = db) {
       total_budget = COALESCE($5, total_budget),
       auto_tp_pct = COALESCE($6, auto_tp_pct),
       auto_sl_pct = COALESCE($7, auto_sl_pct),
-      slippage = COALESCE($8, slippage),
-      allow_repeat_buy = COALESCE($9, allow_repeat_buy),
-      max_repeat_buys = COALESCE($10, max_repeat_buys),
-      expires_at = COALESCE($11, expires_at),
+      exit_strategy = COALESCE($8, exit_strategy),
+      exit_strategy_version = COALESCE($9, exit_strategy_version),
+      slippage = COALESCE($10, slippage),
+      allow_repeat_buy = COALESCE($11, allow_repeat_buy),
+      max_repeat_buys = COALESCE($12, max_repeat_buys),
+      expires_at = COALESCE($13, expires_at),
+      token_logo_url = COALESCE($14, token_logo_url),
+      token_official_x_handle = COALESCE($15, token_official_x_handle),
+      token_website_url = COALESCE($16, token_website_url),
+      token_metadata_source = COALESCE($17, token_metadata_source),
+      token_metadata_fetched_at = COALESCE($18, token_metadata_fetched_at),
       updated_at = NOW()
-    WHERE id = $12 RETURNING *`,
+    WHERE id = $19 RETURNING *`,
     [
       data.symbol, data.project_name, data.project_x_handles, data.budget_per_trade,
-      data.total_budget, data.auto_tp_pct, data.auto_sl_pct, data.slippage,
-      data.allow_repeat_buy, data.max_repeat_buys, data.expires_at, id
+      data.total_budget, data.auto_tp_pct, data.auto_sl_pct, data.exit_strategy,
+      data.exit_strategy_version, data.slippage, data.allow_repeat_buy,
+      data.max_repeat_buys, data.expires_at, data.token_logo_url,
+      data.token_official_x_handle, data.token_website_url,
+      data.token_metadata_source, data.token_metadata_fetched_at, id
     ]
   );
   return res.rows[0];
 }
 
-async function updateStatus(id, status) {
-  const res = await db.query(
+async function updateStatus(id, status, executor = db) {
+  const res = await executor.query(
     'UPDATE ca_whitelist SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
     [status, id]
   );
   return res.rows[0];
 }
 
-async function remove(id) {
-  await db.query('DELETE FROM ca_whitelist WHERE id = $1', [id]);
-  return true;
+async function archive(id, executor = db) {
+  const res = await executor.query(
+    `UPDATE ca_whitelist
+     SET status = 'archived', updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [id]
+  );
+  return res.rows[0] || null;
 }
 
-module.exports = { getAll, getById, getActiveByContract, create, update, updateStatus, remove };
+module.exports = { archive, getAll, getById, getActiveByContract, create, update, updateStatus };

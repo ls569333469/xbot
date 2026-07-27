@@ -7,11 +7,15 @@ const repository = require('./trade-repository');
 const { requireChain } = require('./chain-adapters');
 const { PRIORITIES } = require('../../lib/gmgn-rate-scheduler');
 const { decimalToRaw } = require('../../lib/decimal-units');
+const { tradeFailureEvidenceService } = require('./trade-failure-evidence-service');
 
 const RECONCILER_LOCK = 'xbot:trade-reconciler';
 
 function pollingIntervalMs(submittedAt, state, random = Math.random) {
   if (['closing', 'triggered'].includes(state)) return 1000;
+  if (state === 'definitive_failed_no_fill') {
+    return Math.round(15 * 60_000 + random() * 15 * 60_000);
+  }
   const ageMs = Math.max(0, Date.now() - new Date(submittedAt).getTime());
   if (ageMs < 10_000) return 1000;
   if (ageMs < 30_000) return 2000;
@@ -162,6 +166,7 @@ class TradeReconciler {
     this.gmgnHttp = options.gmgnHttp || gmgnHttp;
     this.receiptService = options.receiptService || receiptService;
     this.repository = options.repository || repository;
+    this.failureEvidenceService = options.failureEvidenceService || tradeFailureEvidenceService;
     this.logger = options.logger || logger;
     this.random = options.random || Math.random;
     this.timer = null;
@@ -182,15 +187,30 @@ class TradeReconciler {
       const response = await this.gmgnHttp.queryOrder(row.provider_order_id, row.chain);
       normalized = gmgnAdapter.normalizeOrder(response);
       normalized = await this.resolveProtectionStrategy(row, normalized);
-      const persistedStatus = normalized.status === 'confirmed' ? 'chain_verifying' : normalized.status;
+      const terminalAudit = row.normalized_status === 'definitive_failed_no_fill';
+      const persistedStatus = normalized.status === 'confirmed'
+        ? 'chain_verifying'
+        : ['failed', 'expired'].includes(normalized.status)
+          ? terminalAudit ? 'definitive_failed_no_fill' : 'failure_verifying'
+          : terminalAudit ? 'definitive_failed_no_fill' : normalized.status;
       await this.repository.updateOrderAfterQuery(
         row.id,
         { ...normalized, status: persistedStatus },
         nextQueryAt(row, persistedStatus, this.random)
       );
       if (['failed', 'expired'].includes(normalized.status)) {
-        await this.repository.failOrder(row.id, normalized);
-        return { orderId: row.id, status: normalized.status };
+        if (terminalAudit) {
+          return { orderId: row.id, status: 'terminal_audit_no_change' };
+        }
+        const result = await this.failureEvidenceService.verifyFailedOrder({
+          ...row,
+          id: row.attempt_id,
+          order_id: row.id,
+          input_amount_raw: row.attempt_input_amount_raw || row.input_amount_raw,
+          output_amount_raw: row.attempt_output_amount_raw || row.output_amount_raw,
+          status: row.attempt_status
+        }, normalized);
+        return { orderId: row.id, status: result.status, intentId: result.intentId || row.intent_id };
       }
       if (normalized.status !== 'confirmed') {
         return { orderId: row.id, status: normalized.status };
@@ -719,7 +739,8 @@ class TradeReconciler {
       `SELECT normalized_status AS status, COUNT(*)::int AS count,
               MIN(submitted_at) AS oldest
        FROM trade_orders
-       WHERE normalized_status IN ('submitted','pending','chain_verifying','unknown')
+       WHERE normalized_status IN ('submitted','pending','chain_verifying','failure_verifying',
+                                    'definitive_failed_no_fill','unknown')
        GROUP BY normalized_status`
       ),
       this.db.query(

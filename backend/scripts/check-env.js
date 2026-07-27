@@ -2,6 +2,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
 const { getProcessRole } = require('../lib/process-role');
+const {
+  legacyPaperEnabled,
+  legacyShadowEnabled,
+  legacyXProvidersEnabled
+} = require('../lib/legacy-features');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
@@ -32,6 +37,9 @@ function checkVars() {
   const modes = new Set(['signal', 'paper', 'live']);
   if (!modes.has(process.env.TRADING_MODE)) {
     throw new Error('TRADING_MODE must be signal, paper, or live.');
+  }
+  if (process.env.TRADING_MODE === 'paper' && !legacyPaperEnabled()) {
+    throw new Error('TRADING_MODE=paper requires XBOT_LEGACY_PAPER_ENABLED=true.');
   }
 
   const processRole = getProcessRole();
@@ -64,6 +72,9 @@ function checkVars() {
   if (!providers.has(provider)) {
     throw new Error('X_DATA_PROVIDER must be mock, socialdata, twitterapi, or 6551.');
   }
+  if (provider !== '6551' && !legacyXProvidersEnabled()) {
+    throw new Error('Production X_DATA_PROVIDER must be 6551; legacy providers require XBOT_LEGACY_X_PROVIDERS_ENABLED=true.');
+  }
   if (provider === 'twitterapi' && !process.env.TWITTERAPI_IO_API_KEY) {
     throw new Error('TWITTERAPI_IO_API_KEY is required when X_DATA_PROVIDER=twitterapi.');
   }
@@ -75,16 +86,14 @@ function checkVars() {
     throw new Error('TWITTER_STREAM_ENABLED is only supported when X_DATA_PROVIDER=twitterapi.');
   }
 
-  const verifiedLiveEvents = String(process.env.P8_VERIFIED_LIVE_EVENT_TYPES || '')
-    .split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
-  const supportedLiveEvents = new Set(['tweet', 'retweet', 'quote', 'reply', 'follow']);
-  if (verifiedLiveEvents.some((item) => !supportedLiveEvents.has(item))) {
-    throw new Error('P8_VERIFIED_LIVE_EVENT_TYPES contains an unsupported event type.');
+  if (String(process.env.SHADOW_LIVE_ENABLED || 'false').toLowerCase() === 'true'
+      && !legacyShadowEnabled()) {
+    throw new Error('SHADOW_LIVE_ENABLED=true requires XBOT_LEGACY_SHADOW_ENABLED=true.');
   }
 
   for (const [key, fallback, minimum] of [
     ['X_6551_HEARTBEAT_MS', 20000, 5000],
-    ['X_6551_RECONNECT_MAX_MS', 30000, 1000],
+    ['X_6551_RECONNECT_MAX_MS', 1000, 1000],
     ['X_6551_MONTHLY_MESSAGE_LIMIT', 2000000, 1]
   ]) {
     const value = Number(process.env[key] || fallback);

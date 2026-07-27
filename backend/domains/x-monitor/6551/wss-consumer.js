@@ -27,6 +27,15 @@ class X6551WssConsumer {
     this.lockClient = null;
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
+    this.pendingResumeTimer = null;
+    this.pendingResumeActive = false;
+    const configuredPendingResumeMs = Number(
+      options.pendingResumeIntervalMs ?? process.env.X_6551_PENDING_RETRY_MS ?? 30000
+    );
+    this.pendingResumeIntervalMs = Number.isFinite(configuredPendingResumeMs)
+      && configuredPendingResumeMs > 0
+      ? Math.max(options.pendingResumeIntervalMs === undefined ? 1000 : 1, configuredPendingResumeMs)
+      : 30000;
     this.processingQueue = Promise.resolve();
     this.commitQueue = Promise.resolve();
     this.commitPending = 0;
@@ -41,6 +50,8 @@ class X6551WssConsumer {
     this.consecutiveFailures = 0;
     this.reconnectAlerted = false;
     this.eventsReceived = 0;
+    this.lastPendingResumeAt = null;
+    this.lastPendingResumeSummary = null;
     this.lastError = null;
     this.wsBroadcast = null;
     this.onSignals = options.onSignals || null;
@@ -96,12 +107,41 @@ class X6551WssConsumer {
     }
 
     this.stopping = false;
-    const client = this.clientFactory();
-    await this.resume({ client, wsBroadcast: this.wsBroadcast, onSignals: this.onSignals }).catch((error) => {
-      this.logger.error('6551-wss', `Pending event recovery failed: ${error.message}`);
-    });
+    await this.recoverPending();
+    this.startPendingRecovery();
     this.connect();
     return { started: true };
+  }
+
+  async recoverPending() {
+    if (this.pendingResumeActive || this.stopping || !this.lockClient) {
+      return { processed: 0, failed: 0, skipped: true };
+    }
+    this.pendingResumeActive = true;
+    this.lastPendingResumeAt = new Date();
+    try {
+      const summary = await this.resume({
+        client: this.clientFactory(),
+        wsBroadcast: this.wsBroadcast,
+        onSignals: this.onSignals
+      });
+      this.lastPendingResumeSummary = summary;
+      return summary;
+    } catch (error) {
+      this.lastError = error.message;
+      this.logger.error('6551-wss', `Pending event recovery failed: ${error.message}`);
+      return { processed: 0, failed: 1, error: error.message };
+    } finally {
+      this.pendingResumeActive = false;
+    }
+  }
+
+  startPendingRecovery() {
+    if (this.pendingResumeTimer) return;
+    this.pendingResumeTimer = setInterval(() => {
+      void this.recoverPending();
+    }, this.pendingResumeIntervalMs);
+    this.pendingResumeTimer.unref?.();
   }
 
   connect() {
@@ -236,9 +276,9 @@ class X6551WssConsumer {
         `WSS reconnect circuit alert after ${this.consecutiveFailures} consecutive failures`
       );
     }
-    const maxMs = Math.max(1000, Number(process.env.X_6551_RECONNECT_MAX_MS || 30000));
+    const maxMs = Math.max(1000, Number(process.env.X_6551_RECONNECT_MAX_MS || 1000));
     const baseMs = Math.min(maxMs, 1000 * (2 ** Math.min(this.consecutiveFailures - 1, 8)));
-    const delayMs = Math.round(baseMs * (0.8 + this.random() * 0.4));
+    const delayMs = Math.min(maxMs, Math.round(baseMs * (0.8 + this.random() * 0.4)));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.lockClient) {
@@ -270,6 +310,10 @@ class X6551WssConsumer {
       consecutiveFailures: this.consecutiveFailures,
       reconnectAlerted: this.reconnectAlerted,
       eventsReceived: this.eventsReceived,
+      pendingResumeActive: this.pendingResumeActive,
+      pendingResumeIntervalMs: this.pendingResumeIntervalMs,
+      lastPendingResumeAt: this.lastPendingResumeAt,
+      lastPendingResumeSummary: this.lastPendingResumeSummary,
       commitQueueDepth: this.commitPending,
       processingQueueDepth: this.processingPending,
       lastError: this.lastError
@@ -279,6 +323,8 @@ class X6551WssConsumer {
   async stop() {
     this.stopping = true;
     this.clearSocketTimers();
+    if (this.pendingResumeTimer) clearInterval(this.pendingResumeTimer);
+    this.pendingResumeTimer = null;
     if (this.ws) {
       if (this.ws.readyState === (this.WebSocketImpl.OPEN ?? 1)) {
         this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'twitter.unsubscribe' }));

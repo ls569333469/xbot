@@ -5,57 +5,97 @@ const path = require('path');
 const ENV_PATH = path.resolve(__dirname, '../../.env');
 const MASK = '********';
 const SECRET_KEYS = new Set([
-  'DB_PASSWORD', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'SOCIALDATA_API_KEY',
-  'OPENNEWS_TOKEN', 'TWITTERAPI_IO_API_KEY', 'TWITTERAPI_IO_WEBHOOK_SECRET',
-  'ADMIN_TOKEN'
+  'DB_PASSWORD', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'OPENNEWS_TOKEN',
+  'XAI_API_KEY', 'ADMIN_TOKEN'
 ]);
 const CRITICAL_KEYS = new Set([
   'TRADING_MODE', 'LIVE_TRADING_ENABLED', 'GMGN_PRIVATE_KEY', 'XBOT_PROCESS_ROLE'
 ]);
+const IMPACT_PRIORITY = [
+  'research_only', 'observability', 'cache_runtime', 'chain_scoped',
+  'monitoring_critical', 'global_execution', 'global_control', 'process_infrastructure'
+];
 const ALLOWED_KEYS = [
   'BACKEND_PORT', 'BACKEND_HOST', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD',
   'TRADING_MODE', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'GMGN_KEY_EXCLUSIVE',
   'GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS',
   'GMGN_MAX_FEE_RESERVE_SOL', 'GMGN_MAX_FEE_RESERVE_BSC', 'GMGN_MAX_FEE_RESERVE_BASE',
-  'GMGN_MAX_FEE_RESERVE_ETH', 'GMGN_MIN_GAS_RESERVE_SOL', 'GMGN_MIN_GAS_RESERVE_BSC',
-  'GMGN_MIN_GAS_RESERVE_BASE', 'GMGN_MIN_GAS_RESERVE_ETH', 'GMGN_GLOBAL_DAILY_USD_LIMIT',
-  'GMGN_GLOBAL_WEEKLY_USD_LIMIT',
-  'SOLANA_RPC_URL', 'BSC_RPC_URL', 'BASE_RPC_URL', 'ETH_RPC_URL',
-  'TRADE_ALERTS_VERIFIED', 'SHADOW_LIVE_ENABLED',
+  'GMGN_MAX_FEE_RESERVE_ETH', 'GMGN_MAX_FEE_RESERVE_ROBINHOOD',
+  'GMGN_MIN_GAS_RESERVE_SOL', 'GMGN_MIN_GAS_RESERVE_BSC',
+  'GMGN_MIN_GAS_RESERVE_BASE', 'GMGN_MIN_GAS_RESERVE_ETH',
+  'GMGN_MIN_GAS_RESERVE_ROBINHOOD',
+  'SOLANA_RPC_URL', 'BSC_RPC_URL', 'BASE_RPC_URL', 'ETH_RPC_URL', 'ROBINHOOD_RPC_URL',
+  'TRADE_ALERTS_VERIFIED',
   'EMERGENCY_STOP',
-  'X_DATA_PROVIDER', 'SOCIALDATA_API_KEY', 'OPENNEWS_TOKEN', 'TWITTERAPI_IO_API_KEY',
-  'TWITTERAPI_IO_FOLLOW_INTERVAL_MS', 'TWITTERAPI_IO_MIN_INTERVAL_MS',
-  'TWITTERAPI_IO_DAILY_CREDIT_LIMIT', 'TWITTERAPI_IO_CREDIT_WARNING_PCT', 'TWITTERAPI_IO_MAX_PAGES',
-  'TWITTERAPI_IO_FOLLOW_INCREMENTAL_MAX_PAGES', 'TWITTERAPI_IO_TIMEOUT_MS',
-  'TWITTER_STREAM_ENABLED', 'TWITTERAPI_IO_WEBHOOK_SECRET', 'TWITTER_WEBHOOK_MAX_AGE_MS',
-  'SIGNAL_MAX_AGE_SECONDS', 'P8_VERIFIED_LIVE_EVENT_TYPES', 'X_6551_TIMEOUT_MS', 'X_6551_WSS_ENABLED',
-  'X_6551_WATCH_APPLY_ENABLED', 'X_6551_WATCH_UNFOLLOW_ENABLED', 'X_6551_HEARTBEAT_MS',
-  'X_6551_RECONNECT_MAX_MS', 'X_6551_MONTHLY_MESSAGE_LIMIT', 'CRON_ENABLED',
+  'OPENNEWS_TOKEN', 'XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL',
+  'SIGNAL_MAX_AGE_SECONDS', 'CRON_ENABLED',
   'LIVE_TRADING_ENABLED', 'ADMIN_TOKEN', 'XBOT_PROCESS_ROLE'
 ];
 
 const BOOLEAN_KEYS = new Set([
   'GMGN_KEY_EXCLUSIVE', 'TRADE_ALERTS_VERIFIED',
-  'SHADOW_LIVE_ENABLED', 'EMERGENCY_STOP',
-  'TWITTER_STREAM_ENABLED', 'X_6551_WSS_ENABLED', 'X_6551_WATCH_APPLY_ENABLED',
-  'X_6551_WATCH_UNFOLLOW_ENABLED', 'CRON_ENABLED', 'LIVE_TRADING_ENABLED'
+  'EMERGENCY_STOP', 'CRON_ENABLED', 'LIVE_TRADING_ENABLED'
 ]);
 
 const NON_NEGATIVE_NUMBER_KEYS = new Set([
   'GMGN_MAX_FEE_RESERVE_SOL', 'GMGN_MAX_FEE_RESERVE_BSC', 'GMGN_MAX_FEE_RESERVE_BASE',
-  'GMGN_MAX_FEE_RESERVE_ETH', 'GMGN_MIN_GAS_RESERVE_SOL', 'GMGN_MIN_GAS_RESERVE_BSC',
-  'GMGN_MIN_GAS_RESERVE_BASE', 'GMGN_MIN_GAS_RESERVE_ETH', 'GMGN_GLOBAL_DAILY_USD_LIMIT',
-  'GMGN_GLOBAL_WEEKLY_USD_LIMIT'
+  'GMGN_MAX_FEE_RESERVE_ETH', 'GMGN_MAX_FEE_RESERVE_ROBINHOOD',
+  'GMGN_MIN_GAS_RESERVE_SOL', 'GMGN_MIN_GAS_RESERVE_BSC',
+  'GMGN_MIN_GAS_RESERVE_BASE', 'GMGN_MIN_GAS_RESERVE_ETH',
+  'GMGN_MIN_GAS_RESERVE_ROBINHOOD'
 ]);
 
 const POSITIVE_INTEGER_KEYS = new Set([
   'GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS',
-  'TWITTERAPI_IO_FOLLOW_INTERVAL_MS', 'TWITTERAPI_IO_MIN_INTERVAL_MS',
-  'TWITTERAPI_IO_DAILY_CREDIT_LIMIT', 'TWITTERAPI_IO_MAX_PAGES',
-  'TWITTERAPI_IO_FOLLOW_INCREMENTAL_MAX_PAGES', 'TWITTERAPI_IO_TIMEOUT_MS',
-  'TWITTER_WEBHOOK_MAX_AGE_MS', 'SIGNAL_MAX_AGE_SECONDS', 'X_6551_TIMEOUT_MS',
-  'X_6551_HEARTBEAT_MS', 'X_6551_RECONNECT_MAX_MS', 'X_6551_MONTHLY_MESSAGE_LIMIT'
+  'SIGNAL_MAX_AGE_SECONDS'
 ]);
+
+function impactScopeForKey(key) {
+  if (['XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL'].includes(key)) return 'research_only';
+  if (key === 'TRADE_ALERTS_VERIFIED') return 'observability';
+  if (['GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS'].includes(key)) {
+    return 'cache_runtime';
+  }
+  if (key === 'OPENNEWS_TOKEN') return 'monitoring_critical';
+  if (key.endsWith('_RPC_URL') || key.startsWith('GMGN_MAX_FEE_RESERVE_')
+      || key.startsWith('GMGN_MIN_GAS_RESERVE_')) return 'chain_scoped';
+  if (['GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'GMGN_KEY_EXCLUSIVE', 'SIGNAL_MAX_AGE_SECONDS'].includes(key)) {
+    return 'global_execution';
+  }
+  if (['TRADING_MODE', 'LIVE_TRADING_ENABLED', 'EMERGENCY_STOP', 'XBOT_PROCESS_ROLE'].includes(key)) {
+    return 'global_control';
+  }
+  if (['BACKEND_PORT', 'BACKEND_HOST', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER',
+    'DB_PASSWORD', 'ADMIN_TOKEN'].includes(key)) return 'process_infrastructure';
+  return 'observability';
+}
+
+function impactForKeys(keys = []) {
+  const changedKeys = [...new Set(keys)].filter((key) => ALLOWED_KEYS.includes(key)).sort();
+  const scopes = [...new Set(changedKeys.map(impactScopeForKey))];
+  const impactScope = scopes.sort(
+    (left, right) => IMPACT_PRIORITY.indexOf(right) - IMPACT_PRIORITY.indexOf(left)
+  )[0] || 'observability';
+  const restartRoles = new Set();
+  if (scopes.includes('monitoring_critical')) restartRoles.add('ingestion');
+  if (scopes.some((scope) => ['global_execution', 'global_control'].includes(scope))) {
+    restartRoles.add('execution');
+  }
+  if (scopes.includes('process_infrastructure')) {
+    restartRoles.add('ingestion');
+    restartRoles.add('execution');
+  }
+  return {
+    impact_scope: impactScope,
+    impact_scopes: scopes,
+    changed_keys: changedKeys,
+    restart_required: restartRoles.size > 0,
+    restart_roles: [...restartRoles],
+    manual_rearm_required: scopes.some((scope) => (
+      scope === 'global_execution' || scope === 'global_control' || scope === 'process_infrastructure'
+    ))
+  };
+}
 
 function readEnv() {
   const values = {};
@@ -88,8 +128,8 @@ function validateValue(key, value) {
     error.code = 'ENV_VALUE_INVALID';
     throw error;
   }
-  if (key === 'TRADING_MODE' && !['signal', 'paper', 'live'].includes(normalized)) {
-    const error = new Error('TRADING_MODE must be signal, paper, or live');
+  if (key === 'TRADING_MODE' && !['signal', 'live'].includes(normalized)) {
+    const error = new Error('TRADING_MODE must be signal or live in the production settings API');
     error.code = 'ENV_VALUE_INVALID';
     throw error;
   }
@@ -97,21 +137,6 @@ function validateValue(key, value) {
     const error = new Error('XBOT_PROCESS_ROLE must be all, ingestion, or execution');
     error.code = 'ENV_VALUE_INVALID';
     throw error;
-  }
-  if (key === 'X_DATA_PROVIDER' && !['mock', 'socialdata', 'twitterapi', '6551'].includes(normalized)) {
-    const error = new Error('X_DATA_PROVIDER is invalid');
-    error.code = 'ENV_VALUE_INVALID';
-    throw error;
-  }
-  if (key === 'P8_VERIFIED_LIVE_EVENT_TYPES') {
-    const allowed = new Set(['tweet', 'retweet', 'quote', 'reply', 'follow']);
-    const values = [...new Set(normalized.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean))];
-    if (values.some((item) => !allowed.has(item))) {
-      const error = new Error('P8_VERIFIED_LIVE_EVENT_TYPES contains an unsupported event type');
-      error.code = 'ENV_VALUE_INVALID';
-      throw error;
-    }
-    normalized = values.join(',');
   }
   if (['BACKEND_PORT', 'DB_PORT'].includes(key) && normalized) {
     const port = Number(normalized);
@@ -123,6 +148,27 @@ function validateValue(key, value) {
   }
   if (key === 'BACKEND_HOST' && !['127.0.0.1', 'localhost'].includes(normalized)) {
     const error = new Error('BACKEND_HOST is restricted to localhost until remote HTTPS access controls are implemented');
+    error.code = 'ENV_VALUE_INVALID';
+    throw error;
+  }
+  if (key === 'XAI_BASE_URL' && normalized) {
+    let parsed;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      const error = new Error('XAI_BASE_URL must be a valid HTTPS URL');
+      error.code = 'ENV_VALUE_INVALID';
+      throw error;
+    }
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      const error = new Error('XAI_BASE_URL must use HTTPS without credentials, query, or fragment');
+      error.code = 'ENV_VALUE_INVALID';
+      throw error;
+    }
+    normalized = normalized.replace(/\/+$/, '');
+  }
+  if (key === 'XAI_MODEL' && normalized && !/^[A-Za-z0-9._:-]+$/.test(normalized)) {
+    const error = new Error('XAI_MODEL contains unsupported characters');
     error.code = 'ENV_VALUE_INVALID';
     throw error;
   }
@@ -146,29 +192,11 @@ function validateValue(key, value) {
       error.code = 'ENV_VALUE_INVALID';
       throw error;
     }
-    const minimums = {
-      TWITTERAPI_IO_FOLLOW_INTERVAL_MS: 30000,
-      X_6551_HEARTBEAT_MS: 5000,
-      X_6551_RECONNECT_MAX_MS: 1000,
-      X_6551_TIMEOUT_MS: 1000,
-      TWITTERAPI_IO_TIMEOUT_MS: 1000
-    };
-    if (minimums[key] && numeric < minimums[key]) {
-      const error = new Error(`${key} must be at least ${minimums[key]}`);
-      error.code = 'ENV_VALUE_INVALID';
-      throw error;
-    }
     if (key === 'SIGNAL_MAX_AGE_SECONDS' && numeric > 300) {
       const error = new Error('SIGNAL_MAX_AGE_SECONDS cannot exceed 300');
       error.code = 'ENV_VALUE_INVALID';
       throw error;
     }
-  }
-  if (key === 'TWITTERAPI_IO_CREDIT_WARNING_PCT' && normalized
-      && (!Number.isFinite(Number(normalized)) || Number(normalized) < 1 || Number(normalized) > 100)) {
-    const error = new Error('TWITTERAPI_IO_CREDIT_WARNING_PCT must be between 1 and 100');
-    error.code = 'ENV_VALUE_INVALID';
-    throw error;
   }
   if (key.endsWith('_RPC_URL') && normalized) {
     let parsed;
@@ -188,10 +216,36 @@ function validateValue(key, value) {
   return normalized;
 }
 
-function writeEnv(values) {
-  const lines = ['# xbot environment (managed by Settings API)', ''];
-  for (const key of ALLOWED_KEYS) lines.push(`${key}=${values[key] || ''}`);
-  fs.writeFileSync(ENV_PATH, `${lines.join('\n')}\n`, 'utf8');
+function mergeEnvContent(existing, updates) {
+  const newline = existing.includes('\r\n') ? '\r\n' : '\n';
+  const nextValues = new Map(Object.entries(updates || {}));
+  const seen = new Set();
+  const lines = existing.split(/\r?\n/).map((line) => {
+    const match = line.match(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*)=(.*)$/);
+    if (!match || !nextValues.has(match[2])) return line;
+    const value = nextValues.get(match[2]);
+    seen.add(match[2]);
+    return `${match[1]}${match[2]}${match[3]}=${value ?? ''}`;
+  });
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  for (const [key, value] of nextValues) {
+    if (!seen.has(key)) lines.push(`${key}=${value ?? ''}`);
+  }
+  return `${lines.join(newline)}${newline}`;
+}
+
+function writeEnv(updates) {
+  const existing = fs.existsSync(ENV_PATH)
+    ? fs.readFileSync(ENV_PATH, 'utf8')
+    : '# xbot environment (managed by Settings API)\n';
+  const content = mergeEnvContent(existing, updates);
+  const temporaryPath = `${ENV_PATH}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, content, { encoding: 'utf8', flag: 'wx' });
+  try {
+    fs.renameSync(temporaryPath, ENV_PATH);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
 }
 
 function publicConfig() {
@@ -205,8 +259,9 @@ function publicConfig() {
   return result;
 }
 
-function updateGeneral(input) {
+function updateGeneralWithImpact(input) {
   const values = readEnv();
+  const updates = {};
   for (const [key, raw] of Object.entries(input || {})) {
     if (key === 'GMGN_PRIVATE_KEY_CONFIGURED') continue;
     if (CRITICAL_KEYS.has(key)) {
@@ -221,15 +276,23 @@ function updateGeneral(input) {
     const next = validateValue(key, raw);
     if (SECRET_KEYS.has(key) && next === MASK) continue;
     values[key] = next;
+    updates[key] = next;
   }
-  writeEnv(values);
-  return publicConfig();
+  const changedKeys = Object.keys(updates).filter((key) => (readEnv()[key] || '') !== updates[key]);
+  writeEnv(updates);
+  const impact = impactForKeys(changedKeys);
+  for (const key of changedKeys) {
+    if (!impact.restart_roles.includes('execution')) process.env[key] = updates[key];
+  }
+  return { config: publicConfig(), impact };
+}
+
+function updateGeneral(input) {
+  return updateGeneralWithImpact(input).config;
 }
 
 function updateCritical(key, value) {
-  const values = readEnv();
-  values[key] = validateValue(key, value);
-  writeEnv(values);
+  writeEnv({ [key]: validateValue(key, value) });
 }
 
 function replaceGmgnPrivateKey(privateKey) {
@@ -247,11 +310,17 @@ module.exports = {
   ALLOWED_KEYS,
   CRITICAL_KEYS,
   ENV_PATH,
+  IMPACT_PRIORITY,
+  impactForKeys,
+  impactScopeForKey,
   MASK,
+  mergeEnvContent,
   publicConfig,
   readEnv,
   replaceGmgnPrivateKey,
   updateCritical,
   updateGeneral,
-  validateValue
+  updateGeneralWithImpact,
+  validateValue,
+  writeEnv
 };

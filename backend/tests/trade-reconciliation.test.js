@@ -10,7 +10,17 @@ const {
   strategyPollingIntervalMs,
   strategyMatchesConfirmedOrder
 } = require('../domains/trade/reconciliation-service');
-const { sellSettlementOutputRaw } = require('../domains/trade/trade-repository');
+const {
+  sellSettlementOutputRaw,
+  submittedOrderStatus
+} = require('../domains/trade/trade-repository');
+
+test('an immediate provider failure remains in the reconciliation queue', () => {
+  assert.equal(submittedOrderStatus('failed'), 'failure_verifying');
+  assert.equal(submittedOrderStatus('expired'), 'failure_verifying');
+  assert.equal(submittedOrderStatus('confirmed'), 'chain_verifying');
+  assert.equal(submittedOrderStatus('pending'), 'pending');
+});
 
 test('order reconciliation uses adaptive 1s, 2s, 5s, and 15-30s polling', () => {
   const originalNow = Date.now;
@@ -22,6 +32,8 @@ test('order reconciliation uses adaptive 1s, 2s, 5s, and 15-30s polling', () => 
     assert.equal(pollingIntervalMs(new Date(800_000), 'pending', () => 0), 15000);
     assert.equal(pollingIntervalMs(new Date(800_000), 'pending', () => 1), 30000);
     assert.equal(pollingIntervalMs(new Date(800_000), 'triggered', () => 1), 1000);
+    assert.equal(pollingIntervalMs(new Date(999_000), 'definitive_failed_no_fill', () => 0), 900000);
+    assert.equal(pollingIntervalMs(new Date(999_000), 'definitive_failed_no_fill', () => 1), 1800000);
   } finally {
     Date.now = originalNow;
   }

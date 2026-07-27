@@ -1,0 +1,905 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XBOT 白名单工作区 V3 预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090a0c;
+      --surface: #0e1013;
+      --surface-2: #12151a;
+      --surface-3: #171b20;
+      --input: #0a0c0f;
+      --line: #23272d;
+      --line-strong: #353b44;
+      --text: #f3f5f7;
+      --secondary: #a3a9b2;
+      --muted: #6f7680;
+      --cyan: #62c9e5;
+      --cyan-soft: rgba(98, 201, 229, 0.09);
+      --green: #54d1ad;
+      --green-soft: rgba(84, 209, 173, 0.09);
+      --amber: #e5b75f;
+      --amber-soft: rgba(229, 183, 95, 0.09);
+      --red: #e66f79;
+      --red-soft: rgba(230, 111, 121, 0.09);
+      --sidebar: 206px;
+      --topbar: 56px;
+      --radius: 6px;
+      --font: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button, input, select { font: inherit; letter-spacing: 0; }
+    button { color: inherit; }
+    svg { display: block; }
+    [hidden] { display: none !important; }
+
+    .icon { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon.small { width: 15px; height: 15px; }
+
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      z-index: 20;
+      width: var(--sidebar);
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #1a1d22;
+      background: #0b0c0f;
+    }
+    .brand {
+      height: var(--topbar);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+      border-bottom: 1px solid #1a1d22;
+      font-size: 17px;
+      font-weight: 760;
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(98, 201, 229, 0.45);
+      border-radius: 5px;
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .nav { display: grid; gap: 4px; padding: 16px 10px; }
+    .nav a {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 0 11px;
+      border-left: 2px solid transparent;
+      border-radius: 4px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .nav a.active { border-left-color: var(--cyan); background: #14171b; color: var(--text); }
+    .sidebar-foot { margin-top: auto; padding: 16px; border-top: 1px solid #1a1d22; color: var(--muted); font-size: 11px; }
+
+    .shell { min-height: 100vh; margin-left: var(--sidebar); }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 15;
+      height: var(--topbar);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 26px;
+      border-bottom: 1px solid #1a1d22;
+      background: rgba(9, 10, 12, 0.96);
+    }
+    .breadcrumb { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .breadcrumb strong { color: var(--text); }
+    .connection { display: flex; align-items: center; gap: 7px; color: var(--green); font-size: 12px; }
+    .connection i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    .page { max-width: 1180px; margin: 0 auto; padding: 22px 28px 48px; }
+    .page-head { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
+    .title-row { display: flex; align-items: center; gap: 11px; }
+    .title-copy { display: grid; gap: 5px; }
+    h1 { margin: 0; font-size: 21px; line-height: 1.2; }
+    .subline { color: var(--muted); font-size: 11px; }
+
+    .btn, .icon-btn {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+    }
+    .btn:hover, .icon-btn:hover { border-color: var(--line-strong); background: var(--surface-3); }
+    .btn {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 13px;
+      font-size: 12px;
+      font-weight: 680;
+    }
+    .btn.primary { border-color: rgba(98, 201, 229, 0.55); background: var(--cyan-soft); color: #dff8ff; }
+    .btn.ghost { background: transparent; }
+    .icon-btn { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; }
+    .icon-btn.danger:hover { border-color: rgba(230, 111, 121, 0.45); background: var(--red-soft); color: var(--red); }
+    .back-btn { border: 0; background: transparent; }
+    .back-btn:hover { background: var(--surface-2); }
+
+    .workspace {
+      overflow: visible;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .stepper {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      overflow: hidden;
+      border-bottom: 1px solid var(--line);
+      border-radius: var(--radius) var(--radius) 0 0;
+      background: #0b0d10;
+    }
+    .step {
+      position: relative;
+      min-width: 0;
+      min-height: 62px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      align-items: center;
+      gap: 9px;
+      padding: 10px 14px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+    }
+    .step:last-child { border-right: 0; }
+    .step::after { content: ""; position: absolute; inset: auto 12px 0; height: 2px; background: transparent; }
+    .step.active { color: var(--text); background: rgba(255, 255, 255, 0.018); }
+    .step.active::after { background: var(--cyan); }
+    .step.complete { color: var(--secondary); }
+    .step-index {
+      width: 27px;
+      height: 27px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      font-size: 11px;
+    }
+    .step.active .step-index { border-color: var(--cyan); color: var(--cyan); }
+    .step.complete .step-index { border-color: rgba(84, 209, 173, 0.5); background: var(--green-soft); color: var(--green); }
+    .step-copy { min-width: 0; display: grid; gap: 3px; }
+    .step-copy strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .step-copy small { overflow: hidden; font-size: 10px; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+
+    .token-context {
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 9px 20px;
+      border-bottom: 1px solid var(--line);
+      background: #101216;
+    }
+    .token { min-width: 0; display: flex; align-items: center; gap: 10px; }
+    .token-logo { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; background: #eef2f5; color: #101216; font-size: 12px; font-weight: 800; }
+    .token-copy { min-width: 0; display: grid; gap: 2px; }
+    .token-copy strong { font-size: 13px; }
+    .token-copy span { max-width: 520px; overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .context-stats { display: flex; align-items: center; gap: 16px; }
+    .context-stat { display: grid; gap: 2px; text-align: right; }
+    .context-stat strong { font-size: 12px; }
+    .context-stat span { color: var(--muted); font-size: 10px; }
+
+    .panel { padding: 22px 24px 20px; }
+    .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    .panel-title { display: grid; gap: 5px; }
+    .panel-title small { color: var(--cyan); font-size: 10px; font-weight: 750; }
+    .panel-title h2 { margin: 0; font-size: 18px; }
+    .summary-badge { min-height: 29px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--secondary); font-size: 11px; white-space: nowrap; }
+
+    .section { padding: 0 0 22px; }
+    .section + .section { padding-top: 20px; border-top: 1px solid var(--line); }
+    .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+    .section-heading { display: flex; align-items: flex-start; gap: 10px; }
+    .section-number { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--secondary); font-size: 10px; font-weight: 750; }
+    .section-copy { display: grid; gap: 4px; }
+    .section-copy h3 { margin: 0; font-size: 14px; }
+    .section-copy p { margin: 0; color: var(--muted); font-size: 11px; }
+    .text-action { min-height: 30px; display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--cyan); cursor: pointer; font-size: 11px; }
+
+    .candidate-list { border-top: 1px solid var(--line); }
+    .candidate-row {
+      min-height: 64px;
+      display: grid;
+      grid-template-columns: 28px minmax(220px, 1fr) 108px 78px 76px;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      transition: background 120ms ease;
+    }
+    .candidate-row:hover { background: rgba(255, 255, 255, 0.014); }
+    .candidate-row.selected { background: rgba(98, 201, 229, 0.025); }
+    .check {
+      width: 18px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--input);
+      color: transparent;
+      cursor: pointer;
+    }
+    .candidate-row.selected .check { border-color: var(--cyan); background: var(--cyan-soft); color: var(--cyan); }
+    .candidate-main { min-width: 0; display: grid; gap: 4px; }
+    .candidate-main strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+    .candidate-main span { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .role { color: var(--secondary); font-size: 11px; }
+    .status { justify-self: start; padding: 4px 7px; border: 1px solid rgba(229, 183, 95, 0.25); border-radius: 4px; background: var(--amber-soft); color: var(--amber); font-size: 10px; white-space: nowrap; }
+    .status.verified { border-color: rgba(84, 209, 173, 0.25); background: var(--green-soft); color: var(--green); }
+    .candidate-actions { display: flex; justify-content: flex-end; gap: 5px; }
+    .candidate-actions .icon-btn { width: 31px; height: 31px; }
+
+    .manual-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; max-width: 560px; margin-top: 12px; }
+    label { min-width: 0; display: grid; gap: 6px; }
+    label > span { color: var(--secondary); font-size: 10px; font-weight: 650; }
+    .input, .select {
+      width: 100%;
+      height: 37px;
+      min-width: 0;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      outline: 0;
+      background: var(--input);
+      color: var(--text);
+    }
+    .input:hover, .select:hover, .input:focus, .select:focus { border-color: var(--line-strong); }
+    .input:focus { box-shadow: 0 0 0 2px rgba(98, 201, 229, 0.08); }
+    .input::placeholder { color: #515861; }
+
+    .rule-list { display: grid; gap: 9px; }
+    .rule {
+      border: 1px solid var(--line);
+      border-left: 3px solid #424850;
+      border-radius: var(--radius);
+      background: #0d0f12;
+    }
+    .rule.enabled { border-left-color: var(--green); }
+    .rule-head { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 13px; }
+    .rule-name { min-width: 0; display: flex; align-items: center; gap: 10px; }
+    .rule-icon { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); }
+    .rule.enabled .rule-icon { border-color: rgba(84, 209, 173, 0.25); background: var(--green-soft); color: var(--green); }
+    .rule-copy { min-width: 0; display: grid; gap: 3px; }
+    .rule-copy strong { font-size: 12px; }
+    .rule-copy span { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .rule-controls { display: flex; align-items: center; gap: 10px; }
+    .rule-count { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .switch { width: 38px; height: 21px; position: relative; flex: 0 0 38px; border: 1px solid var(--line-strong); border-radius: 11px; background: #171a1f; cursor: pointer; }
+    .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: #737b85; transition: transform 140ms ease, background 140ms ease; }
+    .rule.enabled .switch { border-color: rgba(84, 209, 173, 0.45); background: var(--green-soft); }
+    .rule.enabled .switch::after { transform: translateX(17px); background: var(--green); }
+    .rule-body { padding: 0 13px 14px 55px; border-top: 1px solid var(--line); }
+    .rule-fields { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: end; gap: 8px; max-width: 700px; padding-top: 13px; }
+    .rule-fields.interaction { grid-template-columns: repeat(2, minmax(180px, 1fr)) auto; max-width: none; }
+    .events { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+    .event-option { min-height: 27px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--secondary); font-size: 10px; cursor: pointer; }
+    .event-option input { accent-color: var(--green); }
+    .actor-row { min-height: 39px; display: grid; grid-template-columns: minmax(130px, 1fr) minmax(180px, 1fr) auto; align-items: center; gap: 10px; margin-top: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 11px; }
+    .actor-row span { color: var(--muted); }
+    .relation-row { min-height: 43px; display: grid; grid-template-columns: minmax(130px, 1fr) 20px minmax(130px, 1fr) minmax(180px, 1fr) auto; align-items: center; gap: 9px; margin-top: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 11px; }
+    .relation-row > span { color: var(--muted); }
+
+    .picker { position: relative; }
+    .suggestions { position: absolute; z-index: 12; inset: calc(100% + 5px) auto auto 0; width: min(480px, calc(100vw - 80px)); min-width: 100%; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 5px; background: #14171b; box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42); }
+    .suggestion-head { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 5px 4px 10px; border-bottom: 1px solid var(--line); color: var(--secondary); font-size: 10px; }
+    .suggestion-head strong { color: var(--text); font-size: 11px; }
+    .suggestion-head .icon-btn { width: 27px; height: 27px; border: 0; background: transparent; }
+    .actor-library-filters { display: flex; gap: 5px; overflow-x: auto; padding: 7px 9px; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+    .actor-filter { min-height: 25px; flex: 0 0 auto; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
+    .actor-filter.active { border-color: rgba(98, 201, 229, 0.45); background: var(--cyan-soft); color: var(--cyan); }
+    .suggestion-list { max-height: 282px; overflow-y: auto; overscroll-behavior: contain; }
+    .suggestion { width: 100%; min-height: 54px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 10px; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .suggestion:hover { background: rgba(255, 255, 255, 0.035); }
+    .suggestion strong { min-width: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .suggestion .actor-weight { grid-column: 2; grid-row: 1 / span 2; color: var(--secondary); font-size: 9px; }
+    .suggestion .actor-meta { min-width: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 10px; }
+    .suggestion .actor-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .actor-tag { flex: 0 0 auto; padding: 2px 4px; border: 1px solid rgba(98, 201, 229, 0.22); border-radius: 3px; background: var(--cyan-soft); color: var(--cyan); font-size: 8px; }
+    .actor-tag.unclassified { border-color: var(--line); background: transparent; color: var(--muted); }
+    .actor-library-empty { padding: 18px 10px; color: var(--muted); font-size: 10px; text-align: center; }
+    .actor-library-foot { min-height: 29px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 10px; color: var(--muted); font-size: 9px; }
+    .actor-library-foot strong { color: var(--secondary); }
+    .quick-actors { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .quick-actors > span { margin-right: 2px; color: var(--muted); font-size: 10px; }
+    .quick-actor { min-height: 27px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: #111419; color: var(--secondary); cursor: pointer; font-size: 10px; }
+    .quick-actor:hover { border-color: rgba(98, 201, 229, 0.4); background: var(--cyan-soft); color: var(--text); }
+    .quick-actor.active { border-color: rgba(98, 201, 229, 0.5); background: var(--cyan-soft); color: var(--cyan); }
+
+    .form-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; }
+    .form-grid .wide { grid-column: 2; }
+    .source-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 18px; }
+    .source-tabs button { min-height: 48px; border: 1px solid var(--line); border-radius: 5px; background: var(--input); color: var(--secondary); cursor: pointer; }
+    .source-tabs button.active { border-color: rgba(98, 201, 229, 0.45); background: var(--cyan-soft); color: var(--text); }
+    .money-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .preset-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+    .preset { min-height: 62px; display: grid; gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--input); color: var(--secondary); text-align: left; cursor: pointer; }
+    .preset strong { color: var(--text); font-size: 12px; }
+    .preset span { font-size: 10px; }
+    .preset.active { border-color: rgba(84, 209, 173, 0.4); background: var(--green-soft); }
+    .review { border-top: 1px solid var(--line); }
+    .review-row { min-height: 48px; display: grid; grid-template-columns: 145px minmax(0, 1fr); align-items: center; gap: 14px; border-bottom: 1px solid var(--line); }
+    .review-row span { color: var(--muted); font-size: 11px; }
+    .review-row strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+
+    .actions {
+      position: static;
+      z-index: 5;
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 24px;
+      border-top: 1px solid var(--line);
+      background: rgba(12, 14, 17, 0.97);
+    }
+    .action-summary { color: var(--muted); font-size: 10px; }
+    .action-buttons { display: flex; gap: 8px; }
+
+    .overlay { position: fixed; inset: 0; z-index: 39; background: rgba(0, 0, 0, 0.48); }
+    .drawer {
+      position: fixed;
+      inset: 0 0 0 auto;
+      z-index: 40;
+      width: min(420px, 92vw);
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--line-strong);
+      background: #0f1115;
+      box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
+    }
+    .drawer-head { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 15px; border-bottom: 1px solid var(--line); }
+    .drawer-head strong { font-size: 14px; }
+    .drawer-body { min-height: 0; overflow: auto; padding: 18px; }
+    .drawer-account { display: grid; gap: 6px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+    .drawer-account strong { font-size: 17px; }
+    .drawer-account div { display: flex; flex-wrap: wrap; gap: 6px; }
+    .drawer-section { padding: 16px 0; border-bottom: 1px solid var(--line); }
+    .drawer-section h3 { margin: 0 0 8px; font-size: 12px; }
+    .drawer-section p { margin: 0; color: var(--secondary); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+    .evidence { display: grid; gap: 7px; }
+    .evidence div { padding: 9px 10px; border-left: 2px solid var(--cyan); background: var(--cyan-soft); color: var(--secondary); font-size: 10px; line-height: 1.55; }
+    .drawer-foot { margin-top: auto; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 15px; border-top: 1px solid var(--line); }
+
+    .toast { position: fixed; z-index: 60; left: 50%; bottom: 24px; transform: translateX(-50%); min-height: 40px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 5px; background: #181b20; box-shadow: 0 10px 30px rgba(0,0,0,.35); font-size: 11px; }
+    .toast button { border: 0; background: transparent; color: var(--cyan); cursor: pointer; }
+
+    @media (max-width: 1080px) {
+      :root { --sidebar: 180px; }
+      .page { padding-inline: 20px; }
+      .step { padding-inline: 10px; }
+      .candidate-row { grid-template-columns: 28px minmax(180px, 1fr) 94px 72px 72px; }
+    }
+
+    @media (max-width: 860px) {
+      .sidebar { display: none; }
+      .shell { margin-left: 0; }
+      .topbar { padding-inline: 18px; }
+      .page { padding-inline: 16px; }
+      .step-copy small { display: none; }
+      .candidate-row { grid-template-columns: 28px minmax(180px, 1fr) 92px 72px 72px; }
+      .context-stats .context-stat:first-child { display: none; }
+    }
+
+    @media (max-width: 680px) {
+      .topbar { height: 50px; }
+      .page { padding: 14px 10px 32px; }
+      .page-head { min-height: 48px; margin-bottom: 10px; }
+      .title-copy .subline, .connection span { display: none; }
+      h1 { font-size: 18px; }
+      .page-head .btn span { display: none; }
+      .stepper { overflow: visible; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .step { min-height: 54px; grid-template-columns: 22px minmax(0, 1fr); gap: 5px; padding-inline: 6px; }
+      .step-index { width: 22px; height: 22px; }
+      .step-copy strong { display: none; }
+      .step-copy::after { content: attr(data-short); font-size: 10px; font-weight: 700; white-space: nowrap; }
+      .token-context { padding-inline: 13px; }
+      .context-stats { gap: 10px; }
+      .panel { padding: 18px 14px 16px; }
+      .panel-head { margin-bottom: 16px; }
+      .panel-title h2 { font-size: 16px; }
+      .summary-badge { display: none; }
+      .section-head { align-items: center; }
+      .candidate-row { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; padding: 9px 0; }
+      .candidate-main { grid-column: 2 / -1; grid-row: 1; }
+      .candidate-row .check { grid-column: 1; grid-row: 1; }
+      .candidate-row .role { grid-column: 2; grid-row: 2; }
+      .candidate-row .status { grid-column: 3; grid-row: 2; justify-self: end; }
+      .candidate-actions { grid-column: 2 / -1; grid-row: 3; justify-content: flex-start; }
+      .manual-add, .rule-fields, .rule-fields.interaction, .form-grid, .money-grid { grid-template-columns: minmax(0, 1fr); }
+      .form-grid .wide { grid-column: 1; }
+      .source-tabs, .preset-list { grid-template-columns: minmax(0, 1fr); }
+      .rule-head { align-items: flex-start; }
+      .rule-controls { align-self: center; }
+      .rule-count { display: none; }
+      .rule-body { padding-left: 13px; }
+      .actor-row { grid-template-columns: minmax(0, 1fr) auto; padding: 7px 0; }
+      .actor-row span { grid-column: 1 / -1; grid-row: 2; }
+      .relation-row { grid-template-columns: minmax(0, 1fr) auto; padding: 7px 0; }
+      .relation-row > span { grid-column: 1 / -1; }
+      .relation-row .relation-arrow { display: none; }
+      .quick-actors { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+      .quick-actor { flex: 0 0 auto; }
+      .suggestions { width: min(480px, calc(100vw - 56px)); }
+      .review-row { grid-template-columns: 105px minmax(0, 1fr); }
+      .actions { padding-inline: 12px; }
+      .action-summary { display: none; }
+      .action-buttons { margin-left: auto; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 4-7"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  </svg>
+
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">XB</span>XBOT</div>
+    <nav class="nav">
+      <a href="#"><svg class="icon"><use href="#i-layout"/></svg>总览</a>
+      <a class="active" href="#"><svg class="icon"><use href="#i-list"/></svg>白名单</a>
+      <a href="#"><svg class="icon"><use href="#i-users"/></svg>KOL 账号</a>
+      <a href="#"><svg class="icon"><use href="#i-chart"/></svg>信号记录</a>
+      <a href="#"><svg class="icon"><use href="#i-settings"/></svg>设置</a>
+    </nav>
+    <div class="sidebar-foot">设计预览 · 不连接 API</div>
+  </aside>
+
+  <div class="shell">
+    <header class="topbar">
+      <div class="breadcrumb"><span>白名单</span><span>/</span><strong>新增</strong></div>
+      <div class="connection"><i></i><span>6551 已连接</span></div>
+    </header>
+
+    <main class="page">
+      <div class="page-head">
+        <div class="title-row">
+          <button class="icon-btn back-btn" type="button" title="返回白名单" aria-label="返回白名单"><svg class="icon"><use href="#i-arrow-left"/></svg></button>
+          <div class="title-copy"><h1>新增白名单</h1><span class="subline">BRODIE · BASE</span></div>
+        </div>
+        <button class="btn ghost" type="button"><svg class="icon"><use href="#i-search"/></svg><span>快速投研</span></button>
+      </div>
+
+      <section class="workspace">
+        <nav class="stepper" aria-label="创建步骤">
+          <button class="step complete" type="button" data-step="1"><span class="step-index"><svg class="icon small"><use href="#i-check"/></svg></span><span class="step-copy" data-short="代币"><strong>代币与模板</strong><small>链、CA、配置来源</small></span></button>
+          <button class="step active" type="button" data-step="2"><span class="step-index">2</span><span class="step-copy" data-short="X 账号"><strong>X 触发账号</strong><small>身份与生态行为</small></span></button>
+          <button class="step" type="button" data-step="3"><span class="step-index">3</span><span class="step-copy" data-short="资金"><strong>资金与离场</strong><small>金额、次数、策略</small></span></button>
+          <button class="step" type="button" data-step="4"><span class="step-index">4</span><span class="step-copy" data-short="确认"><strong>确认保存</strong><small>Watch 影响、提交</small></span></button>
+        </nav>
+
+        <div class="token-context">
+          <div class="token"><span class="token-logo">B</span><div class="token-copy"><strong>BRODIE</strong><span>0x45f82ac5d507e988f7406935da8eefe495a360e0</span></div></div>
+          <div class="context-stats"><div class="context-stat"><strong id="identity-count">1</strong><span>项目身份</span></div><div class="context-stat"><strong id="watch-count">0</strong><span>唯一 Watch</span></div></div>
+        </div>
+
+        <div class="panel step-panel" data-panel="1" hidden>
+          <div class="panel-head"><div class="panel-title"><small>步骤 1 / 4</small><h2>选择代币与配置来源</h2></div><span class="summary-badge">GMGN 已补全</span></div>
+          <div class="form-grid">
+            <label><span>链</span><select class="select"><option>BASE</option><option>BSC</option><option>ETH</option><option>SOL</option><option>ROBINHOOD</option></select></label>
+            <label class="wide"><span>合约地址 (CA)</span><input class="input" value="0x45f82ac5d507e988f7406935da8eefe495a360e0" /></label>
+            <label><span>代币符号</span><input class="input" value="BRODIE" /></label>
+            <label class="wide"><span>项目名称</span><input class="input" value="BRODIE" /></label>
+          </div>
+          <div class="source-tabs"><button class="active" type="button">空白创建</button><button type="button">使用 BASE 默认模板</button><button type="button">复制已有白名单</button></div>
+        </div>
+
+        <div class="panel step-panel" data-panel="2">
+          <div class="panel-head">
+            <div class="panel-title"><small>步骤 2 / 4</small><h2>配置 X 账号</h2></div>
+            <span class="summary-badge"><svg class="icon small"><use href="#i-at"/></svg><span id="candidate-summary">3 个候选 · 1 个已选</span></span>
+          </div>
+
+          <section class="section">
+            <div class="section-head">
+              <div class="section-heading"><span class="section-number">1</span><div class="section-copy"><h3>项目身份</h3><p>互动目标，不直接触发当前 CA</p></div></div>
+              <button class="text-action" type="button"><svg class="icon small"><use href="#i-search"/></svg>重新投研</button>
+            </div>
+
+            <div class="candidate-list" id="candidate-list">
+              <div class="candidate-row selected" data-handle="brodiehasfun">
+                <button class="check" type="button" aria-label="切换 @brodiehasfun 项目身份"><svg class="icon small"><use href="#i-check"/></svg></button>
+                <div class="candidate-main"><strong>@brodiehasfun</strong><span>BRODIE · 官网与合约地址共同核验</span></div>
+                <span class="role">项目官方</span><span class="status verified">已核验</span>
+                <div class="candidate-actions"><button class="icon-btn details" type="button" title="查看证据" aria-label="查看 @brodiehasfun 证据"><svg class="icon small"><use href="#i-info"/></svg></button><button class="icon-btn danger remove" type="button" title="移除候选" aria-label="移除 @brodiehasfun"><svg class="icon small"><use href="#i-trash"/></svg></button></div>
+              </div>
+              <div class="candidate-row" data-handle="brodiehasfun_">
+                <button class="check" type="button" aria-label="切换 @brodiehasfun_ 项目身份"><svg class="icon small"><use href="#i-check"/></svg></button>
+                <div class="candidate-main"><strong>@brodiehasfun_</strong><span>BRODIE Team · 简介和品牌信息一致</span></div>
+                <span class="role">团队账号</span><span class="status">待确认</span>
+                <div class="candidate-actions"><button class="icon-btn details" type="button" title="查看证据" aria-label="查看 @brodiehasfun_ 证据"><svg class="icon small"><use href="#i-info"/></svg></button><button class="icon-btn danger remove" type="button" title="移除候选" aria-label="移除 @brodiehasfun_"><svg class="icon small"><use href="#i-trash"/></svg></button></div>
+              </div>
+              <div class="candidate-row" data-handle="ilovetraderpow">
+                <button class="check" type="button" aria-label="切换 @ilovetraderpow 项目身份"><svg class="icon small"><use href="#i-check"/></svg></button>
+                <div class="candidate-main"><strong>@ilovetraderpow</strong><span>可能的创始人 / 部署者 · 公开回复中声明参与</span></div>
+                <span class="role">创始人候选</span><span class="status">待确认</span>
+                <div class="candidate-actions"><button class="icon-btn details" type="button" title="查看证据" aria-label="查看 @ilovetraderpow 证据"><svg class="icon small"><use href="#i-info"/></svg></button><button class="icon-btn danger remove" type="button" title="移除候选" aria-label="移除 @ilovetraderpow"><svg class="icon small"><use href="#i-trash"/></svg></button></div>
+              </div>
+            </div>
+
+            <div class="manual-add"><label><span>手工添加项目账号</span><input class="input" placeholder="@project" /></label><button class="btn" type="button"><svg class="icon small"><use href="#i-plus"/></svg>添加</button></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><div class="section-heading"><span class="section-number">2</span><div class="section-copy"><h3>交易触发</h3><p>两条规则独立启用</p></div></div></div>
+
+            <div class="rule-list">
+              <article class="rule" data-rule="direct">
+                <div class="rule-head">
+                  <div class="rule-name"><span class="rule-icon"><svg class="icon"><use href="#i-at"/></svg></span><div class="rule-copy"><strong>生态账号发布完整 CA</strong><span>账号动态包含当前合约地址</span></div></div>
+                  <div class="rule-controls"><span class="rule-count">0 个账号</span><button class="switch" type="button" role="switch" aria-checked="false" aria-label="启用生态账号发布完整 CA"></button></div>
+                </div>
+                <div class="rule-body" hidden>
+                  <div class="rule-fields"><label><span>生态账号</span><div class="picker actor-picker"><input class="input actor-input" placeholder="搜索账号或输入 @handle" autocomplete="off" /><div class="suggestions" hidden><div class="suggestion-head"><span><strong>生态账号库</strong> · <span class="actor-result-count">全部 6 个</span></span><button class="icon-btn close-suggestions" type="button" title="关闭" aria-label="关闭账号建议"><svg class="icon small"><use href="#i-x"/></svg></button></div><div class="actor-library-filters" role="tablist" aria-label="生态账号分类"><button class="actor-filter" type="button" data-filter="current">当前链 BASE 0</button><button class="actor-filter" type="button" data-filter="cross_chain">跨链 0</button><button class="actor-filter active" type="button" data-filter="all">全部 6</button><button class="actor-filter" type="button" data-filter="unclassified">未分类 3</button></div><div class="suggestion-list"></div><div class="actor-library-foot"><span>按生态标签筛选，姓名与角色仅作备注</span><strong>最多显示 5 行，可滚动</strong></div></div></div></label><button class="btn add-actor" type="button"><svg class="icon small"><use href="#i-plus"/></svg>添加</button></div>
+                  <div class="quick-actors"><span>最近使用</span><button class="quick-actor" type="button" data-value="@heyibinance">@heyibinance</button><button class="quick-actor" type="button" data-value="@vladtenev">@vladtenev</button><button class="quick-actor" type="button" data-value="@wanshenme">@wanshenme</button></div>
+                  <div class="events"><label class="event-option"><input type="checkbox" checked />发帖</label><label class="event-option"><input type="checkbox" checked />转发</label><label class="event-option"><input type="checkbox" checked />引用</label><label class="event-option"><input type="checkbox" checked />回复</label></div>
+                  <div class="actor-row" hidden><strong class="actor-handle">@heyibinance</strong><span>发帖、转发、引用、回复</span><button class="icon-btn danger remove-actor" type="button" title="移除账号" aria-label="移除生态账号"><svg class="icon small"><use href="#i-trash"/></svg></button></div>
+                </div>
+              </article>
+
+              <article class="rule" data-rule="interaction">
+                <div class="rule-head">
+                  <div class="rule-name"><span class="rule-icon"><svg class="icon"><use href="#i-users"/></svg></span><div class="rule-copy"><strong>生态账号与项目账号互动</strong><span>转发、引用、回复或关注项目账号</span></div></div>
+                  <div class="rule-controls"><span class="rule-count">0 条关系</span><button class="switch" type="button" role="switch" aria-checked="false" aria-label="启用生态互动"></button></div>
+                </div>
+                <div class="rule-body" hidden>
+                  <div class="rule-fields interaction"><label><span>生态账号</span><div class="picker actor-picker"><input class="input actor-input" placeholder="搜索账号或输入 @handle" autocomplete="off" /><div class="suggestions" hidden><div class="suggestion-head"><span><strong>生态账号库</strong> · <span class="actor-result-count">全部 6 个</span></span><button class="icon-btn close-suggestions" type="button" title="关闭" aria-label="关闭账号建议"><svg class="icon small"><use href="#i-x"/></svg></button></div><div class="actor-library-filters" role="tablist" aria-label="生态账号分类"><button class="actor-filter" type="button" data-filter="current">当前链 BASE 0</button><button class="actor-filter" type="button" data-filter="cross_chain">跨链 0</button><button class="actor-filter active" type="button" data-filter="all">全部 6</button><button class="actor-filter" type="button" data-filter="unclassified">未分类 3</button></div><div class="suggestion-list"></div><div class="actor-library-foot"><span>按生态标签筛选，姓名与角色仅作备注</span><strong>最多显示 5 行，可滚动</strong></div></div></div></label><label><span>项目账号</span><select class="select target-select"><option>@brodiehasfun</option><option>@brodiehasfun_</option></select></label><button class="btn add-relation" type="button"><svg class="icon small"><use href="#i-plus"/></svg>添加关系</button></div>
+                  <div class="quick-actors"><span>最近使用</span><button class="quick-actor" type="button" data-value="@heyibinance">@heyibinance</button><button class="quick-actor" type="button" data-value="@vladtenev">@vladtenev</button><button class="quick-actor" type="button" data-value="@wanshenme">@wanshenme</button></div>
+                  <div class="events"><label class="event-option"><input type="checkbox" checked />转发</label><label class="event-option"><input type="checkbox" checked />引用</label><label class="event-option"><input type="checkbox" checked />回复</label><label class="event-option"><input type="checkbox" checked />关注</label></div>
+                  <div class="relation-row" hidden><strong class="relation-actor">@heyibinance</strong><span class="relation-arrow">→</span><strong class="relation-target">@brodiehasfun</strong><span>转发、引用、回复、关注</span><button class="icon-btn danger remove-relation" type="button" title="移除关系" aria-label="移除生态互动关系"><svg class="icon small"><use href="#i-trash"/></svg></button></div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+
+        <div class="panel step-panel" data-panel="3" hidden>
+          <div class="panel-head"><div class="panel-title"><small>步骤 3 / 4</small><h2>设置资金与离场策略</h2></div><button class="btn ghost" type="button"><svg class="icon small"><use href="#i-save"/></svg>保存为 BASE 默认模板</button></div>
+          <div class="money-grid"><label><span>单笔金额 (ETH)</span><input class="input" value="0.005" /></label><label><span>该 CA 累计上限 (ETH)</span><input class="input" value="0.015" /></label><label><span>滑点 %</span><input class="input" value="10" /></label></div>
+          <div class="preset-list"><button class="preset active" type="button"><strong>翻倍出本</strong><span>+100% 卖出 50%，余仓继续持有</span></button><button class="preset" type="button"><strong>分批止盈</strong><span>+50% / +100% / +200% 分三次退出</span></button><button class="preset" type="button"><strong>保守保护</strong><span>+50% 出本，-20% 全部止损</span></button></div>
+        </div>
+
+        <div class="panel step-panel" data-panel="4" hidden>
+          <div class="panel-head"><div class="panel-title"><small>步骤 4 / 4</small><h2>确认并保存</h2></div><span class="summary-badge">草稿完整</span></div>
+          <div class="review"><div class="review-row"><span>代币</span><strong>BASE · BRODIE</strong></div><div class="review-row"><span>项目身份</span><strong id="review-identities">@brodiehasfun</strong></div><div class="review-row"><span>交易触发</span><strong id="review-triggers">尚未启用</strong></div><div class="review-row"><span>资金</span><strong>0.005 ETH / 累计 0.015 ETH</strong></div><div class="review-row"><span>离场策略</span><strong>翻倍出本 · +100% 卖出 50% · 不设置止损</strong></div><div class="review-row"><span>6551 Watch</span><strong id="review-watch">复用 0，新增 0</strong></div></div>
+        </div>
+
+        <footer class="actions"><span class="action-summary" id="action-summary">步骤 2 · 1 个项目身份 · 0 个交易触发</span><div class="action-buttons"><button class="btn ghost" id="prev-step" type="button">上一步</button><button class="btn primary" id="next-step" type="button">下一步<svg class="icon small"><use href="#i-arrow-right"/></svg></button></div></footer>
+      </section>
+    </main>
+  </div>
+
+  <div class="overlay" id="overlay" hidden></div>
+  <aside class="drawer" id="drawer" aria-label="Grok 证据详情" hidden>
+    <div class="drawer-head"><strong>账号证据</strong><button class="icon-btn" id="close-drawer" type="button" title="关闭" aria-label="关闭证据详情"><svg class="icon"><use href="#i-x"/></svg></button></div>
+    <div class="drawer-body"><div class="drawer-account"><strong id="drawer-handle">@brodiehasfun</strong><div><span class="role" id="drawer-role">项目官方</span><span class="status verified" id="drawer-status">已核验</span></div></div><section class="drawer-section"><h3>关联说明</h3><p id="drawer-association"></p></section><section class="drawer-section"><h3>核验证据</h3><div class="evidence" id="drawer-evidence"></div></section></div>
+    <div class="drawer-foot"><button class="btn" id="drawer-remove" type="button"><svg class="icon small"><use href="#i-trash"/></svg>移除候选</button><button class="btn primary" id="drawer-keep" type="button"><svg class="icon small"><use href="#i-check"/></svg>保留身份</button></div>
+  </aside>
+
+  <div class="toast" id="toast" hidden><span id="toast-message">候选已移除</span><button id="undo-remove" type="button">撤销</button></div>
+
+  <script>
+    const candidateData = {
+      brodiehasfun: {
+        role: '项目官方', status: '已核验', verified: true,
+        association: '账号简介明确列出当前合约地址，显示名称、官网域名和品牌信息与 BRODIE 项目一致。该账号持续发布项目原创内容。',
+        evidence: ['Grok X Search：Bio explicitly lists the exact contract address 0x45f82...360e0.', '公开官网：https://www.brodiehasfun.com/ 与账号品牌一致。']
+      },
+      brodiehasfun_: {
+        role: '团队账号', status: '待确认', verified: false,
+        association: '显示名称为 BRODIE | Team，简介包含相同合约地址；品牌描述与官方账号一致，但尚未获得官网反向链接确认。',
+        evidence: ['Grok X Search：Display name explicitly brands as Team.', '6551 Profile：简介包含完整 CA，仍需要公开来源交叉核验。']
+      },
+      ilovetraderpow: {
+        role: '创始人候选', status: '待确认', verified: false,
+        association: '账号曾在公开回复中声明自己参与 BRODIE，并持续发布相同合约地址及项目叙事；当前证据不足以确认正式职务。',
+        evidence: ['Grok X Search：Self-claimed involvement in a public reply.', '公开动态：多次发布相同合约地址，尚无官网或官方账号明确任命。']
+      }
+    };
+
+    let currentStep = 2;
+    let activeDrawerHandle = null;
+    let removedSnapshot = null;
+    let toastTimer = null;
+
+    const steps = [...document.querySelectorAll('.step')];
+    const panels = [...document.querySelectorAll('.step-panel')];
+    const prevButton = document.getElementById('prev-step');
+    const nextButton = document.getElementById('next-step');
+
+    function selectedRows() { return [...document.querySelectorAll('.candidate-row.selected')]; }
+    function enabledRules() { return [...document.querySelectorAll('.rule.enabled')]; }
+
+    function refreshSummary() {
+      const identities = selectedRows();
+      const rules = enabledRules();
+      const watchHandles = new Set([
+        ...[...document.querySelectorAll('.actor-row:not([hidden]) .actor-handle')].map(item => item.textContent),
+        ...[...document.querySelectorAll('.relation-row:not([hidden]) .relation-actor')].map(item => item.textContent),
+      ].filter(Boolean));
+      const watchCount = watchHandles.size;
+      document.getElementById('identity-count').textContent = identities.length;
+      document.getElementById('watch-count').textContent = watchCount;
+      document.getElementById('candidate-summary').textContent = `${document.querySelectorAll('.candidate-row').length} 个候选 · ${identities.length} 个已选`;
+      document.getElementById('action-summary').textContent = `步骤 ${currentStep} · ${identities.length} 个项目身份 · ${rules.length} 个交易触发`;
+      document.getElementById('review-identities').textContent = identities.length ? identities.map(row => `@${row.dataset.handle}`).join('、') : '未选择';
+      document.getElementById('review-triggers').textContent = rules.length ? rules.map(rule => rule.dataset.rule === 'direct' ? '发布完整 CA' : '生态互动').join('、') : '尚未启用';
+      document.getElementById('review-watch').textContent = `复用 ${Math.min(watchCount, 1)}，新增 ${Math.max(0, watchCount - 1)}`;
+    }
+
+    function showStep(value) {
+      currentStep = Math.max(1, Math.min(4, Number(value)));
+      steps.forEach((step, index) => {
+        const number = index + 1;
+        step.classList.toggle('active', number === currentStep);
+        step.classList.toggle('complete', number < currentStep);
+        const marker = step.querySelector('.step-index');
+        marker.innerHTML = number < currentStep ? '<svg class="icon small"><use href="#i-check"/></svg>' : String(number);
+      });
+      panels.forEach(panel => panel.hidden = Number(panel.dataset.panel) !== currentStep);
+      prevButton.textContent = currentStep === 1 ? '取消' : '上一步';
+      nextButton.innerHTML = currentStep === 4 ? '<svg class="icon small"><use href="#i-save"/></svg>保存白名单' : '下一步<svg class="icon small"><use href="#i-arrow-right"/></svg>';
+      refreshSummary();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    steps.forEach(step => step.addEventListener('click', () => showStep(step.dataset.step)));
+    prevButton.addEventListener('click', () => currentStep > 1 && showStep(currentStep - 1));
+    nextButton.addEventListener('click', () => currentStep < 4 ? showStep(currentStep + 1) : showToast('预览模式不会保存真实白名单', false));
+
+    function bindCandidateRow(row) {
+      row.querySelector('.check').addEventListener('click', () => { row.classList.toggle('selected'); refreshSummary(); });
+      row.querySelector('.details').addEventListener('click', () => openDrawer(row.dataset.handle));
+      row.querySelector('.remove').addEventListener('click', () => removeCandidate(row.dataset.handle));
+    }
+    document.querySelectorAll('.candidate-row').forEach(bindCandidateRow);
+
+    const drawer = document.getElementById('drawer');
+    const overlay = document.getElementById('overlay');
+    function openDrawer(handle) {
+      const data = candidateData[handle];
+      if (!data) return;
+      activeDrawerHandle = handle;
+      document.getElementById('drawer-handle').textContent = `@${handle}`;
+      document.getElementById('drawer-role').textContent = data.role;
+      const status = document.getElementById('drawer-status');
+      status.textContent = data.status;
+      status.className = `status${data.verified ? ' verified' : ''}`;
+      document.getElementById('drawer-association').textContent = data.association;
+      document.getElementById('drawer-evidence').innerHTML = data.evidence.map(item => `<div>${item}</div>`).join('');
+      const row = document.querySelector(`.candidate-row[data-handle="${handle}"]`);
+      document.getElementById('drawer-keep').innerHTML = row?.classList.contains('selected') ? '<svg class="icon small"><use href="#i-x"/></svg>取消身份' : '<svg class="icon small"><use href="#i-check"/></svg>保留身份';
+      drawer.hidden = false;
+      overlay.hidden = false;
+    }
+    function closeDrawer() { drawer.hidden = true; overlay.hidden = true; activeDrawerHandle = null; }
+    document.getElementById('close-drawer').addEventListener('click', closeDrawer);
+    overlay.addEventListener('click', closeDrawer);
+    document.getElementById('drawer-keep').addEventListener('click', () => {
+      const row = document.querySelector(`.candidate-row[data-handle="${activeDrawerHandle}"]`);
+      if (!row) return;
+      row.classList.toggle('selected');
+      refreshSummary();
+      openDrawer(activeDrawerHandle);
+    });
+    document.getElementById('drawer-remove').addEventListener('click', () => { if (activeDrawerHandle) removeCandidate(activeDrawerHandle); closeDrawer(); });
+
+    function removeCandidate(handle) {
+      const row = document.querySelector(`.candidate-row[data-handle="${handle}"]`);
+      if (!row) return;
+      removedSnapshot = { row, parent: row.parentNode, next: row.nextSibling };
+      row.remove();
+      refreshSummary();
+      showToast(`已移除 @${handle}`, true);
+    }
+    document.getElementById('undo-remove').addEventListener('click', () => {
+      if (!removedSnapshot) return;
+      removedSnapshot.parent.insertBefore(removedSnapshot.row, removedSnapshot.next);
+      removedSnapshot = null;
+      refreshSummary();
+      hideToast();
+    });
+
+    function showToast(message, canUndo) {
+      clearTimeout(toastTimer);
+      document.getElementById('toast-message').textContent = message;
+      document.getElementById('undo-remove').hidden = !canUndo;
+      document.getElementById('toast').hidden = false;
+      toastTimer = setTimeout(hideToast, 8000);
+    }
+    function hideToast() { document.getElementById('toast').hidden = true; }
+
+    document.querySelectorAll('.rule .switch').forEach(control => control.addEventListener('click', () => {
+      const rule = control.closest('.rule');
+      const enabled = rule.classList.toggle('enabled');
+      control.setAttribute('aria-checked', String(enabled));
+      rule.querySelector('.rule-body').hidden = !enabled;
+      refreshSummary();
+    }));
+
+    const actorLibrary = [
+      { handle: 'heyibinance', name: '何一', tags: ['bsc'], weight: 10 },
+      { handle: 'vladtenev', name: '罗宾汉CEO', tags: ['robinhood'], weight: 10 },
+      { handle: 'wanshenme', name: '今天玩什么', tags: ['sol'], weight: 5 },
+      { handle: 'asteroid_bags', name: 'asteroid_bags', tags: [], weight: 5 },
+      { handle: 'neet_sol', name: 'neet_sol', tags: [], weight: 5 },
+      { handle: 'xueqiu88', name: '雪球', tags: [], weight: 5 }
+    ];
+    const currentChain = 'base';
+    const tagLabels = { sol: 'SOL', bsc: 'BSC', base: 'BASE', eth: 'ETH', robinhood: 'ROBINHOOD', cross_chain: '跨链' };
+    const actorPickers = [...document.querySelectorAll('.actor-picker')];
+    actorPickers.forEach(picker => {
+      const actorInput = picker.querySelector('.actor-input');
+      const suggestions = picker.querySelector('.suggestions');
+      const list = picker.querySelector('.suggestion-list');
+      picker.dataset.actorFilter = 'all';
+      const renderSuggestions = () => {
+        const needle = actorInput.value.toLowerCase().replace(/^@/, '');
+        const activeFilter = picker.dataset.actorFilter;
+        const matches = actorLibrary.filter(actor => {
+          const matchesSearch = !needle || `${actor.handle} ${actor.name} ${actor.tags.join(' ')}`.toLowerCase().includes(needle);
+          const matchesFilter = activeFilter === 'all'
+            || (activeFilter === 'current' && actor.tags.includes(currentChain))
+            || (activeFilter === 'cross_chain' && actor.tags.includes('cross_chain'))
+            || (activeFilter === 'unclassified' && actor.tags.length === 0);
+          return matchesSearch && matchesFilter;
+        });
+        picker.querySelector('.actor-result-count').textContent = `${matches.length} 个结果`;
+        list.replaceChildren();
+        if (!matches.length) {
+          const empty = document.createElement('div');
+          empty.className = 'actor-library-empty';
+          empty.textContent = activeFilter === 'current' ? 'BASE 暂无已分类账号，可切换“全部”或去 KOL 管理补充标签' : '没有匹配账号';
+          list.append(empty);
+          return;
+        }
+        matches.forEach(actor => {
+          const option = document.createElement('button');
+          option.className = 'suggestion';
+          option.type = 'button';
+          option.dataset.value = `@${actor.handle}`;
+          const account = document.createElement('strong');
+          account.textContent = `@${actor.handle}`;
+          const meta = document.createElement('span');
+          meta.className = 'actor-meta';
+          const name = document.createElement('span');
+          name.textContent = actor.name;
+          const tag = document.createElement('span');
+          tag.className = `actor-tag${actor.tags.length ? '' : ' unclassified'}`;
+          tag.textContent = actor.tags.length ? actor.tags.map(value => tagLabels[value] || value).join(' / ') : '未分类';
+          const weight = document.createElement('span');
+          weight.className = 'actor-weight';
+          weight.textContent = `权重 ${actor.weight}`;
+          meta.append(name, tag);
+          option.append(account, meta, weight);
+          option.addEventListener('click', () => {
+            actorInput.value = option.dataset.value;
+            const rule = picker.closest('.rule');
+            rule.querySelectorAll('.quick-actor').forEach(item => item.classList.toggle('active', item.dataset.value === option.dataset.value));
+            suggestions.hidden = true;
+          });
+          list.append(option);
+        });
+      };
+      const openSuggestions = () => { actorPickers.forEach(item => { item.querySelector('.suggestions').hidden = item !== picker; }); renderSuggestions(); suggestions.hidden = false; };
+      const closeSuggestions = () => { suggestions.hidden = true; };
+      actorInput.addEventListener('focus', openSuggestions);
+      actorInput.addEventListener('click', openSuggestions);
+      actorInput.addEventListener('input', renderSuggestions);
+      actorInput.addEventListener('keydown', event => { if (event.key === 'Escape') { closeSuggestions(); actorInput.blur(); } });
+      picker.querySelector('.close-suggestions').addEventListener('click', event => { event.preventDefault(); closeSuggestions(); });
+      picker.querySelectorAll('.actor-filter').forEach(filter => filter.addEventListener('click', () => {
+        picker.dataset.actorFilter = filter.dataset.filter;
+        picker.querySelectorAll('.actor-filter').forEach(item => item.classList.toggle('active', item === filter));
+        renderSuggestions();
+      }));
+      renderSuggestions();
+    });
+    document.addEventListener('mousedown', event => { actorPickers.forEach(picker => { if (!picker.contains(event.target)) picker.querySelector('.suggestions').hidden = true; }); });
+    document.querySelectorAll('.quick-actor').forEach(option => option.addEventListener('click', () => {
+      const rule = option.closest('.rule');
+      rule.querySelector('.actor-input').value = option.dataset.value;
+      rule.querySelectorAll('.quick-actor').forEach(item => item.classList.toggle('active', item === option));
+      rule.querySelector('.suggestions').hidden = true;
+    }));
+
+    document.querySelector('.add-actor').addEventListener('click', () => {
+      const actorInput = document.querySelector('[data-rule="direct"] .actor-input');
+      const value = actorInput.value.trim();
+      if (!/^@[A-Za-z0-9_]{1,15}$/.test(value)) return showToast('请先选择有效的生态账号', false);
+      const rule = document.querySelector('[data-rule="direct"]');
+      rule.querySelector('.actor-row').hidden = false;
+      rule.querySelector('.actor-handle').textContent = value;
+      rule.querySelector('.rule-count').textContent = '1 个账号';
+      actorInput.value = '';
+      rule.querySelectorAll('.quick-actor').forEach(item => item.classList.remove('active'));
+      refreshSummary();
+    });
+
+    document.querySelector('.add-relation').addEventListener('click', () => {
+      const rule = document.querySelector('[data-rule="interaction"]');
+      const actor = rule.querySelector('.actor-input').value.trim();
+      const target = rule.querySelector('.target-select').value;
+      if (!/^@[A-Za-z0-9_]{1,15}$/.test(actor)) return showToast('请先选择有效的生态账号', false);
+      rule.querySelector('.relation-row').hidden = false;
+      rule.querySelector('.relation-actor').textContent = actor;
+      rule.querySelector('.relation-target').textContent = target;
+      rule.querySelector('.rule-count').textContent = '1 条关系';
+      rule.querySelector('.actor-input').value = '';
+      rule.querySelectorAll('.quick-actor').forEach(item => item.classList.remove('active'));
+      refreshSummary();
+    });
+    document.querySelector('.remove-relation').addEventListener('click', () => {
+      const rule = document.querySelector('[data-rule="interaction"]');
+      rule.querySelector('.relation-row').hidden = true;
+      rule.querySelector('.rule-count').textContent = '0 条关系';
+      refreshSummary();
+    });
+    document.querySelector('.remove-actor').addEventListener('click', () => {
+      const rule = document.querySelector('[data-rule="direct"]');
+      rule.querySelector('.actor-row').hidden = true;
+      rule.querySelector('.rule-count').textContent = '0 个账号';
+      refreshSummary();
+    });
+
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !drawer.hidden) closeDrawer(); });
+    refreshSummary();
+  </script>
+</body>
+</html>

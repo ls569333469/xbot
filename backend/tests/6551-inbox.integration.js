@@ -11,7 +11,7 @@ test('6551 Tweet and CA replay persist one Activity and one canonical signal', a
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
   const kolHandle = `p8kol${suffix}`;
   const projectHandle = `p8project${suffix}`;
-  const ca = `P8CA${suffix}`;
+  const ca = `0x${suffix.padStart(40, '1').slice(-40)}`;
   const tweetId = `2099${suffix}`;
   const eventIds = [`p8-tweet-${suffix}`, `p8-ca-${suffix}`];
   const ids = { kol: null, whitelist: null };
@@ -21,7 +21,7 @@ test('6551 Tweet and CA replay persist one Activity and one canonical signal', a
 
   const content = {
     id: tweetId,
-    text: `Watching @${projectHandle}`,
+    text: `Watching @${projectHandle} ${ca}`,
     createdAt: '2026-07-21T08:00:00Z',
     userScreenName: kolHandle,
     userIdStr: `p8-user-${suffix}`,
@@ -40,15 +40,16 @@ test('6551 Tweet and CA replay persist one Activity and one canonical signal', a
       `INSERT INTO ca_whitelist
         (contract_address, chain_id, symbol, project_name, project_x_handles,
          budget_per_trade, total_budget, status)
-       VALUES ($1, 'sol', $2, 'P8 Inbox Test', ARRAY[$3], 0.001, 0.01, 'active')
+       VALUES ($1, 'base', $2, 'P8 Inbox Test', ARRAY[$3], 0.001, 0.01, 'active')
        RETURNING id`,
       [ca, `P8${suffix}`, projectHandle]
     );
     ids.whitelist = whitelistResult.rows[0].id;
     await db.query(
-      `INSERT INTO x_signal_relations (whitelist_id, kol_id, target_x_handle)
-       VALUES ($1, $2, $3)`,
-      [ids.whitelist, ids.kol, projectHandle]
+      `INSERT INTO x_signal_source_rules
+        (whitelist_id, actor_id, event_types, match_mode, source_kind)
+       VALUES ($1, $2, ARRAY['tweet'], 'ca_only', 'ecosystem')`,
+      [ids.whitelist, ids.kol]
     );
 
     const first = await ingest6551Event({
@@ -99,15 +100,16 @@ test('6551 Tweet and CA replay persist one Activity and one canonical signal', a
 
     const signal = await db.query(
       `SELECT canonical_key, matched_project_handles, matched_whitelist_ids,
-              matched_relation_ids,
+              matched_relation_ids, matched_source_rule_ids,
               execution_mode, status
        FROM trade_signals WHERE kol_id = $1`,
       [ids.kol]
     );
     assert.ok(signal.rows[0].canonical_key);
-    assert.deepEqual(signal.rows[0].matched_project_handles, [projectHandle]);
+    assert.deepEqual(signal.rows[0].matched_project_handles, [kolHandle]);
     assert.deepEqual(signal.rows[0].matched_whitelist_ids, [ids.whitelist]);
-    assert.equal(signal.rows[0].matched_relation_ids.length, 1);
+    assert.equal(signal.rows[0].matched_relation_ids.length, 0);
+    assert.equal(signal.rows[0].matched_source_rule_ids.length, 1);
     assert.equal(signal.rows[0].execution_mode, 'signal');
     assert.equal(signal.rows[0].status, 'signal_only');
   } finally {

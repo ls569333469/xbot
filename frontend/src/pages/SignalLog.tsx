@@ -5,7 +5,7 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { Skeleton } from '../components/ui/Skeleton';
 import { TradeSignal } from '../lib/types';
-import { blockerLabel, eventTypeLabel, modeLabel, signalTypeLabel } from '../lib/display-labels';
+import { blockerLabel, eventTypeLabel, modeLabel, signalTypeLabel, statusLabel } from '../lib/display-labels';
 
 export default function SignalLog() {
   const [signals, setSignals] = useState<TradeSignal[]>([]);
@@ -36,14 +36,15 @@ export default function SignalLog() {
   return (
     <div className="flex flex-col gap-lg">
       <div className="flex gap-sm signal-toolbar">
-        <select className="input" style={{ width: '150px' }} value={chainFilter} onChange={e => setChainFilter(e.target.value)}>
+        <select aria-label="按链筛选信号" className="input" style={{ width: '150px' }} value={chainFilter} onChange={e => setChainFilter(e.target.value)}>
           <option value="">所有链</option>
           <option value="sol">SOL</option>
           <option value="bsc">BSC</option>
           <option value="base">Base</option>
           <option value="eth">ETH</option>
+          <option value="robinhood">Robinhood Chain</option>
         </select>
-        <select className="input" style={{ width: '150px' }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+        <select aria-label="按状态筛选信号" className="input" style={{ width: '150px' }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="signal_only">仅记录信号</option>
           <option value="">所有状态</option>
           <option value="recorded">已记录</option>
@@ -109,6 +110,12 @@ export default function SignalLog() {
                     数据源：{sig.provider || '未知'} / 互动：{eventTypeLabel(sig.activity_type)}
                     {sig.source_created_at && ` / 来源时间 ${new Date(sig.source_created_at).toLocaleString()}`}
                   </div>
+                  {sig.trade_intent_id && (
+                    <div className="text-xs font-mono">
+                      Intent #{sig.trade_intent_id} · Attempt {sig.attempt_no || '-'} · {statusLabel(sig.trade_attempt_status || sig.trade_intent_status)}
+                      {(sig.failure_class || sig.trade_error_code) && <span className="text-danger"> · {sig.failure_class || sig.trade_error_code}</span>}
+                    </div>
+                  )}
                   {sig.observation_ended_at && (
                     <div className="text-xs text-muted font-mono">
                       观察窗口 {sig.observation_started_at ? new Date(sig.observation_started_at).toLocaleString() : '基线建立'}

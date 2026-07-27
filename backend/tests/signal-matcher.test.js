@@ -36,19 +36,107 @@ test('groups multiple project relationships for the same CA into one match', () 
     id: 11,
     kol_id: 7,
     kol_handle: 'wanshenme',
-    activity_type: 'tweet',
+    activity_type: 'quote',
     tweet_id: '12345',
     semantic_key: 'tweet:wanshenme:12345',
     target_x_handles: ['project_one', 'project_two']
   };
   const whitelists = [
-    { id: 1, chain_id: 'sol', contract_address: 'SameCA', project_x_handles: ['project_one'] },
-    { id: 2, chain_id: 'sol', contract_address: 'SameCA', project_x_handles: ['project_two'] }
+    { id: 1, chain_id: 'sol', contract_address: 'SameCA', project_x_handles: ['project_one'], relations: [{ id: 10, target_x_handle: 'project_one', event_types: ['quote'] }] },
+    { id: 2, chain_id: 'sol', contract_address: 'SameCA', project_x_handles: ['project_two'], relations: [{ id: 11, target_x_handle: 'project_two', event_types: ['quote'] }] }
   ];
   const groups = groupActivityMatches(activity, whitelists);
   assert.equal(groups.length, 1);
   assert.deepEqual([...groups[0].matchedWhitelistIds], [1, 2]);
   assert.deepEqual([...groups[0].matchedProjectHandles], ['project_one', 'project_two']);
+});
+
+test('matches ecosystem-source posts only when the complete CA is present', () => {
+  const sourceWhitelist = {
+    id: 3,
+    chain_id: 'sol',
+    contract_address: 'SameCA',
+    symbol: 'ANSEM',
+    project_x_handles: ['project_one'],
+    relations: [],
+    direct_sources: [{
+      id: 31,
+      actor_handle: 'project_one',
+      event_types: ['tweet'],
+      match_mode: 'ca_only',
+      source_kind: 'ecosystem'
+    }]
+  };
+  assert.equal(groupActivityMatches({
+    id: 12,
+    kol_id: 9,
+    kol_handle: 'project_one',
+    activity_type: 'tweet',
+    tweet_id: 'direct-symbol-only',
+    tweet_text: 'Token ANSEM is live'
+  }, [sourceWhitelist]).length, 0);
+  const groups = groupActivityMatches({
+    id: 12,
+    kol_id: 9,
+    kol_handle: 'project_one',
+    activity_type: 'tweet',
+    tweet_id: 'direct-1',
+    tweet_text: 'The contract is SameCA',
+    extracted_cas: ['SameCA']
+  }, [sourceWhitelist]);
+  assert.equal(groups.length, 1);
+  assert.deepEqual([...groups[0].matchedRelationIds], []);
+  assert.deepEqual([...groups[0].matchedSourceRuleIds], [31]);
+  assert.equal(groups[0].matches[0].signal_type, 'ca_mention');
+});
+
+test('never matches project or launch audit sources on a fixed-CA whitelist', () => {
+  const activity = {
+    id: 13,
+    kol_id: 9,
+    kol_handle: 'project_one',
+    activity_type: 'tweet',
+    tweet_id: 'project-fixed-ca',
+    extracted_cas: ['SameCA']
+  };
+  for (const sourceKind of ['project', 'launch']) {
+    const groups = groupActivityMatches(activity, [{
+      id: 4,
+      chain_id: 'sol',
+      contract_address: 'SameCA',
+      project_x_handles: ['project_one'],
+      relations: [],
+      direct_sources: [{
+        id: 32,
+        actor_handle: 'project_one',
+        event_types: ['tweet'],
+        match_mode: 'ca_only',
+        source_kind: sourceKind
+      }]
+    }]);
+    assert.equal(groups.length, 0, `${sourceKind} must not be a fixed-CA trigger`);
+  }
+});
+
+test('relation event permissions are applied independently', () => {
+  const whitelist = {
+    id: 1,
+    chain_id: 'sol',
+    contract_address: 'SameCA',
+    project_x_handles: ['project_one'],
+    relations: [{ id: 10, target_x_handle: 'project_one', event_types: ['reply'] }]
+  };
+  const baseActivity = {
+    id: 11,
+    kol_id: 7,
+    kol_handle: 'wanshenme',
+    tweet_id: '12345',
+    target_x_handles: ['project_one']
+  };
+  assert.equal(groupActivityMatches({ ...baseActivity, activity_type: 'follow' }, [whitelist]).length, 0);
+  const replyGroups = groupActivityMatches({ ...baseActivity, activity_type: 'reply' }, [whitelist]);
+  assert.equal(replyGroups.length, 1);
+  assert.deepEqual([...replyGroups[0].matchedRelationIds], [10]);
 });
 
 test('canonical signal key is provider-independent for the same source behavior', () => {

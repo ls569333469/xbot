@@ -26,7 +26,7 @@ function normalize(value = {}) {
     ...state,
     ...value,
     desired_running: Boolean(value.desired_running),
-    status: ['stopped', 'recovering', 'running', 'fault_protected'].includes(value.status)
+    status: ['stopped', 'recovering', 'running', 'paused_transient', 'fault_protected'].includes(value.status)
       ? value.status
       : 'stopped'
   };
@@ -89,12 +89,27 @@ async function arm(options = {}) {
     last_error: null,
     last_error_details: null,
     last_checked_at: now.toISOString(),
-    last_recovered_at: options.recovered ? now.toISOString() : state.last_recovered_at
+    last_recovered_at: options.recovered ? now.toISOString() : state.last_recovered_at,
+    transient_started_at: null,
+    transient_reason: null
   });
   await db.query(
-    `UPDATE trade_signals
-     SET status = 'signal_only', reject_reason = 'LIVE_TRADING_STOPPED', updated_at = NOW()
-     WHERE status = 'recorded' AND execution_mode = 'live' AND created_at < $1`,
+    `UPDATE trade_signals AS signal
+     SET status = 'signal_only',
+         reject_reason = CASE
+           WHEN lower(COALESCE(activity.provider, '')) = '6551'
+             AND activity.source_created_at IS NULL THEN 'SOURCE_EVENT_TIME_MISSING'
+           ELSE 'LIVE_TRADING_STOPPED'
+         END,
+         updated_at = NOW()
+     FROM x_activities AS activity
+     WHERE signal.status = 'recorded' AND signal.execution_mode = 'live'
+       AND activity.id = signal.activity_id
+       AND (
+         (lower(COALESCE(activity.provider, '')) = '6551' AND activity.source_created_at IS NULL)
+         OR CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+           THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END < $1
+       )`,
     [now]
   );
   await persist(next);
@@ -136,6 +151,59 @@ async function setFaulted(options = {}) {
   isArmed = false;
   armedAt = null;
   return getStatus();
+}
+
+async function pauseTransient(options = {}) {
+  if (!state.desired_running || state.status === 'stopped') return getStatus();
+  const now = new Date();
+  const next = normalize({
+    ...state,
+    desired_running: true,
+    status: 'paused_transient',
+    operator: String(options.operator || state.operator || 'readiness-monitor').slice(0, 128),
+    transient_started_at: state.transient_started_at || now.toISOString(),
+    transient_reason: options.reason || 'TRANSIENT_READINESS_FAILURE',
+    last_error: options.reason || 'TRANSIENT_READINESS_FAILURE',
+    last_error_details: options.details || null,
+    last_checked_at: now.toISOString()
+  });
+  await persist(next);
+  isArmed = false;
+  armedAt = null;
+  return getStatus();
+}
+
+async function recoverTransient(snapshot, options = {}) {
+  if (!state.desired_running || state.status !== 'paused_transient') {
+    const error = new Error('Engine is not waiting for transient recovery');
+    error.code = 'TRANSIENT_RECOVERY_NOT_ALLOWED';
+    throw error;
+  }
+  if (!snapshot?.readyToArm) {
+    const error = new Error('Transient recovery snapshot is not ready');
+    error.code = 'TRANSIENT_RECOVERY_NOT_READY';
+    throw error;
+  }
+  if (!state.configuration_fingerprint
+      || state.configuration_fingerprint !== snapshot.configurationFingerprint) {
+    await setFaulted({
+      preserveIntent: false,
+      reason: 'LIVE_CONFIGURATION_CHANGED',
+      details: {
+        expected: state.configuration_fingerprint,
+        actual: snapshot.configurationFingerprint
+      }
+    });
+    const error = new Error('Live configuration changed during transient pause');
+    error.code = 'LIVE_CONFIGURATION_CHANGED';
+    throw error;
+  }
+  return arm({
+    operator: options.operator || state.operator || 'readiness-monitor',
+    readiness: snapshot,
+    recovered: true,
+    preserveRequest: true
+  });
 }
 
 async function restoreDesiredState(snapshotProvider, options = {}) {
@@ -205,7 +273,9 @@ function getStatus() {
     lastError: state.last_error,
     lastErrorDetails: state.last_error_details || null,
     lastCheckedAt: state.last_checked_at,
-    lastRecoveredAt: state.last_recovered_at
+    lastRecoveredAt: state.last_recovered_at,
+    transientStartedAt: state.transient_started_at || null,
+    transientReason: state.transient_reason || null
   };
 }
 
@@ -217,6 +287,8 @@ module.exports = {
   getConfigurationFingerprint: () => state.configuration_fingerprint,
   getStatus,
   init,
+  pauseTransient,
+  recoverTransient,
   restoreDesiredState,
   setArmed: (value, options = {}) => value ? arm(options) : stop(options),
   setFaulted,

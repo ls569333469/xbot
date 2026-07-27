@@ -7,10 +7,11 @@ require('./integration-guard');
 const db = require('../lib/db');
 const repository = require('../domains/trade/trade-repository');
 const { LiveExecutionQueue } = require('../domains/trade/live-execution-queue');
+const { createTradeIntent } = require('./p12-fixtures');
 
 test('execution timing updates resolve a signal activity through provider activity_ids', async () => {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
-  const ids = { kol: null, whitelist: null, activity: null, signal: null, attempt: null };
+  const ids = { kol: null, whitelist: null, activity: null, signal: null, intent: null, attempt: null };
   const providerEventId = `p9-latency-${suffix}`;
 
   try {
@@ -45,13 +46,23 @@ test('execution timing updates resolve a signal activity through provider activi
          NOW() - INTERVAL '2 seconds', NOW() - INTERVAL '2 seconds')`,
       [providerEventId, ids.activity]
     );
+    const intent = await createTradeIntent(db, {
+      suffix,
+      side: 'buy',
+      signalId: ids.signal,
+      whitelistId: ids.whitelist,
+      walletAddress: `Wallet${suffix}`,
+      contractAddress: `P9Latency${suffix}`,
+      status: 'created'
+    });
+    ids.intent = intent.id;
     ids.attempt = (await db.query(
       `INSERT INTO trade_attempts
-        (signal_id, whitelist_id, side, idempotency_key, chain, wallet_address,
+        (intent_id, attempt_no, signal_id, whitelist_id, side, idempotency_key, chain, wallet_address,
          input_token, output_token, input_amount_raw, status, request_fingerprint)
-       VALUES ($1, $2, 'buy', $3, 'sol', $4, $5, $6, '1000', 'reserved', $7)
+       VALUES ($1, 1, $2, $3, 'buy', $4, 'sol', $5, $6, $7, '1000', 'reserved', $8)
        RETURNING id`,
-      [ids.signal, ids.whitelist, `p9-latency-${suffix}`, `Wallet${suffix}`,
+      [ids.intent, ids.signal, ids.whitelist, `intent:${ids.intent}:attempt:1`, `Wallet${suffix}`,
         'So11111111111111111111111111111111111111112', `P9Latency${suffix}`,
         `p9-latency-fingerprint-${suffix}`]
     )).rows[0].id;
@@ -75,6 +86,7 @@ test('execution timing updates resolve a signal activity through provider activi
     assert.ok(Number(timing.receive_to_swap_ms) >= 1500);
   } finally {
     if (ids.attempt) await db.query('DELETE FROM trade_attempts WHERE id = $1', [ids.attempt]);
+    if (ids.intent) await db.query('DELETE FROM trade_intents WHERE id = $1', [ids.intent]);
     await db.query(
       `DELETE FROM x_provider_events WHERE provider = '6551' AND provider_event_id = $1`,
       [providerEventId]

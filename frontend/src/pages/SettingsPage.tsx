@@ -1,30 +1,15 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api, getAuthToken, setAdminToken } from '../lib/api';
-import { Shield, Settings, Server, Key, Eye, EyeOff, RefreshCw, RotateCcw, ListChecks, Radio, Gauge, LockKeyhole, Save, ShieldCheck, X } from 'lucide-react';
-import type { TradeReadiness, TradeRuntimePolicy, X6551Status, X6551WatchPlan } from '../lib/types';
+import { Shield, Server, Key, Eye, EyeOff, RefreshCw, ListChecks, Radio, Gauge, LockKeyhole, Search, X } from 'lucide-react';
+import type { ArmPreparation, ChainConfig, ChainId, RuntimePolicyDetailPage, TradeRuntimePolicy, X6551Status, X6551WatchPlan } from '../lib/types';
 import { useToast } from '../components/ui/ToastContext';
 import { FormSkeleton } from '../components/ui/Skeleton';
 import { blockerActionLabel, blockerLabel, eventTypeLabel, statusLabel, watchActionLabel } from '../lib/display-labels';
 
-const EDITABLE_CHAINS = ['sol', 'bsc', 'base', 'eth'] as const;
-type EditableChain = typeof EDITABLE_CHAINS[number];
-
-interface EditableChainConfig {
-  enabled: boolean;
-  dailyBudget: number;
-  weeklyBudget: number;
-  maxPerTrade: number;
-  maxOpenPositions: number;
-  dailyLossLimit: number;
-  nativeSymbol: string;
-  defaultTpPct?: number;
-  defaultSlPct?: number;
-  defaultSlippage?: number;
-}
-
 interface LiveEngineRuntime {
   armed: boolean;
-  status: 'stopped' | 'recovering' | 'running' | 'fault_protected';
+  status: 'stopped' | 'recovering' | 'running' | 'paused_transient' | 'fault_protected';
   desiredRunning: boolean;
   lastError: string | null;
   lastErrorDetails: unknown;
@@ -41,13 +26,8 @@ const SCHEDULER_PRIORITIES = [
   ['4', 'P4 缓存预热'],
 ] as const;
 
-function formatEvidenceTime(value: string | null) {
-  if (!value) return '-';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? '-'
-    : parsed.toLocaleString('zh-CN', { hour12: false });
-}
+const RETRY_CHAINS: ChainId[] = ['sol', 'bsc', 'base', 'eth', 'robinhood'];
+type SettingsSection = 'trading' | 'status' | 'system';
 
 export default function SettingsPage() {
   const [isArmed, setIsArmed] = useState(false);
@@ -62,14 +42,6 @@ export default function SettingsPage() {
     armedAt: null,
     lastRecoveredAt: null
   });
-  const [riskConfig, setRiskConfig] = useState<any>({
-    security_check_enabled: true, max_buy_tax: 5, max_sell_tax: 10,
-    max_rug_ratio: 0.3, min_liquidity_usd: 10000, max_slippage_pct: 15,
-    consecutive_loss_limit: 5, ca_cooldown_min: 30,
-  });
-  const [xConfig, setXConfig] = useState<any>({
-    timeline_poll_interval_sec: 60, follows_poll_interval_sec: 60, max_kol_per_round: 3,
-  });
   const [envConfig, setEnvConfig] = useState<any>({
     BACKEND_PORT: '3011',
     BACKEND_HOST: '127.0.0.1',
@@ -81,25 +53,8 @@ export default function SettingsPage() {
     TRADING_MODE: 'signal',
     GMGN_API_KEY: '',
     GMGN_PRIVATE_KEY_CONFIGURED: false,
-    X_DATA_PROVIDER: 'mock',
-    SOCIALDATA_API_KEY: '',
     OPENNEWS_TOKEN: '',
-    TWITTERAPI_IO_API_KEY: '',
-    TWITTERAPI_IO_FOLLOW_INTERVAL_MS: '60000',
-    TWITTERAPI_IO_MIN_INTERVAL_MS: '6000',
-    TWITTERAPI_IO_DAILY_CREDIT_LIMIT: '50000',
-    TWITTERAPI_IO_CREDIT_WARNING_PCT: '80',
-    TWITTER_STREAM_ENABLED: 'false',
-    TWITTERAPI_IO_WEBHOOK_SECRET: '',
-    X_6551_TIMEOUT_MS: '15000',
-    X_6551_WSS_ENABLED: 'false',
-    X_6551_WATCH_APPLY_ENABLED: 'false',
-    X_6551_WATCH_UNFOLLOW_ENABLED: 'false',
-    X_6551_HEARTBEAT_MS: '20000',
-    X_6551_RECONNECT_MAX_MS: '30000',
-    X_6551_MONTHLY_MESSAGE_LIMIT: '2000000',
     LIVE_TRADING_ENABLED: 'false',
-    SHADOW_LIVE_ENABLED: 'false',
     ADMIN_TOKEN: ''
   });
 
@@ -111,21 +66,21 @@ export default function SettingsPage() {
   const [watchPlan, setWatchPlan] = useState<X6551WatchPlan | null>(null);
   const [watchPlanLoading, setWatchPlanLoading] = useState(false);
   const [runtimePolicy, setRuntimePolicy] = useState<TradeRuntimePolicy | null>(null);
-  const [livePolicy, setLivePolicy] = useState<any>({
-    providers: [], event_types: [], chains: [], whitelist_ids: [], max_signal_age_seconds: 30
-  });
-  const [chainConfigs, setChainConfigs] = useState<Partial<Record<EditableChain, EditableChainConfig>>>({});
-  const [savedChainConfigs, setSavedChainConfigs] = useState<Partial<Record<EditableChain, EditableChainConfig>>>({});
-  const [selectedChain, setSelectedChain] = useState<EditableChain>('sol');
-  const [savingChain, setSavingChain] = useState<EditableChain | null>(null);
-  const [policyWhitelists, setPolicyWhitelists] = useState<Array<{
-    id: string; symbol?: string; chain_id: string; contract_address: string;
-    budget_per_trade?: number; total_budget?: number; project_name?: string;
-  }>>([]);
   const [privateKeyDraft, setPrivateKeyDraft] = useState('');
-  const [armReadiness, setArmReadiness] = useState<TradeReadiness | null>(null);
+  const [armPreparation, setArmPreparation] = useState<ArmPreparation | null>(null);
+  const [armChecking, setArmChecking] = useState(false);
   const [showArmDialog, setShowArmDialog] = useState(false);
+  const [showScopeDrawer, setShowScopeDrawer] = useState(false);
+  const [scopeDetail, setScopeDetail] = useState<RuntimePolicyDetailPage | null>(null);
+  const [scopeLoading, setScopeLoading] = useState(false);
+  const [scopePage, setScopePage] = useState(1);
+  const [scopeChain, setScopeChain] = useState('');
+  const [scopeSearch, setScopeSearch] = useState('');
   const [schedulerNow, setSchedulerNow] = useState(Date.now());
+  const [chainConfigs, setChainConfigs] = useState<Partial<Record<ChainId, ChainConfig>>>({});
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('trading');
+  const [savingManagedRetry, setSavingManagedRetry] = useState(false);
+  const [loginToken, setLoginToken] = useState('');
   const { toast } = useToast();
 
   const applyEngineStatus = (data: any) => {
@@ -147,56 +102,24 @@ export default function SettingsPage() {
     }
 
     Promise.all([
-      api.system.engineStatus(),
-      api.config.get('risk_config'),
-      api.config.get('x_monitor_config'),
+      api.system.runtimeSummary(),
       api.system.getEnv(),
       api.xMonitor.status6551(),
       api.trade.runtimePolicy(),
-      api.config.get('live_policy'),
-      api.whitelist.list({ pageSize: '100' }),
       api.config.getChains(),
-    ]).then(([engineRes, riskRes, xRes, envRes, x6551Res, runtimeRes, livePolicyRes, whitelistRes, chainConfigRes]) => {
-      if (engineRes.ok && engineRes.data) {
-        applyEngineStatus(engineRes.data);
+    ]).then(([summaryRes, envRes, x6551Res, runtimeRes, chainConfigRes]) => {
+      if (summaryRes.ok && summaryRes.data) {
+        applyEngineStatus(summaryRes.data.engine);
       }
-      if (riskRes.ok && riskRes.data) setRiskConfig((previous: any) => ({ ...previous, ...riskRes.data }));
-      if (xRes.ok && xRes.data) setXConfig(xRes.data);
       if (envRes.ok && envRes.data) setEnvConfig((previous: any) => ({ ...previous, ...envRes.data }));
       if (x6551Res.ok && x6551Res.data) setX6551Status(x6551Res.data);
       if (runtimeRes.ok && runtimeRes.data) setRuntimePolicy(runtimeRes.data);
-      if (livePolicyRes.ok && livePolicyRes.data) {
-        setLivePolicy((previous: any) => ({ ...previous, ...livePolicyRes.data }));
-      }
-      if (whitelistRes.ok && whitelistRes.data) setPolicyWhitelists(whitelistRes.data);
       if (chainConfigRes.ok && chainConfigRes.data) {
         setChainConfigs(chainConfigRes.data);
-        setSavedChainConfigs(chainConfigRes.data);
       }
       setLoading(false);
     });
   }, []);
-
-  useEffect(() => {
-    if (!showArmDialog || !getAuthToken()) return;
-    let active = true;
-    let inFlight = false;
-    const refresh = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const response = await api.system.readiness(false);
-        if (active && response.ok && response.data) setArmReadiness(response.data);
-      } finally {
-        inFlight = false;
-      }
-    };
-    const timer = window.setInterval(() => void refresh(), 2000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [showArmDialog]);
 
   useEffect(() => {
     if (!getAuthToken()) return;
@@ -208,18 +131,14 @@ export default function SettingsPage() {
       if (inFlight) return;
       inFlight = true;
       try {
-        const [runtimeResponse, engineResponse] = await Promise.all([
-          api.trade.runtimePolicy(),
-          api.system.engineStatus()
-        ]);
+        const engineResponse = await api.system.runtimeSummary();
         if (!active) return;
-        if (runtimeResponse.ok && runtimeResponse.data) setRuntimePolicy(runtimeResponse.data);
-        if (engineResponse.ok && engineResponse.data) applyEngineStatus(engineResponse.data);
+        if (engineResponse.ok && engineResponse.data) applyEngineStatus(engineResponse.data.engine);
       } finally {
         inFlight = false;
       }
     };
-    const timer = window.setInterval(() => void refreshRuntime(), 1000);
+    const timer = window.setInterval(() => void refreshRuntime(), 3000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -228,13 +147,18 @@ export default function SettingsPage() {
 
   const handleToggle = async () => {
     if (!isArmed) {
-      const readiness = await api.system.readiness(true);
-      if (!readiness.ok || !readiness.data) {
-        toast(readiness.error || '实盘准备状态检查失败', 'error');
-        return;
+      setArmChecking(true);
+      try {
+        const preparation = await api.system.prepareArm();
+        if (!preparation.ok || !preparation.data) {
+          toast(preparation.error || '实盘准备状态检查失败', 'error');
+          return;
+        }
+        setArmPreparation(preparation.data);
+        setShowArmDialog(true);
+      } finally {
+        setArmChecking(false);
       }
-      setArmReadiness(readiness.data);
-      setShowArmDialog(true);
       return;
     }
     const res = await api.system.disarm();
@@ -247,108 +171,34 @@ export default function SettingsPage() {
   };
 
   const confirmArm = async () => {
-    if (!armReadiness?.readyToArm) return;
-    const res = await api.system.arm('ARM LIVE TRADING');
+    if (!armPreparation?.summary.readyToArm || !armPreparation.arm_token) return;
+    const res = await api.system.confirmArm(armPreparation);
     if (res.ok && res.data) {
       applyEngineStatus(res.data);
       setShowArmDialog(false);
       toast('真实交易已启动', 'success');
     } else {
-      toast(res.error || '启动真实交易失败', 'error');
+      if (res.code === 'ARM_PREPARATION_STALE') {
+        toast('自动交易范围已变化，请重新检查', 'warning');
+      } else {
+        toast(res.error || '启动真实交易失败', 'error');
+      }
     }
   };
 
-  const saveRisk = async () => {
-    const res = await api.config.set('risk_config', riskConfig);
-    if (res.ok && res.data) setRiskConfig((previous: any) => ({ ...previous, ...res.data }));
-    toast(res.ok ? '已保存风控设置' : '保存失败', res.ok ? 'success' : 'error');
-  };
-
-  const saveXConfig = async () => {
-    const res = await api.config.set('x_monitor_config', xConfig);
-    toast(res.ok ? '已保存监控设置' : '保存失败', res.ok ? 'success' : 'error');
-  };
-
-  const togglePolicyValue = (field: 'providers' | 'event_types' | 'chains' | 'whitelist_ids', value: string | number) => {
-    setLivePolicy((previous: any) => {
-      const current = Array.isArray(previous[field]) ? previous[field] : [];
-      const exists = current.includes(value);
-      return { ...previous, [field]: exists ? current.filter((item: any) => item !== value) : [...current, value] };
-    });
-  };
-
-  const saveLivePolicy = async () => {
-    if (!window.confirm('确认保存实盘执行策略并停止新的真实买入？已有订单、持仓保护和退出会继续运行。')) return;
-    const res = await api.config.set('live_policy', livePolicy);
-    if (res.ok && res.data) {
-      setLivePolicy(res.data);
-      setIsArmed(false);
-      setEngineRuntime(previous => ({ ...previous, armed: false, status: 'fault_protected', desiredRunning: false, lastError: 'LIVE_CONFIGURATION_CHANGED' }));
-      const runtime = await api.trade.runtimePolicy();
-      if (runtime.ok && runtime.data) setRuntimePolicy(runtime.data);
-      toast('实盘执行策略已保存，新的真实买入已停止', 'success');
-    } else {
-      toast(res.error || '实盘执行策略保存失败', 'error');
-    }
-  };
-
-  const updateChainConfig = <K extends keyof EditableChainConfig>(
-    chain: EditableChain,
-    field: K,
-    value: EditableChainConfig[K]
-  ) => {
-    setChainConfigs(previous => ({
-      ...previous,
-      [chain]: { ...previous[chain], [field]: value } as EditableChainConfig,
-    }));
-  };
-
-  const saveChainConfig = async (chain: EditableChain) => {
-    const config = chainConfigs[chain];
-    if (!config) return;
-    const positiveFields: Array<keyof EditableChainConfig> = [
-      'maxPerTrade', 'dailyBudget', 'weeklyBudget', 'maxOpenPositions', 'dailyLossLimit'
-    ];
-    if (positiveFields.some(field => !Number.isFinite(Number(config[field])) || Number(config[field]) <= 0)) {
-      toast('链级交易额度必须全部大于 0', 'error');
-      return;
-    }
-    if (config.maxPerTrade > config.dailyBudget || config.dailyBudget > config.weeklyBudget) {
-      toast('额度必须满足：单笔上限 <= 每日上限 <= 每周上限', 'error');
-      return;
-    }
-    if (!Number.isInteger(config.maxOpenPositions)) {
-      toast('最大同时持仓数必须是整数', 'error');
-      return;
-    }
-    if (!window.confirm(`确认保存 ${chain.toUpperCase()} 资金上限并停止新的真实买入？`)) return;
-
-    setSavingChain(chain);
-    const response = await api.config.setChain(chain, config);
-    setSavingChain(null);
+  const loadRuntimeScope = async (nextPage = 1, nextChain = scopeChain, nextSearch = scopeSearch) => {
+    setScopeLoading(true);
+    const params: Record<string, string> = { page: String(nextPage), page_size: '20' };
+    if (nextChain) params.chain = nextChain;
+    if (nextSearch.trim()) params.search = nextSearch.trim();
+    const response = await api.trade.runtimePolicyDetail(params);
+    setScopeLoading(false);
     if (!response.ok || !response.data) {
-      toast(response.error || '保存链级资金配置失败', 'error');
+      toast(response.error || '交易范围读取失败', 'error');
       return;
     }
-    setChainConfigs(response.data);
-    setSavedChainConfigs(response.data);
-    setIsArmed(false);
-    setEngineRuntime(previous => ({
-      ...previous,
-      armed: false,
-      status: 'fault_protected',
-      desiredRunning: false,
-      lastError: 'CHAIN_CONFIGURATION_CHANGED'
-    }));
-    const runtime = await api.trade.runtimePolicy();
-    if (runtime.ok && runtime.data) setRuntimePolicy(runtime.data);
-    toast(`${chain.toUpperCase()} 资金上限已保存，请重新检查并启动真实交易`, 'success');
-  };
-
-  const resetChainConfig = (chain: EditableChain) => {
-    const saved = savedChainConfigs[chain];
-    if (!saved) return;
-    setChainConfigs(previous => ({ ...previous, [chain]: saved }));
+    setScopeDetail(response.data);
+    setScopePage(response.data.page);
   };
 
   const toggleSecretVisibility = (key: string) => {
@@ -395,6 +245,40 @@ export default function SettingsPage() {
     }
   };
 
+  const refreshRuntimePolicy = async () => {
+    const response = await api.trade.runtimePolicy();
+    if (response.ok && response.data) setRuntimePolicy(response.data);
+    return response;
+  };
+
+  const toggleManagedRetry = async () => {
+    const currentlyEnabled = RETRY_CHAINS.every(chain => chainConfigs[chain]?.retryEnabled);
+    const nextEnabled = !currentlyEnabled;
+    const confirmed = window.confirm(nextEnabled
+      ? '确认开启失败后自动重试？系统只会在确认未成交后重试，并会停止新的真实买入以应用配置。'
+      : '确认关闭失败后自动重试？系统会停止新的真实买入以应用配置。');
+    if (!confirmed) return;
+
+    setSavingManagedRetry(true);
+    const response = await api.config.setManagedRetry(nextEnabled);
+    setSavingManagedRetry(false);
+    if (!response.ok || !response.data) {
+      toast(response.error || '失败重试设置更新失败', 'error');
+      return;
+    }
+    setChainConfigs(response.data);
+    setIsArmed(false);
+    setEngineRuntime(previous => ({
+      ...previous,
+      armed: false,
+      status: 'fault_protected',
+      desiredRunning: false,
+      lastError: 'CHAIN_CONFIGURATION_CHANGED'
+    }));
+    await refreshRuntimePolicy();
+    toast(nextEnabled ? '失败后自动重试已开启' : '失败后自动重试已关闭', 'success');
+  };
+
   const saveEnv = async () => {
     setIsRestarting(true);
     setRestartMessage('正在写入 .env 配置文件并请求系统自热重启...');
@@ -435,16 +319,12 @@ export default function SettingsPage() {
           // Refresh configuration data
           Promise.all([
             api.system.engineStatus(),
-            api.config.get('risk_config'),
-            api.config.get('x_monitor_config'),
             api.system.getEnv(),
             api.xMonitor.status6551(),
-          ]).then(([eR, rR, xR, evR, sR]) => {
+          ]).then(([eR, evR, sR]) => {
             if (eR.ok && eR.data) {
               applyEngineStatus(eR.data);
             }
-            if (rR.ok && rR.data) setRiskConfig((previous: any) => ({ ...previous, ...rR.data }));
-            if (xR.ok && xR.data) setXConfig(xR.data);
             if (evR.ok && evR.data) setEnvConfig(evR.data);
             if (sR.ok && sR.data) setX6551Status(sR.data);
           });
@@ -473,17 +353,35 @@ export default function SettingsPage() {
     );
   }
 
-  const selectedChainConfig = chainConfigs[selectedChain];
-  const editableChainFields: Array<keyof EditableChainConfig> = [
-    'enabled', 'maxPerTrade', 'dailyBudget', 'weeklyBudget', 'maxOpenPositions', 'dailyLossLimit'
-  ];
-  const chainHasChanges = (chain: EditableChain) => {
-    const current = chainConfigs[chain];
-    const saved = savedChainConfigs[chain];
-    return Boolean(current && saved && editableChainFields.some(field => current[field] !== saved[field]));
-  };
-  const selectedChainHasChanges = chainHasChanges(selectedChain);
+  if (!getAuthToken()) {
+    const login = () => {
+      const token = loginToken.trim();
+      if (!token) return;
+      setAdminToken(token);
+      window.location.reload();
+    };
+    return (
+      <div className="flex flex-col gap-lg max-w-4xl">
+        <div className="card flex flex-col gap-md" style={{ width: 'min(420px, 100%)' }}>
+          <h2 className="text-lg font-bold flex items-center gap-sm"><LockKeyhole size={18} /> 看板登录</h2>
+          <label className="flex flex-col gap-xs">
+            <span className="text-xs text-secondary font-medium">管理口令</span>
+            <input type="password" className="input font-mono text-sm" value={loginToken}
+              onChange={event => setLoginToken(event.target.value)}
+              onKeyDown={event => { if (event.key === 'Enter') login(); }}
+              autoComplete="current-password" autoFocus />
+          </label>
+          <button type="button" className="btn btn-primary" onClick={login} disabled={!loginToken.trim()}>
+            <Key size={15} /> 登录
+          </button>
+        </div>
+      </div>
+    );
+  }
 
+  const retryEnabledCount = RETRY_CHAINS.filter(chain => chainConfigs[chain]?.retryEnabled).length;
+  const managedRetryEnabled = retryEnabledCount === RETRY_CHAINS.length;
+  const managedRetryPartial = retryEnabledCount > 0 && !managedRetryEnabled;
   return (
     <div className="flex flex-col gap-lg max-w-4xl position-relative">
       
@@ -506,123 +404,182 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {showArmDialog && armReadiness && (
+      {showArmDialog && armPreparation && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(10, 10, 15, 0.78)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px'
         }}>
-          <div className="card flex flex-col gap-md" role="dialog" aria-modal="true" aria-label="启动真实交易"
-            style={{ width: 'min(760px, 100%)', maxHeight: '88vh', overflowY: 'auto' }}>
-            <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="card" role="dialog" aria-modal="true" aria-label="启动真实交易"
+            style={{ width: 'min(620px, 100%)', maxHeight: '82vh', padding: 0, overflow: 'hidden', display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr) auto' }}>
+            <div className="flex justify-between items-center border-b" style={{ borderColor: 'var(--color-border)', padding: '16px 18px' }}>
               <div>
                 <h3 className="text-lg font-bold">启动真实交易</h3>
-                <span className={`text-xs font-mono ${armReadiness.readyToArm ? 'text-success' : 'text-danger'}`}>
-                  {armReadiness.readyToArm ? '实时检查通过，可以启动' : '实时检查未通过'}
+                <span className={`text-xs font-mono ${armPreparation.summary.readyToArm ? 'text-success' : 'text-danger'}`}>
+                  {armPreparation.summary.readyToArm ? '检查通过' : '检查未通过'}
                 </span>
               </div>
-              <div className="flex items-center gap-xs">
-                <button type="button" className="btn btn-secondary" onClick={async () => {
-                  const response = await api.system.readiness(true);
-                  if (response.ok && response.data) setArmReadiness(response.data);
-                  else toast(response.error || '重新检查失败', 'error');
-                }} title="重新检查">
-                  <RefreshCw size={16} />
-                </button>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowArmDialog(false)} title="关闭">
-                  <X size={16} />
-                </button>
-              </div>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowArmDialog(false)} title="关闭">
+                <X size={16} />
+              </button>
             </div>
 
-            {armReadiness.blockers.length > 0 && (
-              <div className="flex flex-col gap-xs">
-                <strong className="text-sm text-danger">还需完成 {armReadiness.blockers.length} 项</strong>
-                {armReadiness.blockers.map(blocker => (
-                  <div key={blocker} className="border-t pt-xs" style={{ borderColor: 'var(--color-border)' }}>
-                    <div className="text-sm font-medium">{blockerLabel(blocker)}</div>
-                    <div className="text-xs text-secondary">{blockerActionLabel(blocker)}</div>
+            <div className="flex flex-col gap-md" style={{ overflowY: 'auto', padding: '16px 18px' }}>
+              <div className="settings-summary-grid">
+                <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.chains}</strong></div>
+                <div><span className="text-xs text-secondary">可实盘 CA</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.whitelists}</strong></div>
+                <div><span className="text-xs text-secondary">唯一 Watch</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.watches}</strong></div>
+                <div><span className="text-xs text-secondary">触发关系</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.relations}</strong></div>
+              </div>
+
+              {armPreparation.summary.blockers.length > 0 && (
+                <div className="flex flex-col gap-xs">
+                  <strong className="text-sm text-danger">还需处理 {armPreparation.summary.blockers.length} 项</strong>
+                  {armPreparation.summary.blockers.map(blocker => (
+                    <div key={blocker} className="border-t pt-xs" style={{ borderColor: 'var(--color-border)' }}>
+                      <div className="text-sm font-medium">{blockerLabel(blocker)}</div>
+                      <div className="text-xs text-secondary">{blockerActionLabel(blocker)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="settings-chain-strip">
+                {armPreparation.summary.chains.map(chain => (
+                  <div key={chain.chain}>
+                    <strong className="font-mono text-sm">{chain.chain.toUpperCase()}</strong>
+                    <span className={`text-xs ${chain.ready ? 'text-success' : 'text-danger'}`}>
+                      {chain.ready ? '可实盘' : chain.blockers.map(blockerLabel).join('、') || '未通过'}
+                    </span>
                   </div>
                 ))}
               </div>
-            )}
 
-            {armReadiness.advisories.length > 0 && (
-              <div className="flex flex-col gap-xs border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
-                <strong className="text-sm">观察项（不阻断真实交易）</strong>
+              {armPreparation.summary.advisories.length > 0 && (
                 <div className="text-xs text-secondary">
-                  {armReadiness.advisories.map(blockerLabel).join(' · ')}
+                  观察项：{armPreparation.summary.advisories.map(blockerLabel).join(' · ')}
                 </div>
-              </div>
-            )}
-
-            <div className="flex flex-col gap-sm">
-              {armReadiness.chains.map(chain => {
-                const nativeEntry = chain.native_balances?.find(item => item.symbol);
-                const nativeBalance = chain.native_balance ?? nativeEntry?.balance ?? nativeEntry?.amount ?? null;
-                return (
-                  <div key={chain.chain} className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
-                    <div className="flex justify-between items-center gap-sm" style={{ flexWrap: 'wrap' }}>
-                      <strong className="font-mono">{chain.chain.toUpperCase()}</strong>
-                      <span className={`text-xs font-mono ${chain.ready ? 'text-success' : 'text-secondary'}`}>
-                        {chain.ready ? '可以实盘' : '尚未开放'}
-                      </span>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px', marginTop: '8px' }}>
-                      <div><span className="text-xs text-secondary">托管钱包</span><div className="text-xs font-mono" style={{ overflowWrap: 'anywhere' }}>{chain.wallet_address || '-'}</div></div>
-                      <div><span className="text-xs text-secondary">原生资产余额</span><div className="text-xs font-mono">{nativeBalance ?? '-'}</div></div>
-                      <div><span className="text-xs text-secondary">GMGN 接口 / RPC 实时探测</span><div className="text-xs font-mono">{chain.contract_tested ? '已通过' : '未通过'} / {chain.rpc_probe?.ok ? `已通过（区块 ${chain.rpc_probe.blockRef}）` : '未通过'}</div></div>
-                      <div><span className="text-xs text-secondary">单笔 / 每日 / 每周</span><div className="text-xs font-mono">{chain.limits?.maxPerTrade ?? '-'} / {chain.limits?.dailyBudget ?? '-'} / {chain.limits?.weeklyBudget ?? '-'}</div></div>
-                      <div><span className="text-xs text-secondary">真实成交（买入 / 卖出）</span><div className="text-xs font-mono">{chain.trade_evidence.confirmedBuys} / {chain.trade_evidence.confirmedSells}</div></div>
-                      <div><span className="text-xs text-secondary">GMGN 订单 / RPC 回执</span><div className="text-xs font-mono">{chain.trade_evidence.confirmedOrders} / {chain.trade_evidence.confirmedReceipts}</div></div>
-                      <div><span className="text-xs text-secondary">最近链上确认</span><div className="text-xs font-mono">{formatEvidenceTime(chain.trade_evidence.lastConfirmedAt)}</div></div>
-                    </div>
-                    {chain.blockers.length > 0 && <div className="text-xs text-secondary font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>{chain.blockers.map(blockerLabel).join(' · ')}</div>}
-                  </div>
-                );
-              })}
+              )}
             </div>
 
-            <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
-              <span className="text-xs text-secondary">本次自动交易范围</span>
-              <div className="text-xs font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>
-                {armReadiness.policy?.providers.join(', ') || '-'} · {armReadiness.policy?.eventTypes.map(eventTypeLabel).join(', ') || '-'} · {armReadiness.policy?.whitelistIds.length || 0}
+            <div className="flex justify-between gap-sm border-t" style={{ borderColor: 'var(--color-border)', padding: '12px 18px', flexWrap: 'wrap' }}>
+              <div className="flex gap-sm" style={{ flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => {
+                  setShowScopeDrawer(true);
+                  void loadRuntimeScope(1);
+                }}>
+                  <ListChecks size={15} /> 查看详细范围
+                </button>
+                <button type="button" className="btn btn-secondary" disabled={armChecking} onClick={async () => {
+                  setArmChecking(true);
+                  try {
+                    const response = await api.system.prepareArm();
+                    if (response.ok && response.data) setArmPreparation(response.data);
+                    else toast(response.error || '重新检查失败', 'error');
+                  } finally {
+                    setArmChecking(false);
+                  }
+                }}>
+                  <RefreshCw size={15} className={armChecking ? 'animate-spin' : ''} /> {armChecking ? '检查中' : '重新检查'}
+                </button>
               </div>
-              <div className="text-xs font-mono mt-1">
-                全局 USD 每日 / 每周：{envConfig.GMGN_GLOBAL_DAILY_USD_LIMIT || '-'} / {envConfig.GMGN_GLOBAL_WEEKLY_USD_LIMIT || '-'} · SOL 最低保留：{envConfig.GMGN_MIN_GAS_RESERVE_SOL || '-'} SOL
+              <div className="flex gap-sm">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowArmDialog(false)}>返回</button>
+                <button type="button" className="btn btn-primary"
+                  disabled={!armPreparation.summary.readyToArm || !armPreparation.arm_token}
+                  onClick={confirmArm}>
+                  <Shield size={15} /> 确认启动
+                </button>
               </div>
-              <div className="flex flex-col gap-xs mt-1">
-                {(armReadiness.policy?.whitelistIds || []).map(id => {
-                  const whitelist = policyWhitelists.find(item => Number(item.id) === Number(id));
-                  if (!whitelist) return null;
-                  const relations = armReadiness.relations.filter(item => item.whitelistId === Number(id));
-                  return (
-                    <div key={id} className="text-xs font-mono flex flex-col gap-xs" style={{ overflowWrap: 'anywhere' }}>
-                      <span>{whitelist.chain_id.toUpperCase()} · {whitelist.symbol || whitelist.project_name || '未命名'} · {whitelist.contract_address} · 单笔 {whitelist.budget_per_trade ?? '-'} · 累计 {whitelist.total_budget ?? '-'}</span>
-                      {relations.map(relation => (
-                        <span key={relation.id}>@{relation.actorHandle} → @{relation.targetHandle}</span>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-sm border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowArmDialog(false)}>返回设置</button>
-              <button type="button" className="btn btn-primary" disabled={!armReadiness.readyToArm} onClick={confirmArm}>
-                <Shield size={15} /> 确认启动真实交易
-              </button>
             </div>
           </div>
         </div>
       )}
 
+      {showScopeDrawer && (
+        <>
+          <button type="button" className="settings-scope-overlay" aria-label="关闭交易范围" onClick={() => setShowScopeDrawer(false)} />
+          <aside className="settings-scope-drawer" role="dialog" aria-modal="true" aria-label="真实交易详细范围">
+            <div className="settings-scope-drawer__head">
+              <div>
+                <strong>真实交易详细范围</strong>
+                <span>{scopeDetail ? `${scopeDetail.total} 个可实盘 CA` : '正在读取'}</span>
+              </div>
+              <button type="button" className="p16-icon-button" title="关闭" aria-label="关闭" onClick={() => setShowScopeDrawer(false)}><X size={16} /></button>
+            </div>
+            <div className="settings-scope-drawer__filters">
+              <select value={scopeChain} onChange={(event) => {
+                const next = event.target.value;
+                setScopeChain(next);
+                void loadRuntimeScope(1, next, scopeSearch);
+              }} aria-label="按链筛选">
+                <option value="">全部链</option>
+                {RETRY_CHAINS.map(chain => <option key={chain} value={chain}>{chain.toUpperCase()}</option>)}
+              </select>
+              <div className="settings-scope-search">
+                <Search size={15} />
+                <input value={scopeSearch} onChange={(event) => setScopeSearch(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') void loadRuntimeScope(1); }}
+                  placeholder="搜索 CA / 代币 / 项目" />
+                <button type="button" className="p16-icon-button" title="搜索" aria-label="搜索" onClick={() => void loadRuntimeScope(1)}><Search size={14} /></button>
+              </div>
+            </div>
+            <div className="settings-scope-drawer__body">
+              {scopeLoading && <div className="text-sm text-secondary">读取中...</div>}
+              {!scopeLoading && scopeDetail?.items.length === 0 && <div className="text-sm text-secondary">没有符合条件的 CA</div>}
+              {!scopeLoading && scopeDetail?.items.map(item => (
+                <div className="settings-scope-row" key={item.id}>
+                  <div className="settings-scope-row__title">
+                    <strong>{item.symbol || item.project_name || '未命名'}</strong>
+                    <span>{item.chain_id.toUpperCase()}</span>
+                  </div>
+                  <code>{item.contract_address}</code>
+                  <div className="settings-scope-row__meta">
+                    <span>单笔 {item.budget_per_trade}</span>
+                    <span>累计 {item.total_budget}</span>
+                    <span>{item.unique_actor_count} 个账号</span>
+                    <span>{item.source_count + item.relation_count} 条触发</span>
+                  </div>
+                  {item.actor_handles.length > 0 && <div className="settings-scope-row__actors">
+                    {item.actor_handles.map(handle => <span key={handle}>@{handle.replace(/^@+/, '')}</span>)}
+                    {item.unique_actor_count > item.actor_handles.length && <span>+{item.unique_actor_count - item.actor_handles.length}</span>}
+                  </div>}
+                </div>
+              ))}
+            </div>
+            <div className="settings-scope-drawer__foot">
+              <button type="button" className="btn btn-secondary" disabled={!scopeDetail || scopePage <= 1 || scopeLoading}
+                onClick={() => void loadRuntimeScope(scopePage - 1)}>上一页</button>
+              <span className="text-xs text-secondary">第 {scopeDetail?.page || 1} / {Math.max(1, Math.ceil((scopeDetail?.total || 0) / (scopeDetail?.page_size || 20)))} 页</span>
+              <button type="button" className="btn btn-secondary" disabled={!scopeDetail || scopePage >= Math.ceil(scopeDetail.total / scopeDetail.page_size) || scopeLoading}
+                onClick={() => void loadRuntimeScope(scopePage + 1)}>下一页</button>
+            </div>
+          </aside>
+        </>
+      )}
+
+      <div className="settings-section-tabs" role="tablist" aria-label="设置分类">
+        {([
+          ['trading', '交易', Shield],
+          ['status', '运行状态', Gauge],
+          ['system', '系统维护', Server],
+        ] as const).map(([section, label, Icon]) => (
+          <button key={section} type="button" role="tab" aria-selected={settingsSection === section}
+            className="settings-section-tab" onClick={() => setSettingsSection(section)}>
+            <Icon size={16} /> {label}
+          </button>
+        ))}
+      </div>
+
       {/* Live trading control */}
-      <div className="card flex justify-between items-center settings-live-control" style={{ background: isArmed ? 'rgba(0, 214, 143, 0.04)' : 'rgba(255, 71, 87, 0.04)', borderColor: isArmed ? 'rgba(0, 214, 143, 0.15)' : 'rgba(255, 71, 87, 0.15)', flexWrap: 'wrap', gap: '16px' }}>
+      {settingsSection === 'trading' && <div className="card flex justify-between items-center settings-live-control" style={{ background: isArmed ? 'rgba(0, 214, 143, 0.04)' : 'rgba(255, 71, 87, 0.04)', borderColor: isArmed ? 'rgba(0, 214, 143, 0.15)' : 'rgba(255, 71, 87, 0.15)', flexWrap: 'wrap', gap: '16px' }}>
         <div className="flex flex-col gap-xs settings-live-control__copy">
           <h2 className="text-xl font-bold flex items-center gap-sm">
             <Shield className={isArmed ? 'text-success' : 'text-danger'} />
-            {isArmed ? '真实交易运行中' : engineRuntime.status === 'fault_protected' ? '故障保护' : '已停止'}
+            {isArmed
+              ? '真实交易运行中'
+              : engineRuntime.status === 'paused_transient'
+                ? '数据源短暂恢复中'
+                : engineRuntime.status === 'fault_protected' ? '故障保护' : '已停止'}
           </h2>
           <div className="flex gap-md text-sm" style={{ flexWrap: 'wrap' }}>
             <span><span className="text-secondary">新买入：</span><strong>{isArmed ? '自动执行' : '已停止'}</strong></span>
@@ -632,26 +589,46 @@ export default function SettingsPage() {
           <p className="text-secondary text-sm">
             {isArmed
               ? '新的合格 6551 信号会自动提交 GMGN 真实订单。'
-              : engineRuntime.status === 'fault_protected'
+              : engineRuntime.status === 'paused_transient'
+                ? '系统已暂停新买入，连接连续稳定后会自动恢复；已有持仓保护继续运行。'
+                : engineRuntime.status === 'fault_protected'
                 ? `系统已停止新买入：${engineRuntime.lastError ? blockerLabel(engineRuntime.lastError) : '实时检查未通过'}`
                 : '不接收新的真实买入；订单查询、持仓保护和退出继续运行。'}
           </p>
         </div>
         <button className={`btn settings-live-control__action ${isArmed ? 'btn-danger' : 'btn-primary'}`}
-          style={{ padding: '12px 24px', fontSize: '1.05rem', fontWeight: 700 }} onClick={handleToggle}>
-          {isArmed ? '停止新买入' : '启动真实交易'}
+          style={{ padding: '12px 24px', fontSize: '1.05rem', fontWeight: 700 }} onClick={handleToggle}
+          disabled={armChecking}>
+          {isArmed ? '停止新买入' : armChecking ? '检查中...' : '启动真实交易'}
         </button>
-      </div>
+      </div>}
 
-      {runtimePolicy && (
+      {settingsSection === 'status' && runtimePolicy && (
         <div className="card flex flex-col gap-md">
           <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', flexWrap: 'wrap', gap: '12px' }}>
-            <h3 className="text-lg font-bold flex items-center gap-sm"><Gauge size={18} /> GMGN 性能与限流</h3>
+            <h3 className="text-lg font-bold flex items-center gap-sm"><Gauge size={18} /> 交易通道</h3>
             <button className="btn btn-secondary" onClick={async () => {
               const res = await api.trade.runtimePolicy();
               if (res.ok && res.data) setRuntimePolicy(res.data);
             }}><RefreshCw size={15} /> 刷新</button>
           </div>
+          <div className="settings-summary-grid">
+            <div><span className="text-xs text-secondary">GMGN 调度</span><strong className="block font-mono text-sm">{statusLabel(runtimePolicy.scheduler.state)}</strong></div>
+            <div><span className="text-xs text-secondary">实时信号</span><strong className={`block font-mono text-sm ${runtimePolicy.live_queue.listenerConnected ? 'text-success' : 'text-danger'}`}>{runtimePolicy.live_queue.listenerConnected ? '已连接' : '扫描后备'}</strong></div>
+            <div><span className="text-xs text-secondary">最近 429</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.last429At ? '有' : '无'}</strong></div>
+            <div><span className="text-xs text-secondary">排队请求</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.queueDepth}</strong></div>
+          </div>
+          <div className="settings-chain-strip">
+            {runtimePolicy.readiness.chains.map(chain => (
+              <div key={chain.chain}>
+                <strong className="font-mono text-sm">{chain.chain.toUpperCase()}</strong>
+                <span className={`text-xs ${chain.ready ? 'text-success' : 'text-danger'}`}>{chain.ready ? '可以实盘' : '不可交易'}</span>
+              </div>
+            ))}
+          </div>
+          <details className="settings-diagnostics">
+            <summary>查看诊断详情</summary>
+            <div className="flex flex-col gap-md pt-sm">
           <div className="settings-metrics-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: '12px' }}>
             <div><span className="text-xs text-secondary">请求调度器</span><strong className="block font-mono text-sm">{statusLabel(runtimePolicy.scheduler.state)}</strong></div>
             <div><span className="text-xs text-secondary">官方桶</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.officialRate}/{runtimePolicy.scheduler.officialCapacity}</strong></div>
@@ -746,161 +723,63 @@ export default function SettingsPage() {
               </div>
             )}
           </div>
+            </div>
+          </details>
         </div>
       )}
 
-      <div className="card flex flex-col gap-md">
-        <div className="border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}>
-          <h3 className="text-lg font-bold flex items-center gap-sm"><Gauge size={18} /> 链级资金上限</h3>
-        </div>
-        <div className="chain-config-tabs" role="tablist" aria-label="链级资金配置">
-          {EDITABLE_CHAINS.map(chain => (
-            <button
-              key={chain}
-              type="button"
-              role="tab"
-              aria-selected={selectedChain === chain}
-              className="chain-config-tab"
-              onClick={() => setSelectedChain(chain)}
-            >
-              <span>{chain.toUpperCase()}</span>
-              {chainHasChanges(chain) && <span className="chain-config-tab__dirty" title="有未保存修改" />}
-            </button>
-          ))}
-        </div>
-        {selectedChainConfig && (
-          <section className="chain-config-panel" role="tabpanel">
-            <div className="chain-config-panel__heading">
-              <label className="flex items-center gap-sm">
-                <input type="checkbox" checked={selectedChainConfig.enabled}
-                  onChange={event => updateChainConfig(selectedChain, 'enabled', event.target.checked)} />
-                <strong className="font-mono">{selectedChain.toUpperCase()}</strong>
-                <span className="text-xs text-secondary">允许真实交易</span>
-              </label>
-              <span className={`text-xs ${selectedChainHasChanges ? 'text-warning' : 'text-success'}`}>
-                {selectedChainHasChanges ? '有未保存修改' : '已与后端同步'}
-              </span>
+      {settingsSection === 'trading' && (
+        <div className="card flex flex-col gap-md">
+          <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
+            <h3 className="text-lg font-bold flex items-center gap-sm"><RefreshCw size={18} /> 自动交易行为</h3>
+            <span className="text-xs text-secondary">只保留用户决策</span>
+          </div>
+          <div className="settings-decision-row">
+            <div>
+              <strong className="text-sm">失败后自动重试</strong>
+              <div className="text-xs text-secondary mt-xs">
+                仅在确认未成交后重试；状态不确定、限流、鉴权和余额错误不会重试。
+              </div>
+              {managedRetryPartial && (
+                <div className="text-xs text-warning mt-xs">当前只有 {retryEnabledCount}/{RETRY_CHAINS.length} 条链开启，切换后将统一全部链。</div>
+              )}
             </div>
-            <div className="chain-config-grid">
-              <label className="flex flex-col gap-xs">
-                <span className="text-xs text-secondary">单笔本金上限 ({selectedChainConfig.nativeSymbol})</span>
-                <input type="number" min="0.000001" step="0.000001" className="input font-mono"
-                  value={selectedChainConfig.maxPerTrade}
-                  onChange={event => updateChainConfig(selectedChain, 'maxPerTrade', Number(event.target.value))} />
-              </label>
-              <label className="flex flex-col gap-xs">
-                <span className="text-xs text-secondary">每日资金上限，含费 ({selectedChainConfig.nativeSymbol})</span>
-                <input type="number" min="0.000001" step="0.000001" className="input font-mono"
-                  value={selectedChainConfig.dailyBudget}
-                  onChange={event => updateChainConfig(selectedChain, 'dailyBudget', Number(event.target.value))} />
-              </label>
-              <label className="flex flex-col gap-xs">
-                <span className="text-xs text-secondary">每周资金上限，含费 ({selectedChainConfig.nativeSymbol})</span>
-                <input type="number" min="0.000001" step="0.000001" className="input font-mono"
-                  value={selectedChainConfig.weeklyBudget}
-                  onChange={event => updateChainConfig(selectedChain, 'weeklyBudget', Number(event.target.value))} />
-              </label>
-              <label className="flex flex-col gap-xs">
-                <span className="text-xs text-secondary">最大同时持仓数</span>
-                <input type="number" min="1" step="1" className="input font-mono"
-                  value={selectedChainConfig.maxOpenPositions}
-                  onChange={event => updateChainConfig(selectedChain, 'maxOpenPositions', Number(event.target.value))} />
-              </label>
-              <label className="flex flex-col gap-xs">
-                <span className="text-xs text-secondary">每日亏损熔断 ({selectedChainConfig.nativeSymbol})</span>
-                <input type="number" min="0.000001" step="0.000001" className="input font-mono"
-                  value={selectedChainConfig.dailyLossLimit}
-                  onChange={event => updateChainConfig(selectedChain, 'dailyLossLimit', Number(event.target.value))} />
-              </label>
+            <label className="settings-switch" title="失败后自动重试">
+              <input type="checkbox" role="switch" aria-label="失败后自动重试"
+                checked={managedRetryEnabled} disabled={savingManagedRetry}
+                onChange={() => void toggleManagedRetry()} />
+              <span aria-hidden="true" />
+            </label>
+          </div>
+          <div className="settings-decision-row">
+            <div>
+              <strong className="text-sm">成交状态保护</strong>
+              <div className="text-xs text-secondary mt-xs">系统强制开启，无法通过前端关闭。</div>
             </div>
-            <div className="chain-config-actions">
-              <button type="button" className="btn btn-secondary"
-                disabled={!selectedChainHasChanges || savingChain !== null}
-                onClick={() => resetChainConfig(selectedChain)}>
-                <RotateCcw size={15} /> 撤销修改
-              </button>
-              <button type="button" className="btn btn-primary"
-                disabled={!selectedChainHasChanges || savingChain !== null}
-                onClick={() => void saveChainConfig(selectedChain)}>
-                <Save size={15} /> {savingChain === selectedChain ? '保存中' : `保存 ${selectedChain.toUpperCase()} 参数`}
-              </button>
-            </div>
-          </section>
-        )}
-      </div>
-
-      <div className="card flex flex-col gap-md">
-        <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
-          <h3 className="text-lg font-bold flex items-center gap-sm"><ShieldCheck size={18} /> 实盘执行策略</h3>
-          <button type="button" className="btn btn-primary flex items-center gap-xs" onClick={saveLivePolicy}>
-            <Save size={15} /> 保存策略并停止新买入
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-sm">
-          <span className="text-xs text-secondary font-medium">允许的数据源</span>
-          <label className="flex items-center gap-sm text-sm">
-            <input type="checkbox" checked={livePolicy.providers.includes('6551')}
-              onChange={() => togglePolicyValue('providers', '6551')} />
-            <span className="font-mono">6551 Max</span>
-          </label>
-        </div>
-
-        <div className="border-t pt-sm flex flex-col gap-sm" style={{ borderColor: 'var(--color-border)' }}>
-          <span className="text-xs text-secondary font-medium">允许自动执行的事件类型</span>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
-            {['tweet', 'retweet', 'quote', 'reply', 'follow'].map(eventType => {
-              const verified = runtimePolicy?.readiness.policy?.verifiedEventTypes?.includes(eventType) || false;
-              return (
-                <label key={eventType} className="flex items-center gap-sm text-sm font-mono">
-                  <input type="checkbox" checked={livePolicy.event_types.includes(eventType)}
-                    disabled={!verified}
-                    onChange={() => togglePolicyValue('event_types', eventType)} />
-                  <span className={verified ? '' : 'text-secondary'}>{eventTypeLabel(eventType)}</span>
-                </label>
-              );
-            })}
+            <strong className="text-sm text-success">已开启</strong>
           </div>
         </div>
+      )}
 
-        <div className="border-t pt-sm flex flex-col gap-sm" style={{ borderColor: 'var(--color-border)' }}>
-          <span className="text-xs text-secondary font-medium">允许链</span>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(70px, 1fr))', gap: '8px' }}>
-            {['sol', 'bsc', 'base', 'eth'].map(chain => (
-              <label key={chain} className="flex items-center gap-sm text-sm font-mono">
-                <input type="checkbox" checked={livePolicy.chains.includes(chain)}
-                  onChange={() => togglePolicyValue('chains', chain)} />
-                {chain.toUpperCase()}
-              </label>
-            ))}
+      {settingsSection === 'trading' && runtimePolicy && (
+        <div className="card flex flex-col gap-md">
+          <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
+            <h3 className="text-lg font-bold flex items-center gap-sm"><Shield size={18} /> 自动交易范围</h3>
+            <span className="text-xs text-success">由有效白名单自动派生</span>
+          </div>
+          <div className="settings-summary-grid">
+            <div><span className="text-xs text-secondary">数据源</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.providers.join(', ') || '-'}</strong></div>
+            <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.chains.length || 0} 条</strong></div>
+            <div title={runtimePolicy.readiness.policy?.eventTypes.map(eventTypeLabel).join('、')}><span className="text-xs text-secondary">关系事件</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.eventTypes.length || 0} 类</strong></div>
+            <div><span className="text-xs text-secondary">有效 CA</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.whitelistIds.length || 0} 个</strong></div>
+          </div>
+          <div className="flex justify-end border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+            <Link className="btn btn-secondary" to="/whitelist">管理白名单</Link>
           </div>
         </div>
+      )}
 
-        <label className="border-t pt-sm flex flex-col gap-xs" style={{ borderColor: 'var(--color-border)' }}>
-          <span className="text-xs text-secondary font-medium">信号最大时效（秒）</span>
-          <input type="number" min={1} max={300} className="input font-mono text-sm" style={{ maxWidth: '180px' }}
-            value={livePolicy.max_signal_age_seconds}
-            onChange={event => setLivePolicy({ ...livePolicy, max_signal_age_seconds: Number(event.target.value) })} />
-        </label>
-
-        <div className="border-t pt-sm flex flex-col gap-sm" style={{ borderColor: 'var(--color-border)' }}>
-          <span className="text-xs text-secondary font-medium">允许 CA</span>
-          <div className="flex flex-col gap-xs" style={{ maxHeight: '240px', overflowY: 'auto' }}>
-            {policyWhitelists.map(whitelist => (
-              <label key={whitelist.id} className="flex items-center gap-sm text-sm" style={{ minWidth: 0 }}>
-                <input type="checkbox" checked={livePolicy.whitelist_ids.includes(Number(whitelist.id))}
-                  onChange={() => togglePolicyValue('whitelist_ids', Number(whitelist.id))} />
-                <strong className="font-mono" style={{ minWidth: '72px' }}>{whitelist.symbol || `#${whitelist.id}`}</strong>
-                <span className="text-xs text-secondary font-mono">{whitelist.chain_id.toUpperCase()}</span>
-                <span className="text-xs text-secondary font-mono" style={{ overflowWrap: 'anywhere' }}>{whitelist.contract_address}</span>
-              </label>
-            ))}
-            {policyWhitelists.length === 0 && <span className="text-sm text-secondary">暂无白名单 CA</span>}
-          </div>
-        </div>
-      </div>
-
-      {x6551Status && (
+      {settingsSection === 'status' && x6551Status && (
         <div className="card flex flex-col gap-md">
           <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
             <h3 className="text-lg font-bold flex items-center gap-sm">
@@ -911,12 +790,22 @@ export default function SettingsPage() {
                 <RefreshCw size={15} /> 刷新
               </button>
               <button type="button" className="btn flex items-center gap-xs" onClick={run6551WatchDryRun}
-                disabled={envConfig.X_DATA_PROVIDER !== '6551' || watchPlanLoading}>
+                disabled={watchPlanLoading}>
                 <ListChecks size={15} /> {watchPlanLoading ? '查询中' : '预览监控变更'}
               </button>
             </div>
           </div>
 
+          <div className="settings-summary-grid">
+            <div><span className="text-xs text-secondary">实时连接</span><strong className={`block font-mono text-sm ${x6551Status.wss.status === 'subscribed' ? 'text-success' : 'text-danger'}`}>{statusLabel(x6551Status.wss.status)}</strong></div>
+            <div><span className="text-xs text-secondary">同步失败</span><strong className={`block font-mono text-sm ${x6551Status.watchSync.failed > 0 ? 'text-danger' : ''}`}>{x6551Status.watchSync.failed}</strong></div>
+            <div><span className="text-xs text-secondary">未知事件</span><strong className={`block font-mono text-sm ${x6551Status.inbox.unknown > 0 ? 'text-danger' : ''}`}>{x6551Status.inbox.unknown}</strong></div>
+            <div><span className="text-xs text-secondary">消息用量</span><strong className="block font-mono text-sm">{x6551Status.usage.messages.observedMonth} / {x6551Status.usage.messages.monthlyLimit}</strong></div>
+          </div>
+
+          <details className="settings-diagnostics">
+            <summary>查看诊断详情</summary>
+            <div className="flex flex-col gap-md pt-sm">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px' }}>
             <div className="flex flex-col gap-xs">
               <span className="text-xs text-secondary">数据源</span>
@@ -942,7 +831,17 @@ export default function SettingsPage() {
             </div>
             <div className="flex flex-col gap-xs">
               <span className="text-xs text-secondary">已管理 / 远端监控</span>
-              <strong className="font-mono text-sm">{x6551Status.watches.managed} / {x6551Status.watches.total}</strong>
+              <strong className="font-mono text-sm">
+                {x6551Status.watches.managed} / {x6551Status.watches.remoteAvailable
+                  ? x6551Status.watches.remoteTotal
+                  : '未知'}
+              </strong>
+            </div>
+            <div className="flex flex-col gap-xs">
+              <span className="text-xs text-secondary">监控同步待处理 / 失败</span>
+              <strong className={`font-mono text-sm ${x6551Status.watchSync.failed > 0 ? 'text-danger' : ''}`}>
+                {x6551Status.watchSync.pending} / {x6551Status.watchSync.failed}
+              </strong>
             </div>
             <div className="flex flex-col gap-xs">
               <span className="text-xs text-secondary">今日接收事件</span>
@@ -966,11 +865,23 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className="border-t pt-sm text-sm" style={{ borderColor: 'var(--color-border)' }}>
+            <div className="flex items-center gap-sm">
+              <Gauge size={15} />
+              <strong>实时接收方式：6551 WSS 事件推送</strong>
+            </div>
+            <div className="text-xs text-secondary mt-xs">
+              正常事件不走 60 秒或 3600 秒轮询，也没有“每轮最大 KOL 数”。本地信号处理目标 ≤ 300ms，GMGN 接受订单目标 ≤ 1s；心跳只用于检测连接存活，断线重连等待上限为 1s。
+            </div>
+          </div>
+
           {x6551Status.wss.lastError && (
             <div className="text-sm text-danger border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
               {x6551Status.wss.lastError}
             </div>
           )}
+            </div>
+          </details>
 
           {watchPlan && (
             <div className="flex flex-col gap-sm border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
@@ -997,80 +908,10 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-lg">
-        {/* Risk Config */}
-        <div className="card flex flex-col gap-md">
-          <h3 className="text-lg font-bold flex items-center gap-sm border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}><Settings size={18} /> 风险控制</h3>
-          <div className="flex flex-col gap-sm">
-            <label className="flex items-center justify-between" style={{ padding: '4px 0' }}>
-              <span className="text-sm font-medium">启用安全检查</span>
-              <input type="checkbox" checked disabled style={{ width: '16px', height: '16px', accentColor: 'var(--color-accent)' }} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">买入税告警阈值 (%)</span>
-              <input type="number" className="input font-mono" value={riskConfig.max_buy_tax}
-                onChange={e => setRiskConfig({ ...riskConfig, max_buy_tax: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">卖出税告警阈值 (%)</span>
-              <input type="number" className="input font-mono" value={riskConfig.max_sell_tax}
-                onChange={e => setRiskConfig({ ...riskConfig, max_sell_tax: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">最大跑路风险比例</span>
-              <input type="number" min="0" max="1" step="0.01" className="input font-mono" value={riskConfig.max_rug_ratio ?? 0.3}
-                onChange={e => setRiskConfig({ ...riskConfig, max_rug_ratio: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">最小流动性 (USD)</span>
-              <input type="number" className="input font-mono" value={riskConfig.min_liquidity_usd}
-                onChange={e => setRiskConfig({ ...riskConfig, min_liquidity_usd: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">最大滑点 (%)</span>
-              <input type="number" className="input font-mono" value={riskConfig.max_slippage_pct}
-                onChange={e => setRiskConfig({ ...riskConfig, max_slippage_pct: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">连续亏损熔断数</span>
-              <input type="number" className="input font-mono" value={riskConfig.consecutive_loss_limit}
-                onChange={e => setRiskConfig({ ...riskConfig, consecutive_loss_limit: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">CA 冷却时间 (分钟)</span>
-              <input type="number" className="input font-mono" value={riskConfig.ca_cooldown_min}
-                onChange={e => setRiskConfig({ ...riskConfig, ca_cooldown_min: Number(e.target.value) })} />
-            </label>
-          </div>
-          <button className="btn btn-primary mt-2" onClick={saveRisk}>保存风控设置</button>
-        </div>
-
-        {/* X Monitor Config */}
-        <div className="card flex flex-col gap-md">
-          <h3 className="text-lg font-bold flex items-center gap-sm border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}><Server size={18} /> X 监控配置</h3>
-          <div className="flex flex-col gap-sm">
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">推文轮询间隔 (秒)</span>
-              <input type="number" className="input font-mono" value={xConfig.timeline_poll_interval_sec}
-                onChange={e => setXConfig({ ...xConfig, timeline_poll_interval_sec: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">关注轮询间隔 (秒)</span>
-              <input type="number" className="input font-mono" value={xConfig.follows_poll_interval_sec}
-                onChange={e => setXConfig({ ...xConfig, follows_poll_interval_sec: Number(e.target.value) })} />
-            </label>
-            <label className="flex flex-col gap-xs">
-              <span className="text-xs text-secondary font-medium">每轮最大 KOL 数</span>
-              <input type="number" className="input font-mono" value={xConfig.max_kol_per_round}
-                onChange={e => setXConfig({ ...xConfig, max_kol_per_round: Number(e.target.value) })} />
-            </label>
-          </div>
-          <button className="btn btn-primary mt-2" onClick={saveXConfig}>保存监控设置</button>
-        </div>
-
+      {settingsSection === 'system' && <div className="grid grid-cols-2 gap-lg">
         {/* API Credentials and Environment config */}
         <div className="card flex flex-col gap-md" style={{ gridColumn: '1 / -1' }}>
-          <h3 className="text-lg font-bold flex items-center gap-sm border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}><Key size={18} /> API 密钥与环境变量管理 (.env)</h3>
+          <h3 className="text-lg font-bold flex items-center gap-sm border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}><Key size={18} /> 接口与系统连接</h3>
           
           <div className="grid grid-cols-2 gap-lg">
             {/* Left Block: External Integrations */}
@@ -1112,7 +953,7 @@ export default function SettingsPage() {
                     const response = await api.system.testTradeAlert();
                     toast(response.ok ? '测试告警已进入发送队列' : response.error || '测试告警失败', response.ok ? 'success' : 'error');
                   }}>发送测试</button>
-                  <input type="checkbox" checked={envConfig.TRADE_ALERTS_VERIFIED === 'true'}
+                  <input aria-label="外部资金告警已验证" type="checkbox" checked={envConfig.TRADE_ALERTS_VERIFIED === 'true'}
                     onChange={e => setEnvConfig({ ...envConfig, TRADE_ALERTS_VERIFIED: String(e.target.checked) })} />
                 </div>
               </div>
@@ -1123,56 +964,11 @@ export default function SettingsPage() {
                   onChange={e => setEnvConfig({ ...envConfig, EMERGENCY_STOP: String(e.target.checked) })} />
               </label>
 
-              <div className="grid grid-cols-2 gap-sm">
-                <label className="flex flex-col gap-xs"><span className="text-xs text-secondary">全局每日 USD 上限</span><input type="number" className="input font-mono text-sm" value={envConfig.GMGN_GLOBAL_DAILY_USD_LIMIT || '0'} onChange={e => setEnvConfig({ ...envConfig, GMGN_GLOBAL_DAILY_USD_LIMIT: e.target.value })} /></label>
-                <label className="flex flex-col gap-xs"><span className="text-xs text-secondary">全局每周 USD 上限</span><input type="number" className="input font-mono text-sm" value={envConfig.GMGN_GLOBAL_WEEKLY_USD_LIMIT || '0'} onChange={e => setEnvConfig({ ...envConfig, GMGN_GLOBAL_WEEKLY_USD_LIMIT: e.target.value })} /></label>
+              <div className="flex items-center justify-between gap-sm">
+                <span className="text-xs text-secondary font-medium">X 实时数据源</span>
+                <strong className="font-mono text-sm">6551 Max</strong>
               </div>
 
-              <label className="flex flex-col gap-xs">
-                <span className="text-xs text-secondary font-medium">X 数据提供源 (X_DATA_PROVIDER)</span>
-                <select className="input text-sm" value={envConfig.X_DATA_PROVIDER || 'mock'}
-                  onChange={e => setEnvConfig({
-                    ...envConfig,
-                    X_DATA_PROVIDER: e.target.value,
-                    TWITTER_STREAM_ENABLED: e.target.value === 'twitterapi' ? envConfig.TWITTER_STREAM_ENABLED : 'false'
-                  })}>
-                  <option value="mock">模拟数据源</option>
-                  <option value="socialdata">SocialData（第三方 X 数据源）</option>
-                  <option value="twitterapi">TwitterAPI.io（推文流与关注列表）</option>
-                  <option value="6551">6551 Max（实时监控与推送）</option>
-                </select>
-              </label>
-
-              {envConfig.X_DATA_PROVIDER === 'socialdata' && (
-                <label className="flex flex-col gap-xs">
-                  <span className="text-xs text-secondary font-medium flex items-center justify-between">
-                    SocialData API 密钥
-                    <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('SOCIALDATA_API_KEY')}>
-                      {showSecrets['SOCIALDATA_API_KEY'] ? <EyeOff size={12} /> : <Eye size={12} />}
-                      {showSecrets['SOCIALDATA_API_KEY'] ? '隐藏' : '显示'}
-                    </button>
-                  </span>
-                  <input type={showSecrets['SOCIALDATA_API_KEY'] ? 'text' : 'password'} className="input font-mono text-sm" value={envConfig.SOCIALDATA_API_KEY || ''}
-                    onChange={e => setEnvConfig({ ...envConfig, SOCIALDATA_API_KEY: e.target.value })} placeholder="输入 SocialData API Key" />
-                </label>
-              )}
-
-              {envConfig.X_DATA_PROVIDER === 'twitterapi' && (
-                <label className="flex flex-col gap-xs">
-                  <span className="text-xs text-secondary font-medium flex items-center justify-between">
-                    TwitterAPI.io API 密钥
-                    <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('TWITTERAPI_IO_API_KEY')}>
-                      {showSecrets['TWITTERAPI_IO_API_KEY'] ? <EyeOff size={12} /> : <Eye size={12} />}
-                      {showSecrets['TWITTERAPI_IO_API_KEY'] ? '隐藏' : '显示'}
-                    </button>
-                  </span>
-                  <input type={showSecrets['TWITTERAPI_IO_API_KEY'] ? 'text' : 'password'} className="input font-mono text-sm" value={envConfig.TWITTERAPI_IO_API_KEY || ''}
-                    onChange={e => setEnvConfig({ ...envConfig, TWITTERAPI_IO_API_KEY: e.target.value })} placeholder="输入 TwitterAPI.io API Key" />
-                </label>
-              )}
-
-              {envConfig.X_DATA_PROVIDER === '6551' && (
-                <>
                   <label className="flex flex-col gap-xs">
                     <span className="text-xs text-secondary font-medium flex items-center justify-between">
                       OPENNEWS 访问口令
@@ -1186,85 +982,6 @@ export default function SettingsPage() {
                       onChange={e => setEnvConfig({ ...envConfig, OPENNEWS_TOKEN: e.target.value })} />
                   </label>
 
-                  <label className="flex items-center justify-between gap-sm">
-                    <span className="text-xs text-secondary font-medium">启用 6551 WSS</span>
-                    <input type="checkbox" checked={envConfig.X_6551_WSS_ENABLED === 'true'}
-                      onChange={e => setEnvConfig({ ...envConfig, X_6551_WSS_ENABLED: String(e.target.checked) })} />
-                  </label>
-
-                  <label className="flex items-center justify-between gap-sm">
-                    <span className="text-xs text-secondary font-medium">允许应用监控变更</span>
-                    <input type="checkbox" checked={envConfig.X_6551_WATCH_APPLY_ENABLED === 'true'}
-                      onChange={e => setEnvConfig({ ...envConfig, X_6551_WATCH_APPLY_ENABLED: String(e.target.checked) })} />
-                  </label>
-
-                  <label className="flex items-center justify-between gap-sm">
-                    <span className="text-xs text-secondary font-medium">监控取消关注</span>
-                    <input type="checkbox" checked={envConfig.X_6551_WATCH_UNFOLLOW_ENABLED === 'true'}
-                      onChange={e => setEnvConfig({ ...envConfig, X_6551_WATCH_UNFOLLOW_ENABLED: String(e.target.checked) })} />
-                  </label>
-
-                  <label className="flex flex-col gap-xs">
-                    <span className="text-xs text-secondary font-medium">连接心跳间隔（毫秒）</span>
-                    <input type="number" min={5000} step={1000} className="input font-mono text-sm"
-                      value={envConfig.X_6551_HEARTBEAT_MS || '20000'}
-                      onChange={e => setEnvConfig({ ...envConfig, X_6551_HEARTBEAT_MS: e.target.value })} />
-                  </label>
-
-                  <label className="flex flex-col gap-xs">
-                    <span className="text-xs text-secondary font-medium">最大重连等待（毫秒）</span>
-                    <input type="number" min={1000} step={1000} className="input font-mono text-sm"
-                      value={envConfig.X_6551_RECONNECT_MAX_MS || '30000'}
-                      onChange={e => setEnvConfig({ ...envConfig, X_6551_RECONNECT_MAX_MS: e.target.value })} />
-                  </label>
-
-                  <label className="flex flex-col gap-xs">
-                    <span className="text-xs text-secondary font-medium">每月消息上限</span>
-                    <input type="number" min={1} className="input font-mono text-sm"
-                      value={envConfig.X_6551_MONTHLY_MESSAGE_LIMIT || '2000000'}
-                      onChange={e => setEnvConfig({ ...envConfig, X_6551_MONTHLY_MESSAGE_LIMIT: e.target.value })} />
-                  </label>
-                </>
-              )}
-
-              {envConfig.X_DATA_PROVIDER === 'twitterapi' && (
-                <>
-                  <label className="flex flex-col gap-xs">
-                    <span className="text-xs text-secondary font-medium">关注关系检查间隔（毫秒）</span>
-                    <input type="number" min={30000} step={1000} className="input font-mono text-sm"
-                      value={envConfig.TWITTERAPI_IO_FOLLOW_INTERVAL_MS || '60000'}
-                      onChange={e => setEnvConfig({ ...envConfig, TWITTERAPI_IO_FOLLOW_INTERVAL_MS: e.target.value })} />
-                  </label>
-
-                  <label className="flex flex-col gap-xs">
-                    <span className="text-xs text-secondary font-medium">TwitterAPI.io 每日点数上限</span>
-                    <input type="number" min={1} className="input font-mono text-sm"
-                      value={envConfig.TWITTERAPI_IO_DAILY_CREDIT_LIMIT || '50000'}
-                      onChange={e => setEnvConfig({ ...envConfig, TWITTERAPI_IO_DAILY_CREDIT_LIMIT: e.target.value })} />
-                  </label>
-
-                  <label className="flex items-center justify-between gap-sm">
-                    <span className="text-xs text-secondary font-medium">启用实时推文流</span>
-                    <input type="checkbox" checked={envConfig.TWITTER_STREAM_ENABLED === 'true'}
-                      onChange={e => setEnvConfig({ ...envConfig, TWITTER_STREAM_ENABLED: String(e.target.checked) })} />
-                  </label>
-
-                  {envConfig.TWITTER_STREAM_ENABLED === 'true' && (
-                    <label className="flex flex-col gap-xs">
-                      <span className="text-xs text-secondary font-medium flex items-center justify-between">
-                        回调验证密钥
-                        <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('TWITTERAPI_IO_WEBHOOK_SECRET')}>
-                          {showSecrets['TWITTERAPI_IO_WEBHOOK_SECRET'] ? <EyeOff size={12} /> : <Eye size={12} />}
-                          {showSecrets['TWITTERAPI_IO_WEBHOOK_SECRET'] ? '隐藏' : '显示'}
-                        </button>
-                      </span>
-                      <input type={showSecrets['TWITTERAPI_IO_WEBHOOK_SECRET'] ? 'text' : 'password'} className="input font-mono text-sm"
-                        value={envConfig.TWITTERAPI_IO_WEBHOOK_SECRET || ''}
-                        onChange={e => setEnvConfig({ ...envConfig, TWITTERAPI_IO_WEBHOOK_SECRET: e.target.value })} />
-                    </label>
-                  )}
-                </>
-              )}
 
               <label className="flex flex-col gap-xs">
                 <span className="text-xs text-secondary font-medium flex items-center justify-between">
@@ -1289,13 +1006,14 @@ export default function SettingsPage() {
 
             {/* Right Block: System Core (Port / Database) */}
             <div className="flex flex-col gap-sm">
-              <h4 className="text-sm font-semibold text-secondary mb-xs">🗄️ 系统核心与数据库</h4>
+              <h4 className="text-sm font-semibold text-secondary mb-xs">链连接与本地服务</h4>
 
               {([
                 ['SOLANA_RPC_URL', 'Solana 链上验真 RPC（只读，不用于下单）'],
                 ['BSC_RPC_URL', 'BSC 链上验真 RPC（只读，不用于下单）'],
                 ['BASE_RPC_URL', 'Base 链上验真 RPC（只读，不用于下单）'],
                 ['ETH_RPC_URL', 'Ethereum 链上验真 RPC（只读，不用于下单）'],
+                ['ROBINHOOD_RPC_URL', 'Robinhood Chain 生产验真 RPC（只读，不用于下单）'],
               ] as const).map(([key, label]) => (
                 <label key={key} className="flex flex-col gap-xs">
                   <span className="text-xs text-secondary font-medium">{label}</span>
@@ -1303,6 +1021,23 @@ export default function SettingsPage() {
                     onChange={e => setEnvConfig({ ...envConfig, [key]: e.target.value })} placeholder="https://" />
                 </label>
               ))}
+
+              <div className="border-t pt-sm mt-xs flex flex-col gap-sm" style={{ borderColor: 'var(--color-border)' }}>
+                <span className="text-xs text-secondary font-medium">Robinhood Chain 真实验收资金保护</span>
+                {([
+                  ['GMGN_MAX_FEE_RESERVE_ROBINHOOD', '单次提交最大费用预留（ETH）'],
+                  ['GMGN_MIN_GAS_RESERVE_ROBINHOOD', '交易后钱包最低 Gas 保留（ETH）'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="flex flex-col gap-xs">
+                    <span className="text-xs text-secondary font-medium">{label}</span>
+                    <input type="number" min="0" step="any" className="input font-mono text-sm"
+                      value={envConfig[key] || ''}
+                      onChange={e => setEnvConfig({ ...envConfig, [key]: e.target.value })}
+                      placeholder="真实验收前必须填写大于 0 的数值" />
+                  </label>
+                ))}
+                <span className="text-xs text-secondary">这两项只预留交易费和退出 Gas，不会改变白名单中的单笔买入金额。</span>
+              </div>
               
               <label className="flex flex-col gap-xs">
                 <span className="text-xs text-secondary font-medium">后台服务端口 (BACKEND_PORT)</span>
@@ -1360,7 +1095,7 @@ export default function SettingsPage() {
             </button>
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

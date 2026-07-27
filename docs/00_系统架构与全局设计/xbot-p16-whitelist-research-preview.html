@@ -1,0 +1,925 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XBOT P16 白名单与快速投研原型</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090a0d;
+      --sidebar: #0c0d10;
+      --surface: #111318;
+      --surface-2: #161920;
+      --surface-3: #1b1f27;
+      --line: #252a34;
+      --line-strong: #353b47;
+      --text: #f3f5f7;
+      --muted: #939aa7;
+      --quiet: #697180;
+      --primary: #795cf2;
+      --primary-strong: #8d73ff;
+      --green: #2dd4a0;
+      --green-soft: rgba(45, 212, 160, 0.12);
+      --cyan: #3db9e8;
+      --cyan-soft: rgba(61, 185, 232, 0.12);
+      --amber: #f0b65b;
+      --amber-soft: rgba(240, 182, 91, 0.12);
+      --red: #ef6a75;
+      --red-soft: rgba(239, 106, 117, 0.12);
+      --sidebar-width: 224px;
+      --topbar-height: 66px;
+      --radius: 7px;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--bg); }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font-size: 14px; letter-spacing: 0; }
+    button, input, select, textarea { font: inherit; letter-spacing: 0; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--primary-strong);
+      outline-offset: 2px;
+    }
+    .hidden { display: none !important; }
+    .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    .muted { color: var(--muted); }
+    .quiet { color: var(--quiet); }
+    .green-text { color: var(--green); }
+    .icon { width: 17px; height: 17px; flex: 0 0 17px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+    .app { min-height: 100vh; }
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: var(--sidebar-width);
+      background: var(--sidebar);
+      border-right: 1px solid #181b21;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+    }
+    .brand {
+      height: var(--topbar-height);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 20px;
+      border-bottom: 1px solid #181b21;
+      font-size: 18px;
+      font-weight: 750;
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      background: var(--primary);
+      box-shadow: 0 0 24px rgba(121, 92, 242, 0.22);
+    }
+    .brand-mark .icon { width: 16px; height: 16px; }
+    .nav { padding: 18px 12px; display: grid; gap: 5px; }
+    .nav-item {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      color: var(--muted);
+      text-decoration: none;
+      border-radius: 6px;
+      border-left: 2px solid transparent;
+    }
+    .nav-item.active { color: var(--text); background: #17171c; border-left-color: var(--primary); }
+    .nav-item:hover { color: var(--text); background: #13151a; }
+    .side-foot { margin-top: auto; padding: 16px; border-top: 1px solid #181b21; }
+    .prototype-state { display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 12px; }
+    .prototype-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 12px rgba(240, 182, 91, 0.6); }
+
+    .shell { margin-left: var(--sidebar-width); min-height: 100vh; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 15;
+      height: var(--topbar-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      background: rgba(9, 10, 13, 0.94);
+      border-bottom: 1px solid #181b21;
+      backdrop-filter: blur(16px);
+    }
+    .breadcrumb { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+    .breadcrumb strong { color: var(--text); font-size: 16px; }
+    .top-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--green); }
+    .top-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    .page { max-width: 1460px; margin: 0 auto; padding: 24px 28px 48px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .page-title { display: flex; align-items: center; gap: 12px; }
+    .icon-button {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .icon-button:hover { border-color: var(--line-strong); background: var(--surface-2); }
+    h1 { margin: 0; font-size: 21px; line-height: 1.2; }
+    .eyebrow { margin-top: 5px; font-size: 12px; color: var(--muted); }
+    .draft-badge { padding: 6px 9px; border: 1px solid rgba(240, 182, 91, 0.35); background: var(--amber-soft); color: var(--amber); border-radius: 999px; font-size: 12px; }
+
+    .view-switch {
+      display: inline-flex;
+      gap: 3px;
+      padding: 3px;
+      background: #0e1014;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      margin-bottom: 18px;
+    }
+    .view-switch button, .segment button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .view-switch button { min-width: 112px; height: 34px; padding: 0 14px; }
+    .view-switch button.active, .segment button.active { background: var(--surface-3); color: var(--text); box-shadow: inset 0 0 0 1px #303541; }
+
+    .workspace {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: clip;
+    }
+    .workspace-bar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #101217;
+    }
+    .source-choice { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .segment { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--line); background: #0c0e12; border-radius: 7px; overflow-x: auto; scrollbar-width: none; }
+    .segment::-webkit-scrollbar { display: none; }
+    .segment button { height: 30px; padding: 0 11px; font-size: 12px; }
+    .source-choice > .segment { flex: 0 0 232px; }
+    .template-select { width: 220px; min-width: 220px; flex: 0 0 220px; }
+
+    .input, .select, .textarea {
+      width: 100%;
+      color: var(--text);
+      background: #0c0e12;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .input, .select { height: 38px; padding: 0 11px; }
+    .textarea { min-height: 136px; resize: vertical; padding: 10px 11px; line-height: 1.55; }
+    .input:hover, .select:hover, .textarea:hover { border-color: var(--line-strong); }
+    .input::placeholder, .textarea::placeholder { color: #555d6a; }
+    .select { padding-right: 10px; }
+    label { min-width: 0; }
+    .field-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
+    .field-note { color: var(--quiet); font-size: 11px; }
+
+    .token-band {
+      display: grid;
+      grid-template-columns: minmax(420px, 1.35fr) minmax(300px, 1fr);
+      gap: 18px;
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .ca-grid { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 10px; }
+    .chain-switch { display: grid; grid-template-columns: repeat(5, minmax(64px, 1fr)); gap: 6px; margin-top: 10px; }
+    .chain-button {
+      height: 32px;
+      border: 1px solid var(--line);
+      background: #0d0f13;
+      color: var(--muted);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .chain-button.active { color: var(--text); border-color: var(--primary); background: rgba(121, 92, 242, 0.12); }
+    .token-identity {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 86px;
+      padding: 11px 13px;
+      background: #0d0f13;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+    }
+    .token-logo { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: #f3f5f7; color: #111318; font-size: 17px; font-weight: 800; border: 2px solid #303541; }
+    .token-name { font-size: 15px; font-weight: 700; }
+    .token-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 11px; }
+    .source-stack { display: grid; justify-items: end; gap: 7px; }
+
+    .pill { display: inline-flex; align-items: center; gap: 5px; min-height: 23px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #11141a; font-size: 11px; white-space: nowrap; }
+    .pill.green { color: var(--green); border-color: rgba(45, 212, 160, 0.28); background: var(--green-soft); }
+    .pill.cyan { color: var(--cyan); border-color: rgba(61, 185, 232, 0.28); background: var(--cyan-soft); }
+    .pill.amber { color: var(--amber); border-color: rgba(240, 182, 91, 0.28); background: var(--amber-soft); }
+    .pill.red { color: var(--red); border-color: rgba(239, 106, 117, 0.28); background: var(--red-soft); }
+
+    .create-grid { display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
+    .form-main { min-width: 0; }
+    .section { padding: 19px 20px; border-bottom: 1px solid var(--line); }
+    .section:last-child { border-bottom: 0; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+    .section-title { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+    .section-title .icon { color: var(--muted); }
+    .section-action { border: 0; background: transparent; color: var(--cyan); cursor: pointer; padding: 4px; font-size: 12px; }
+    .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+    .preset-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+    .preset {
+      min-height: 64px;
+      padding: 10px;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: #0d0f13;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+    .preset strong { display: block; font-size: 12px; margin-bottom: 5px; }
+    .preset span { color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .preset.active { border-color: var(--primary); background: rgba(121, 92, 242, 0.1); }
+    .strategy-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+    .strategy-node { position: relative; min-height: 60px; padding: 9px 10px; border-left: 2px solid var(--green); background: #0d0f13; }
+    .strategy-node.stop { border-left-color: var(--red); }
+    .strategy-node.trailing { border-left-color: var(--amber); }
+    .strategy-node b { display: block; font-size: 12px; }
+    .strategy-node span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .advanced-editor { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 13px; }
+    .leg-row { display: grid; grid-template-columns: 1.35fr 1fr 1fr 34px; gap: 8px; margin-bottom: 8px; }
+    .leg-remove { display: grid; place-items: center; border: 1px solid var(--line); background: #0d0f13; border-radius: 6px; cursor: pointer; color: var(--muted); }
+    .leg-remove:hover { color: var(--red); border-color: rgba(239, 106, 117, 0.35); }
+
+    .rule-group + .rule-group { margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--line); }
+    .rule-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; color: var(--muted); font-size: 12px; }
+    .account-row {
+      min-height: 56px;
+      display: grid;
+      grid-template-columns: 24px 34px minmax(150px, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      background: #0d0f13;
+      border-radius: 7px;
+      margin-bottom: 7px;
+    }
+    .account-row.interaction { grid-template-columns: 34px minmax(210px, 1fr) auto; }
+    .account-check { width: 16px; height: 16px; accent-color: var(--primary); }
+    .avatar { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; color: #090a0d; font-size: 11px; font-weight: 800; background: var(--cyan); }
+    .avatar.green { background: var(--green); }
+    .avatar.amber { background: var(--amber); }
+    .account-name { min-width: 0; }
+    .account-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .account-name span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event-set { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+    .event-chip { min-height: 25px; padding: 3px 8px; border: 1px solid var(--line); background: #15181e; border-radius: 5px; color: var(--muted); font-size: 11px; cursor: pointer; }
+    .event-chip.active { color: var(--cyan); border-color: rgba(61, 185, 232, 0.35); background: var(--cyan-soft); }
+    .relation-flow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .relation-flow .icon { color: var(--quiet); }
+    .relation-flow strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+
+    .summary {
+      position: relative;
+      border-left: 1px solid var(--line);
+      background: #0d0f13;
+      padding: 18px;
+    }
+    .summary-sticky { position: sticky; top: calc(var(--topbar-height) + 18px); }
+    .summary h2 { margin: 0 0 14px; font-size: 14px; }
+    .summary-token { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+    .summary-token .token-logo { width: 34px; height: 34px; font-size: 13px; }
+    .summary-list { display: grid; gap: 0; border-top: 1px solid var(--line); }
+    .summary-row { min-height: 39px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .summary-row span { color: var(--muted); }
+    .summary-row strong { text-align: right; font-weight: 650; }
+    .impact { margin-top: 15px; padding: 11px; border: 1px solid rgba(61, 185, 232, 0.25); background: var(--cyan-soft); border-radius: 7px; }
+    .impact-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--cyan); font-size: 12px; font-weight: 700; }
+    .impact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .impact-grid span { color: var(--muted); font-size: 10px; }
+    .impact-grid strong { display: block; margin-top: 3px; color: var(--text); font-size: 13px; }
+    .primary-button, .secondary-button {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      font-weight: 650;
+      font-size: 12px;
+    }
+    .primary-button { color: #fff; background: var(--primary); border-color: var(--primary); }
+    .primary-button:hover { background: var(--primary-strong); }
+    .secondary-button { color: var(--text); background: #15181e; border-color: var(--line); }
+    .secondary-button:hover { border-color: var(--line-strong); background: #1a1e25; }
+    .summary-actions { display: grid; gap: 8px; margin-top: 15px; }
+    .summary-actions .primary-button { width: 100%; }
+
+    .research-layout { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); min-height: 650px; }
+    .research-input { padding: 18px; border-right: 1px solid var(--line); background: #0d0f13; }
+    .research-input .segment { width: 100%; margin-bottom: 14px; }
+    .research-input .segment button { flex: 1; }
+    .scan-state { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; }
+    .scan-row { display: flex; align-items: center; justify-content: space-between; min-height: 31px; font-size: 11px; }
+    .scan-row span { color: var(--muted); }
+    .research-results { min-width: 0; }
+    .results-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+    .results-head strong { font-size: 13px; }
+    .results-table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+    th { color: var(--muted); font-size: 11px; font-weight: 600; background: #101217; }
+    td { font-size: 12px; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.selected { background: #14171d; }
+    tbody tr.selected td:first-child { box-shadow: inset 2px 0 var(--primary); }
+    .token-cell { display: flex; align-items: center; gap: 8px; }
+    .mini-logo { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; color: #090a0d; background: #f3f5f7; font-size: 10px; font-weight: 800; }
+    .risk-dots { display: flex; gap: 4px; }
+    .risk-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .risk-dot.warn { background: var(--amber); }
+    .risk-dot.off { background: #343a45; }
+    .research-detail { padding: 18px; }
+    .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .detail-head h2 { margin: 0; font-size: 14px; }
+    .detail-grid { display: grid; grid-template-columns: minmax(240px, .85fr) minmax(380px, 1.4fr); gap: 16px; }
+    .fact-panel { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+    .fact-panel-head { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 11px; border-bottom: 1px solid var(--line); background: #101217; font-size: 12px; font-weight: 700; }
+    .fact-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .fact { min-height: 60px; padding: 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .fact:nth-child(2n) { border-right: 0; }
+    .fact:nth-last-child(-n+2) { border-bottom: 0; }
+    .fact span { color: var(--muted); font-size: 10px; }
+    .fact strong { display: block; margin-top: 5px; font-size: 12px; }
+    .candidate-list { padding: 7px; }
+    .candidate-row { display: grid; grid-template-columns: 22px 32px minmax(150px, 1fr) auto; align-items: center; gap: 9px; min-height: 54px; padding: 7px; border-bottom: 1px solid var(--line); }
+    .candidate-row:last-child { border-bottom: 0; }
+    .candidate-evidence { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+    .detail-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+    .head-actions { display: flex; align-items: center; gap: 9px; }
+    .workflow-grid { display: grid; grid-template-columns: 190px minmax(0, 1fr) 250px; min-height: 680px; }
+    .step-rail { padding: 18px 13px; border-right: 1px solid var(--line); background: #0d0f13; }
+    .step-rail-title { padding: 0 8px 13px; color: var(--muted); font-size: 11px; }
+    .step-nav { display: grid; gap: 5px; }
+    .step-button {
+      width: 100%;
+      min-height: 54px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      padding: 7px 8px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .step-button:hover { background: #13161b; }
+    .step-button.active { border-color: var(--line-strong); background: var(--surface-2); }
+    .step-number { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-strong); color: var(--muted); font-size: 11px; }
+    .step-button.active .step-number { border-color: var(--primary); background: rgba(121, 92, 242, 0.15); color: var(--text); }
+    .step-button.completed .step-number { border-color: rgba(45, 212, 160, 0.35); background: var(--green-soft); color: var(--green); }
+    .step-copy strong { display: block; font-size: 12px; }
+    .step-copy span { display: block; margin-top: 4px; color: var(--quiet); font-size: 10px; }
+    .step-button.active .step-copy span { color: var(--muted); }
+
+    .workflow-main { min-width: 0; background: var(--surface); }
+    .step-panel { min-height: 680px; display: flex; flex-direction: column; }
+    .step-content { padding: 22px 24px; }
+    .step-content-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 22px; }
+    .step-content-head h2 { margin: 0; font-size: 17px; }
+    .step-content-head p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+    .step-kicker { color: var(--primary-strong); font-size: 11px; font-weight: 700; }
+    .step-actions { margin-top: auto; min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 24px; border-top: 1px solid var(--line); background: #101217; }
+    .step-actions-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+    .token-form { display: grid; gap: 18px; }
+    .token-form .chain-switch { margin-top: 0; }
+    .ca-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .ca-entry .primary-button { min-width: 88px; }
+    .identity-wide { grid-template-columns: 52px minmax(0, 1fr) auto; min-height: 96px; }
+    .template-choice { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 9px; padding-top: 17px; border-top: 1px solid var(--line); }
+    .template-choice .secondary-button { height: 38px; }
+
+    .rule-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+    .rule-toolbar strong { font-size: 12px; }
+    .rule-toolbar-actions { display: flex; gap: 7px; }
+    .selected-summary { color: var(--muted); font-size: 11px; }
+
+    .trade-template { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 1.2fr); gap: 14px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .strategy-compact { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+    .strategy-compact .strategy-node { min-height: 64px; }
+
+    .draft-aside { padding: 18px; border-left: 1px solid var(--line); background: #0d0f13; }
+    .draft-aside-inner { position: sticky; top: calc(var(--topbar-height) + 18px); }
+    .draft-aside h2 { margin: 0; font-size: 13px; }
+    .progress-line { height: 4px; margin: 12px 0 17px; border-radius: 2px; overflow: hidden; background: #20242c; }
+    .progress-line span { display: block; width: 25%; height: 100%; background: var(--primary); transition: width 160ms ease; }
+    .draft-token { display: flex; align-items: center; gap: 9px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+    .draft-token .token-logo { width: 34px; height: 34px; font-size: 13px; }
+    .draft-checks { display: grid; gap: 0; margin-top: 9px; }
+    .draft-check { min-height: 38px; display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); font-size: 11px; }
+    .draft-check::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #3a404b; }
+    .draft-check.done::before { background: var(--green); }
+    .draft-check span { color: var(--muted); }
+    .draft-check strong { font-weight: 650; }
+    .aside-impact { margin-top: 15px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: #11141a; }
+    .aside-impact .summary-row:last-child { border-bottom: 0; }
+
+    .confirm-block { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+    .confirm-item { min-height: 76px; padding: 13px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .confirm-item:nth-child(2n) { border-right: 0; }
+    .confirm-item:nth-last-child(-n+2) { border-bottom: 0; }
+    .confirm-item span { color: var(--muted); font-size: 10px; }
+    .confirm-item strong { display: block; margin-top: 7px; font-size: 13px; }
+    .confirm-item small { display: block; margin-top: 5px; color: var(--quiet); font-size: 10px; }
+    .confirm-watch { margin-top: 16px; padding: 13px; border: 1px solid rgba(61, 185, 232, 0.28); border-radius: 7px; background: var(--cyan-soft); }
+    .confirm-watch-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; color: var(--cyan); font-size: 12px; font-weight: 700; }
+    .confirm-watch-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .confirm-watch-grid span { color: var(--muted); font-size: 10px; }
+    .confirm-watch-grid strong { display: block; margin-top: 5px; color: var(--text); }
+
+    .research-back { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; }
+    .research-back:hover { color: var(--text); }
+
+    .toast {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 100;
+      min-width: 260px;
+      max-width: min(420px, calc(100vw - 32px));
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 12px 13px;
+      border: 1px solid rgba(45, 212, 160, 0.3);
+      border-radius: 7px;
+      background: #101d1a;
+      color: var(--green);
+      box-shadow: var(--shadow);
+      transform: translateY(20px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease, transform 160ms ease;
+      font-size: 12px;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
+
+    @media (max-width: 1120px) {
+      :root { --sidebar-width: 76px; }
+      .brand { justify-content: center; padding: 0; }
+      .brand-name, .nav-label, .side-foot { display: none; }
+      .nav-item { justify-content: center; padding: 0; }
+      .token-band { grid-template-columns: 1fr; }
+      .create-grid { grid-template-columns: 1fr; }
+      .summary { border-left: 0; border-top: 1px solid var(--line); }
+      .summary-sticky { position: static; }
+      .summary-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .summary-row { display: block; padding: 9px 0; }
+      .summary-row strong { display: block; text-align: left; margin-top: 5px; }
+      .research-layout { grid-template-columns: 300px minmax(0, 1fr); }
+      .detail-grid { grid-template-columns: 1fr; }
+      .workflow-grid { grid-template-columns: 180px minmax(0, 1fr); }
+      .draft-aside { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+      .draft-aside-inner { position: static; display: grid; grid-template-columns: 180px minmax(0, 1fr) 220px; align-items: center; gap: 18px; }
+      .progress-line { display: none; }
+      .draft-token { border-bottom: 0; padding-bottom: 0; }
+      .draft-checks { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+      .draft-check { border-bottom: 0; padding: 0 7px; }
+      .draft-check strong { display: none; }
+      .aside-impact { margin: 0; }
+    }
+
+    @media (max-width: 820px) {
+      :root { --topbar-height: 58px; }
+      .sidebar { position: relative; width: 100%; height: auto; border-right: 0; border-bottom: 1px solid #181b21; }
+      .brand { height: 54px; justify-content: flex-start; padding: 0 16px; }
+      .brand-name { display: inline; }
+      .nav { display: flex; gap: 4px; padding: 6px 10px; overflow-x: auto; }
+      .nav-item { flex: 0 0 42px; height: 38px; }
+      .shell { margin-left: 0; }
+      .topbar { padding: 0 16px; }
+      .page { padding: 18px 14px 36px; }
+      .workspace-bar { align-items: stretch; flex-direction: column; }
+      .source-choice { align-items: stretch; flex-direction: column; }
+      .source-choice > .segment { flex-basis: auto; width: 100%; }
+      .template-select { width: 100%; min-width: 0; flex-basis: auto; }
+      .field-grid, .preset-grid, .strategy-track { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .research-layout { grid-template-columns: 1fr; }
+      .research-input { border-right: 0; border-bottom: 1px solid var(--line); }
+      .workflow-grid { grid-template-columns: 1fr; }
+      .step-rail { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px; }
+      .step-rail-title { display: none; }
+      .step-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .step-button { min-height: 48px; grid-template-columns: 24px minmax(0, 1fr); padding: 5px; }
+      .step-number { width: 22px; height: 22px; }
+      .step-copy span { display: none; }
+      .step-panel { min-height: 600px; }
+      .draft-aside { display: none; }
+      .trade-template { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 560px) {
+      body { font-size: 13px; }
+      .top-status { display: none; }
+      .page-head { align-items: center; }
+      .draft-badge { display: none; }
+      .view-switch { display: flex; width: 100%; }
+      .view-switch button { flex: 1; min-width: 0; }
+      .segment { max-width: 100%; }
+      .source-choice .segment button { min-width: 96px; }
+      .token-band, .section, .summary, .research-input, .research-detail { padding: 14px; }
+      .ca-grid { grid-template-columns: 1fr; }
+      .chain-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .token-identity { grid-template-columns: 42px minmax(0, 1fr); }
+      .source-stack { grid-column: 1 / -1; justify-items: start; display: flex; flex-wrap: wrap; }
+      .field-grid, .preset-grid, .strategy-track, .summary-list { grid-template-columns: 1fr; }
+      .leg-row { grid-template-columns: 1fr 1fr; }
+      .leg-row .leg-remove { min-height: 36px; }
+      .account-row, .account-row.interaction { grid-template-columns: 22px 32px minmax(0, 1fr); }
+      .account-row.interaction { grid-template-columns: 32px minmax(0, 1fr); }
+      .event-set { grid-column: 1 / -1; justify-content: flex-start; padding-left: 66px; }
+      .account-row.interaction .event-set { padding-left: 42px; }
+      .detail-head { align-items: flex-start; flex-direction: column; }
+      .candidate-row { grid-template-columns: 22px 32px minmax(0, 1fr); }
+      .candidate-evidence { grid-column: 2 / -1; justify-content: flex-start; }
+      .detail-actions { flex-direction: column-reverse; }
+      .detail-actions button { width: 100%; }
+      .toast { right: 16px; bottom: 16px; }
+      .head-actions .draft-badge { display: none; }
+      .step-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .step-content { padding: 17px 14px; }
+      .step-actions { padding: 12px 14px; }
+      .identity-wide { grid-template-columns: 42px minmax(0, 1fr); }
+      .template-choice, .ca-entry { grid-template-columns: 1fr; }
+      .template-choice .secondary-button, .ca-entry .primary-button { width: 100%; }
+      .strategy-compact, .confirm-watch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .confirm-block { grid-template-columns: 1fr; }
+      .confirm-item, .confirm-item:nth-child(2n), .confirm-item:nth-last-child(-n+2) { border-right: 0; border-bottom: 1px solid var(--line); }
+      .confirm-item:last-child { border-bottom: 0; }
+      .rule-toolbar { align-items: flex-start; flex-direction: column; }
+      .rule-toolbar-actions { width: 100%; }
+      .rule-toolbar-actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 5-7"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.08A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.08A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.08A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.1.38.31.72.6 1 .29.28.67.42 1.08.4H21v4h-.08a1.7 1.7 0 0 0-1.52.6Z"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M20 7V6a2 2 0 0 0-2-2H5a3 3 0 0 0 0 6h15v10H5a3 3 0 0 1-3-3V7"/><path d="M16 14h.01"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h6.5a3.5 3.5 0 0 0 0-7h-7a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/></symbol>
+  </svg>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark"><svg class="icon"><use href="#i-activity"/></svg></span>
+        <span class="brand-name">xbot.</span>
+      </div>
+      <nav class="nav" aria-label="主导航">
+        <a class="nav-item" href="#" title="总览"><svg class="icon"><use href="#i-chart"/></svg><span class="nav-label">总览</span></a>
+        <a class="nav-item active" href="#" title="白名单"><svg class="icon"><use href="#i-list"/></svg><span class="nav-label">白名单</span></a>
+        <a class="nav-item" href="#" title="KOL"><svg class="icon"><use href="#i-users"/></svg><span class="nav-label">KOL</span></a>
+        <a class="nav-item" href="#" title="信号"><svg class="icon"><use href="#i-activity"/></svg><span class="nav-label">信号</span></a>
+        <a class="nav-item" href="#" title="持仓"><svg class="icon"><use href="#i-chart"/></svg><span class="nav-label">持仓</span></a>
+        <a class="nav-item" href="#" title="交易记录"><svg class="icon"><use href="#i-history"/></svg><span class="nav-label">交易记录</span></a>
+        <a class="nav-item" href="#" title="设置"><svg class="icon"><use href="#i-settings"/></svg><span class="nav-label">设置</span></a>
+      </nav>
+      <div class="side-foot"><div class="prototype-state">P16 交互原型</div></div>
+    </aside>
+
+    <div class="shell">
+      <header class="topbar">
+        <div class="breadcrumb"><span>白名单</span><span>/</span><strong>新建</strong></div>
+        <div class="top-status">本地预览</div>
+      </header>
+
+      <main class="page">
+        <div class="page-head">
+          <div class="page-title">
+            <button class="icon-button" type="button" title="返回白名单" aria-label="返回白名单"><svg class="icon"><use href="#i-arrow-left"/></svg></button>
+            <div><h1 id="page-heading">新增白名单</h1><div class="eyebrow" id="page-subtitle">ROBINHOOD · 草稿</div></div>
+          </div>
+          <div class="head-actions"><button class="secondary-button" type="button" data-open-research><svg class="icon"><use href="#i-search"/></svg>快速投研</button><span class="draft-badge">原型数据</span></div>
+        </div>
+
+        <section id="create-view" class="workspace view-panel">
+          <div class="workflow-grid">
+            <nav class="step-rail" aria-label="创建步骤">
+              <div class="step-rail-title">创建步骤</div>
+              <div class="step-nav">
+                <button class="step-button active" type="button" data-step="1"><span class="step-number">1</span><span class="step-copy"><strong>代币与模板</strong><span>链、CA、配置来源</span></span></button>
+                <button class="step-button" type="button" data-step="2"><span class="step-number">2</span><span class="step-copy"><strong>X 触发账号</strong><span>项目账号、生态互动</span></span></button>
+                <button class="step-button" type="button" data-step="3"><span class="step-number">3</span><span class="step-copy"><strong>资金与离场</strong><span>金额、次数、策略</span></span></button>
+                <button class="step-button" type="button" data-step="4"><span class="step-number">4</span><span class="step-copy"><strong>确认保存</strong><span>Watch 影响、提交</span></span></button>
+              </div>
+            </nav>
+
+            <div class="workflow-main">
+              <section class="step-panel" data-step-panel="1">
+                <div class="step-content">
+                  <div class="step-content-head"><div><span class="step-kicker">步骤 1 / 4</span><h2>选择代币与配置模板</h2><p>ROBINHOOD</p></div><span class="pill green">GMGN 可用</span></div>
+                  <div class="token-form">
+                    <label><span class="field-label">链</span><div class="chain-switch" aria-label="选择链"><button class="chain-button" type="button">SOL</button><button class="chain-button" type="button">BSC</button><button class="chain-button" type="button">BASE</button><button class="chain-button" type="button">ETH</button><button class="chain-button active" type="button">ROBIN</button></div></label>
+                    <label><span class="field-label">合约地址 (CA)<span class="field-note">已识别</span></span><div class="ca-entry"><input class="input mono" aria-label="合约地址" value="0x7a91...f3c2"><button class="primary-button" type="button">读取</button></div></label>
+                    <div class="token-identity identity-wide">
+                      <div class="token-logo">Y</div>
+                      <div><div class="token-name">YOLO <span class="muted">· Yolo</span></div><div class="token-meta"><span>18 decimals</span><span>流动性 $1.28M</span><span>Holder 8,492</span></div></div>
+                      <div class="source-stack"><span class="pill green"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>已核验</span><span class="pill cyan">@yolorobinhood_</span></div>
+                    </div>
+                    <div class="template-choice">
+                      <label><span class="field-label">使用配置</span><select class="select" aria-label="使用配置"><option>ROBIN · 常用分段策略（链默认）</option><option>空白配置</option><option>复制 WOOD 的配置</option></select></label>
+                      <button class="secondary-button" type="button">管理模板</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="step-actions"><span class="selected-summary">代币与模板已完成</span><div class="step-actions-right"><button class="primary-button" type="button" data-next-step="2">下一步：X 触发账号<svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+              </section>
+
+              <section class="step-panel hidden" data-step-panel="2">
+                <div class="step-content">
+                  <div class="step-content-head"><div><span class="step-kicker">步骤 2 / 4</span><h2>选择 X 触发账号</h2><p>项目账号动态与生态账号行为是两个独立触发版块</p></div><span class="pill cyan">3 个唯一 Watch</span></div>
+                  <div class="rule-group">
+                    <div class="rule-toolbar"><div><strong>A · 项目账号自己的 CA 动态</strong><div class="selected-summary">只有内容包含完整 CA 才触发；本版块可以留空</div></div><div class="rule-toolbar-actions"><button class="secondary-button" type="button" data-open-research><svg class="icon"><use href="#i-search"/></svg>投研补全</button><button class="secondary-button" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加账号</button></div></div>
+                    <div class="account-row">
+                      <input class="account-check v2-project-selection" type="checkbox" checked aria-label="选择项目官方账号">
+                      <div class="avatar">PF</div>
+                      <div class="account-name"><strong>@ponsdotfamily</strong><span>项目官方 · 已验证 · CA-only</span></div>
+                      <div class="event-set"><button class="event-chip active" type="button">发帖</button><button class="event-chip" type="button">转发</button><button class="event-chip" type="button">引用</button><button class="event-chip" type="button">回复</button></div>
+                    </div>
+                    <div class="account-row">
+                      <input class="account-check v2-project-selection" type="checkbox" checked aria-label="选择项目创始人账号">
+                      <div class="avatar amber">MG</div>
+                      <div class="account-name"><strong>@MEADGod</strong><span>Founder / 核心团队 · CA-only</span></div>
+                      <div class="event-set"><button class="event-chip active" type="button">发帖</button><button class="event-chip" type="button">转发</button><button class="event-chip" type="button">引用</button><button class="event-chip" type="button">回复</button></div>
+                    </div>
+                  </div>
+                  <div class="rule-group">
+                    <div class="rule-toolbar"><div><strong>B · 生态账号行为</strong><div class="selected-summary">可配置自己发布完整 CA，或与项目账号互动；本版块可以留空</div></div><div class="rule-toolbar-actions"><button class="secondary-button" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加生态账号</button></div></div>
+                    <div class="account-row"><div class="avatar green">UP</div><div class="account-name"><strong>@theunipcs</strong><span>跨链 · 权重 10 · 自己发布完整 CA</span></div><div class="event-set"><button class="event-chip active" type="button">发帖</button><button class="event-chip active" type="button">引用</button><button class="event-chip" type="button">回复</button></div></div>
+                    <div class="account-row interaction"><div class="avatar amber">VT</div><div class="relation-flow"><strong>@vladtenev</strong><svg class="icon"><use href="#i-arrow"/></svg><strong>@ponsdotfamily</strong></div><div class="event-set"><button class="event-chip active" type="button">转发</button><button class="event-chip active" type="button">引用</button><button class="event-chip active" type="button">回复</button><button class="event-chip" type="button">关注</button></div></div>
+                  </div>
+                </div>
+                <div class="step-actions"><button class="secondary-button" type="button" data-next-step="1">上一步</button><div class="step-actions-right"><button class="primary-button" type="button" data-next-step="3">下一步：资金与离场<svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+              </section>
+
+              <section class="step-panel hidden" data-step-panel="3">
+                <div class="step-content">
+                  <div class="step-content-head"><div><span class="step-kicker">步骤 3 / 4</span><h2>设置资金与离场策略</h2><p>已应用 ROBIN 链默认模板</p></div><span class="pill">ROBIN 默认</span></div>
+                  <div class="field-grid">
+                    <label><span class="field-label">单笔真实交易金额 <span>ETH</span></span><input class="input mono" value="0.001"></label>
+                    <label><span class="field-label">累计买入上限 <span>ETH</span></span><input class="input mono" value="0.005"></label>
+                    <label><span class="field-label">最大买入次数</span><input class="input mono" type="number" value="3"></label>
+                  </div>
+                  <div class="trade-template">
+                    <label><span class="field-label">离场策略</span><select class="select" id="v2-strategy-select"><option>保留月亮包</option><option>翻倍出本，无止损</option><option>翻倍出本，带保护</option><option>保守分批</option><option>标准分段</option><option>全仓移动保护</option></select><button class="section-action" type="button" id="v2-advanced-toggle" style="margin-top:9px">编辑条件</button></label>
+                    <div class="strategy-compact"><div class="strategy-node stop"><b>-20% 止损</b><span>卖出剩余仓位</span></div><div class="strategy-node"><b>+100%</b><span>卖出 50%</span></div><div class="strategy-node"><b>+200%</b><span>卖出 25%</span></div><div class="strategy-node trailing"><b>10 倍激活</b><span>回撤 40%</span></div></div>
+                  </div>
+                  <div class="selected-summary" style="margin-top:12px">当前草稿策略：4 条 · 止盈 3 条 · 已设置止损 · 已应用到草稿，尚待第 4 步保存</div>
+                  <div class="advanced-editor hidden" id="v2-advanced-editor">
+                    <div class="leg-row"><select class="select"><option>固定止盈</option></select><input class="input" value="+100%"><input class="input" value="卖出 50%"><button class="leg-remove" title="删除该条件" aria-label="删除该条件"><svg class="icon"><use href="#i-trash"/></svg></button></div>
+                    <div class="leg-row"><select class="select"><option>固定止盈</option></select><input class="input" value="+200%"><input class="input" value="卖出 25%"><button class="leg-remove" title="删除该条件" aria-label="删除该条件"><svg class="icon"><use href="#i-trash"/></svg></button></div>
+                    <button class="secondary-button" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加条件</button>
+                  </div>
+                </div>
+                <div class="step-actions"><button class="secondary-button" type="button" data-next-step="2">上一步</button><div class="step-actions-right"><button class="primary-button" type="button" data-next-step="4">下一步：确认保存<svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+              </section>
+
+              <section class="step-panel hidden" data-step-panel="4">
+                <div class="step-content">
+                  <div class="step-content-head"><div><span class="step-kicker">步骤 4 / 4</span><h2>确认并保存</h2><p>保存后才同步 6551 Watch</p></div><span class="pill green">可以保存</span></div>
+                  <div class="confirm-block">
+                    <div class="confirm-item"><span>代币</span><strong>YOLO · ROBINHOOD</strong><small class="mono">0x7a91...f3c2</small></div>
+                    <div class="confirm-item"><span>配置模板</span><strong>ROBIN · 常用分段策略</strong><small>链默认模板</small></div>
+                    <div class="confirm-item"><span>资金</span><strong>0.001 / 0.005 ETH</strong><small>最多买入 3 次</small></div>
+                    <div class="confirm-item"><span>离场策略</span><strong>分段 + 移动止盈</strong><small>-20% 保护 · 3 条止盈</small></div>
+                    <div class="confirm-item"><span>项目直接来源</span><strong>1 个账号</strong><small>@yolorobinhood_</small></div>
+                    <div class="confirm-item"><span>生态账号互动</span><strong>2 条关系</strong><small>引用 / 回复 / 转发</small></div>
+                  </div>
+                  <div class="confirm-watch"><div class="confirm-watch-head"><span>6551 影响</span><span>预计 +2%</span></div><div class="confirm-watch-grid"><div><span>复用 Watch</span><strong>1</strong></div><div><span>新增 Watch</span><strong>2</strong></div><div><span>候选库</span><strong>5</strong></div><div><span>消息投影</span><strong>14% → 16%</strong></div></div></div>
+                </div>
+                <div class="step-actions"><button class="secondary-button" type="button" data-next-step="3">上一步</button><div class="step-actions-right"><button class="primary-button" type="button" id="v2-save-draft"><svg class="icon"><use href="#i-save"/></svg>保存白名单</button></div></div>
+              </section>
+            </div>
+
+            <aside class="draft-aside">
+              <div class="draft-aside-inner">
+                <div><h2>草稿进度 <span class="muted" id="draft-progress-text">1 / 4</span></h2><div class="progress-line"><span id="draft-progress-bar"></span></div><div class="draft-token"><div class="token-logo">Y</div><div><strong>YOLO</strong><div class="muted mono" style="font-size:10px;margin-top:4px">0x7a91...f3c2</div></div></div></div>
+                <div class="draft-checks"><div class="draft-check done" data-draft-check="1"><span>代币与模板</span><strong>已完成</strong></div><div class="draft-check" data-draft-check="2"><span>X 触发账号</span><strong>3 个账号</strong></div><div class="draft-check" data-draft-check="3"><span>资金与离场</span><strong>ROBIN 默认</strong></div><div class="draft-check" data-draft-check="4"><span>确认保存</span><strong>待确认</strong></div></div>
+                <div class="aside-impact"><div class="summary-row"><span>配置</span><strong>ROBIN 默认</strong></div><div class="summary-row"><span>新增 Watch</span><strong>2</strong></div><div class="summary-row"><span>保存动作</span><strong class="green-text">新增白名单</strong></div></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+
+        <section id="research-view" class="workspace view-panel hidden">
+          <div class="workspace-bar">
+            <div class="source-choice">
+              <button class="research-back" type="button" data-return-create><svg class="icon"><use href="#i-arrow-left"/></svg>返回创建</button>
+              <span class="pill green">扩展查找可用</span>
+            </div>
+            <span class="muted" style="font-size:11px">报告缓存 1 小时</span>
+          </div>
+          <div class="research-layout">
+            <aside class="research-input">
+              <div class="segment" aria-label="投研模式"><button type="button">单个 CA</button><button class="active" type="button">批量 CA</button></div>
+              <label><span class="field-label">链</span><select class="select"><option>ROBINHOOD</option><option>SOL</option><option>BSC</option><option>BASE</option><option>ETH</option></select></label>
+              <label style="display:block;margin-top:12px"><span class="field-label">合约地址 <span>3 条</span></span><textarea class="textarea mono">0x7a91...f3c2
+0x83bd...21a0
+0x4f21...8b91</textarea></label>
+              <button class="primary-button" id="scan-button" type="button" style="width:100%;margin-top:12px"><svg class="icon"><use href="#i-search"/></svg>扫描 3 个 CA</button>
+              <div class="scan-state">
+                <div class="scan-row"><span>后台任务</span><strong class="green-text">运行中 · 可刷新恢复</strong></div>
+                <div class="scan-row"><span>GMGN 基础扫描</span><strong class="green-text">3 / 3</strong></div>
+                <div class="scan-row"><span>Grok 独立分析</span><strong>2 / 3 · 并发 3</strong></div>
+                <div class="scan-row"><span>6551 候选核验</span><strong>1 / 3</strong></div>
+                <div class="scan-row"><span>实际耗时</span><strong>01:18</strong></div>
+              </div>
+            </aside>
+
+            <div class="research-results">
+              <div class="results-head"><strong>研究结果 · 3</strong><div class="segment" aria-label="结果筛选"><button class="active" type="button">全部</button><button type="button">有官方 X</button><button type="button">待确认</button></div></div>
+              <div class="results-table-wrap">
+                <table>
+                  <thead><tr><th>代币</th><th>流动性</th><th>Holder</th><th>风险事实</th><th>官方 X</th><th>状态</th></tr></thead>
+                  <tbody>
+                    <tr class="selected"><td><div class="token-cell"><span class="mini-logo">P</span><div><strong>PONS</strong><div class="quiet mono">0x39db...4571</div></div></div></td><td>$1.28M</td><td>8,492</td><td><div class="risk-dots"><span class="risk-dot"></span><span class="risk-dot"></span><span class="risk-dot warn"></span></div></td><td>@ponsdotfamily</td><td><span class="pill green">已完成 · 44.7s</span></td></tr>
+                    <tr><td><div class="token-cell"><span class="mini-logo">W</span><div><strong>WOOD</strong><div class="quiet mono">0x83bd...21a0</div></div></div></td><td>$426K</td><td>3,218</td><td><div class="risk-dots"><span class="risk-dot"></span><span class="risk-dot warn"></span><span class="risk-dot off"></span></div></td><td>@sherwoodagent</td><td><span class="pill cyan">Grok 分析中</span></td></tr>
+                    <tr><td><div class="token-cell"><span class="mini-logo">C</span><div><strong>CASHCAT</strong><div class="quiet mono">0x4f21...8b91</div></div></div></td><td>$182K</td><td>1,106</td><td><div class="risk-dots"><span class="risk-dot"></span><span class="risk-dot warn"></span><span class="risk-dot warn"></span></div></td><td class="muted">待核验</td><td><span class="pill amber">失败 · 可只重试本项</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="research-detail">
+                <div class="detail-head"><div><h2>PONS · 项目团队候选</h2><div class="eyebrow">GMGN → Grok → 6551 · 2026-07-26</div></div><span class="pill green">已完成</span></div>
+                <div class="detail-grid">
+                  <section class="fact-panel">
+                    <div class="fact-panel-head"><span>链上事实</span><span class="pill green">已完成</span></div>
+                    <div class="fact-list"><div class="fact"><span>流动性</span><strong>$1.28M</strong></div><div class="fact"><span>24h 成交</span><strong>$3.42M</strong></div><div class="fact"><span>买 / 卖税</span><strong>0% / 0%</strong></div><div class="fact"><span>Top 10 集中度</span><strong>22.8%</strong></div></div>
+                  </section>
+                  <section class="fact-panel">
+                    <div class="fact-panel-head"><span>账号候选</span><span class="muted"><span id="candidate-count">2</span> 个已选</span></div>
+                    <div class="candidate-list">
+                      <label class="candidate-row"><input class="account-check research-candidate" type="checkbox" checked><div class="avatar">PF</div><div class="account-name"><strong>@ponsdotfamily</strong><span>项目官方 · Project Account</span></div><div class="candidate-evidence"><span class="pill green">已验证</span><span class="pill">GMGN + 6551</span></div></label>
+                      <label class="candidate-row"><input class="account-check research-candidate" type="checkbox" checked><div class="avatar amber">MG</div><div class="account-name"><strong>@MEADGod</strong><span>Founder / 核心团队 · Project Account</span></div><div class="candidate-evidence"><span class="pill green">高置信</span><span class="pill">Grok + 6551</span></div></label>
+                    </div>
+                  </section>
+                </div>
+                <div class="detail-actions"><button class="secondary-button" type="button">仅保存研究报告</button><button class="primary-button" id="generate-draft" type="button"><svg class="icon"><use href="#i-arrow"/></svg>生成白名单草稿</button></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"><svg class="icon"><use href="#i-check"/></svg><span id="toast-text">操作完成</span></div>
+
+  <script>
+    const createView = document.getElementById('create-view');
+    const researchView = document.getElementById('research-view');
+    const pageHeading = document.getElementById('page-heading');
+    const pageSubtitle = document.getElementById('page-subtitle');
+    const breadcrumbCurrent = document.querySelector('.breadcrumb strong');
+    const researchButtons = document.querySelectorAll('[data-open-research]');
+    const stepButtons = document.querySelectorAll('[data-step]');
+    const stepPanels = document.querySelectorAll('[data-step-panel]');
+    const draftChecks = document.querySelectorAll('[data-draft-check]');
+    const progressText = document.getElementById('draft-progress-text');
+    const progressBar = document.getElementById('draft-progress-bar');
+    const toast = document.getElementById('toast');
+    const toastText = document.getElementById('toast-text');
+    let currentStep = 1;
+    let toastTimer;
+
+    function showToast(message) {
+      toastText.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+
+    function setView(name) {
+      const researching = name === 'research';
+      createView.classList.toggle('hidden', researching);
+      researchView.classList.toggle('hidden', !researching);
+      pageHeading.textContent = researching ? '快速投研' : '新增白名单';
+      pageSubtitle.textContent = researching ? '从 CA 发现项目与生态账号' : 'ROBINHOOD · 草稿';
+      breadcrumbCurrent.textContent = researching ? '快速投研' : '新建';
+      researchButtons.forEach((button) => {
+        if (button.closest('.page-head')) button.classList.toggle('hidden', researching);
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function setStep(step) {
+      currentStep = Math.max(1, Math.min(4, Number(step)));
+      stepPanels.forEach((panel) => panel.classList.toggle('hidden', Number(panel.dataset.stepPanel) !== currentStep));
+      stepButtons.forEach((button) => {
+        const buttonStep = Number(button.dataset.step);
+        button.classList.toggle('active', buttonStep === currentStep);
+        button.classList.toggle('completed', buttonStep < currentStep);
+        if (buttonStep === currentStep) button.setAttribute('aria-current', 'step');
+        else button.removeAttribute('aria-current');
+      });
+      draftChecks.forEach((item) => item.classList.toggle('done', Number(item.dataset.draftCheck) <= currentStep));
+      progressText.textContent = currentStep + ' / 4';
+      progressBar.style.width = (currentStep * 25) + '%';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    researchButtons.forEach((button) => button.addEventListener('click', () => setView('research')));
+    document.querySelectorAll('[data-return-create]').forEach((button) => button.addEventListener('click', () => setView('create')));
+    stepButtons.forEach((button) => button.addEventListener('click', () => setStep(button.dataset.step)));
+    document.querySelectorAll('[data-next-step]').forEach((button) => button.addEventListener('click', () => setStep(button.dataset.nextStep)));
+
+    document.querySelectorAll('.chain-button').forEach((button) => button.addEventListener('click', () => {
+      button.closest('.chain-switch').querySelectorAll('.chain-button').forEach((item) => item.classList.remove('active'));
+      button.classList.add('active');
+    }));
+
+    document.querySelectorAll('.segment').forEach((segment) => {
+      segment.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {
+        segment.querySelectorAll('button').forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+      }));
+    });
+
+    document.querySelectorAll('.event-chip').forEach((button) => button.addEventListener('click', () => {
+      button.classList.toggle('active');
+    }));
+
+    document.getElementById('v2-advanced-toggle').addEventListener('click', (event) => {
+      const editor = document.getElementById('v2-advanced-editor');
+      const opening = editor.classList.contains('hidden');
+      editor.classList.toggle('hidden');
+      event.currentTarget.textContent = opening ? '收起条件' : '编辑条件';
+    });
+
+    function updateCandidateCount() {
+      document.getElementById('candidate-count').textContent = document.querySelectorAll('.research-candidate:checked').length;
+    }
+    document.querySelectorAll('.research-candidate').forEach((input) => input.addEventListener('change', updateCandidateCount));
+
+    document.getElementById('scan-button').addEventListener('click', () => showToast('基础扫描已使用缓存结果'));
+    document.getElementById('generate-draft').addEventListener('click', () => {
+      setView('create');
+      setStep(2);
+      showToast('已生成草稿，尚未保存或同步 Watch');
+    });
+    document.getElementById('v2-save-draft').addEventListener('click', () => showToast('原型预览：未写入真实白名单'));
+
+    document.querySelectorAll('.results-table-wrap tbody tr').forEach((row) => row.addEventListener('click', () => {
+      row.closest('tbody').querySelectorAll('tr').forEach((item) => item.classList.remove('selected'));
+      row.classList.add('selected');
+    }));
+
+    updateCandidateCount();
+    setStep(1);
+    setView('create');
+  </script>
+</body>
+</html>

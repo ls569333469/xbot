@@ -2,6 +2,7 @@ const db = require('../../../lib/db');
 const providerUsage = require('../../../lib/provider-usage');
 const engineState = require('../../../lib/engine-state');
 const { getTradingMode } = require('../../../lib/runtime-mode');
+const { X6551Client } = require('../../../lib/x-client-6551');
 const { consumer } = require('./wss-consumer');
 const { HEARTBEAT_STALE_MS, latestHeartbeat } = require('../../../lib/service-heartbeat');
 
@@ -26,12 +27,24 @@ function usageLevel(usagePct) {
 }
 
 async function get6551Status(executor = db, consumerInstance = consumer) {
-  const [watchRows, eventRows, eventTotals, restUsage, ingestionHeartbeat] = await Promise.all([
+  const provider = String(process.env.X_DATA_PROVIDER || 'mock').toLowerCase();
+  const remoteWatchPromise = provider === '6551' && process.env.OPENNEWS_TOKEN
+    ? new X6551Client(process.env.OPENNEWS_TOKEN).listWatches()
+      .then((rows) => ({ count: rows.length, error: null }))
+      .catch((error) => ({ count: null, error: error.code || 'X6551_WATCH_STATUS_UNAVAILABLE' }))
+    : Promise.resolve({ count: null, error: 'X6551_PROVIDER_INACTIVE' });
+
+  const [watchRows, watchSyncRows, eventRows, eventTotals, restUsage, ingestionHeartbeat, remoteWatches] = await Promise.all([
     executor.query(
       `SELECT sync_status AS status, COUNT(*) AS count,
               COUNT(*) FILTER (WHERE managed = true) AS managed_count
        FROM x_provider_watches WHERE provider = '6551'
        GROUP BY sync_status`
+    ),
+    executor.query(
+      `SELECT status, COUNT(*) AS count, MIN(requested_at) AS oldest_requested_at
+       FROM x_watch_sync_outbox
+       GROUP BY status`
     ),
     executor.query(
       `SELECT status, COUNT(*) AS count
@@ -52,15 +65,18 @@ async function get6551Status(executor = db, consumerInstance = consumer) {
        FROM x_provider_events WHERE provider = '6551'`
     ),
     providerUsage.getDailyUsage('6551'),
-    latestHeartbeat(['ingestion', 'all'], executor).catch(() => null)
+    latestHeartbeat(['ingestion', 'all'], executor).catch(() => null),
+    remoteWatchPromise
   ]);
 
   const watches = countsByStatus(watchRows.rows);
+  const watchSyncCounts = countsByStatus(watchSyncRows.rows);
   const inbox = countsByStatus(eventRows.rows);
   const totals = eventTotals.rows[0] || {};
   const observedMonth = Number(totals.month || 0);
   const messageLimit = Math.max(1, Number(process.env.X_6551_MONTHLY_MESSAGE_LIMIT || 2000000));
   const messageUsagePct = Number(((observedMonth / messageLimit) * 100).toFixed(2));
+  const registryTotal = Object.values(watches).reduce((total, count) => total + count, 0);
 
   const localWss = consumerInstance.getStatus();
   const sharedWss = ingestionHeartbeat?.status?.wss || null;
@@ -88,11 +104,30 @@ async function get6551Status(executor = db, consumerInstance = consumer) {
     wss,
     watches: {
       byStatus: watches,
-      total: Object.values(watches).reduce((total, count) => total + count, 0),
+      // `total` is the current remote count. The local registry also retains
+      // historical rows for ownership and audit, so it must not be shown as
+      // the number of active provider Watches.
+      total: remoteWatches.count ?? registryTotal,
+      remoteTotal: remoteWatches.count,
+      remoteAvailable: remoteWatches.count !== null,
+      remoteError: remoteWatches.error,
+      registryTotal,
       managed: watchRows.rows.reduce(
         (total, row) => total + Number(row.managed_count || 0),
         0
       )
+    },
+    watchSync: {
+      byStatus: watchSyncCounts,
+      pending: Number(watchSyncCounts.pending || 0) + Number(watchSyncCounts.processing || 0)
+        + Number(watchSyncCounts.failed || 0),
+      failed: Number(watchSyncCounts.failed || 0),
+      oldestRequestedAt: watchSyncRows.rows
+        .filter((row) => ['pending', 'processing', 'failed'].includes(row.status))
+        .map((row) => row.oldest_requested_at)
+        .filter(Boolean)
+        .sort()[0] || null,
+      runtime: ingestionHeartbeat?.status?.watchSync || null
     },
     inbox: {
       byStatus: inbox,

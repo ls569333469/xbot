@@ -65,6 +65,24 @@ function firstObjectWith(payload, keys) {
   return collectObjects(payload).find((item) => keys.some((key) => item[key] !== undefined));
 }
 
+function normalizeTweets(payload) {
+  const tweets = new Map();
+  for (const item of collectObjects(payload)) {
+    const id = String(item.twId ?? item.tweetId ?? item.id ?? '').trim();
+    const text = String(item.text ?? item.fullText ?? item.content ?? '').trim();
+    if (!id || !text) continue;
+    tweets.set(id, {
+      id,
+      text,
+      created_at: item.createdAt ?? item.created_at ?? null,
+      user_handle: normalizeXHandle(
+        item.userScreenName ?? item.screenName ?? item.twAccount ?? item.username ?? ''
+      )
+    });
+  }
+  return [...tweets.values()];
+}
+
 class X6551Client {
   constructor(token, options = {}) {
     if (!token) throw new Error('OPENNEWS_TOKEN is required');
@@ -150,23 +168,75 @@ class X6551Client {
   async getUserProfile(handle) {
     const username = normalizeXHandle(handle);
     const payload = await this.request('twitter_user_info', { username });
-    const user = firstObjectWith(payload, ['userId', 'userIdStr', 'twId', 'screenName']);
+    const user = firstObjectWith(payload, [
+      'userId', 'userIdStr', 'twId', 'screenName', 'screen_name', 'rest_id'
+    ]);
     if (!user) {
       const error = new Error('6551 user response is missing a profile object');
       error.code = 'X6551_SCHEMA_ERROR';
       throw error;
     }
+    const legacy = user.legacy && typeof user.legacy === 'object' ? user.legacy : {};
+    const providerHandle = normalizeXHandle(
+      user.screenName ?? user.screen_name ?? user.twAccount ?? user.username
+      ?? legacy.screen_name ?? ''
+    );
+    if (providerHandle && providerHandle !== username) {
+      const error = new Error('6551 returned a different X account than requested');
+      error.code = 'X6551_PROFILE_MISMATCH';
+      throw error;
+    }
+
+    // twitter_user_info currently confirms profiles by screenName but may omit a numeric user ID.
+    // Watch management and matching are handle-based, so a confirmed canonical handle is a valid identity fallback.
+    const userId = String(
+      user.userId ?? user.userIdStr ?? user.twId ?? user.rest_id ?? user.id ?? providerHandle
+    ).trim();
+    if (!userId || ['undefined', 'null'].includes(userId.toLowerCase())) {
+      const error = new Error('6551 user response is missing a valid user ID');
+      error.code = 'X6551_SCHEMA_ERROR';
+      throw error;
+    }
     return {
-      id: String(user.userId ?? user.userIdStr ?? user.twId ?? user.id),
-      handle: normalizeXHandle(user.screenName ?? user.twAccount ?? user.username ?? username),
-      name: user.name ?? user.twUserName ?? '',
-      followers_count: Number(user.followersCount ?? user.followerCount ?? 0),
-      following_count: Number(user.friendsCount ?? user.followingCount ?? 0)
+      id: userId,
+      handle: providerHandle || username,
+      name: user.name ?? user.twUserName ?? legacy.name ?? '',
+      followers_count: Number(
+        user.followersCount ?? user.followerCount ?? legacy.followers_count ?? 0
+      ),
+      following_count: Number(
+        user.friendsCount ?? user.followingCount ?? legacy.friends_count ?? 0
+      )
     };
   }
 
   async getTweetById(tweetId) {
     return this.request('twitter_tweet_by_id', { twId: String(tweetId) });
+  }
+
+  async getUserTweets(handle, options = {}) {
+    const payload = await this.request('twitter_user_tweets', {
+      username: normalizeXHandle(handle),
+      maxResults: Math.min(100, Math.max(1, Number(options.maxResults || 20))),
+      product: options.product === 'Top' ? 'Top' : 'Latest',
+      includeReplies: options.includeReplies === true,
+      includeRetweets: options.includeRetweets === true
+    });
+    return normalizeTweets(payload);
+  }
+
+  async searchTweets(filters = {}) {
+    const body = {
+      maxResults: Math.min(100, Math.max(1, Number(filters.maxResults || 20))),
+      product: filters.product === 'Latest' ? 'Latest' : 'Top'
+    };
+    for (const key of ['keywords', 'fromUser', 'toUser', 'mentionUser', 'hashtag']) {
+      if (filters[key]) body[key] = key.endsWith('User')
+        ? normalizeXHandle(filters[key])
+        : String(filters[key]).trim();
+    }
+    const payload = await this.request('twitter_search', body);
+    return normalizeTweets(payload);
   }
 
   async listWatches() {
@@ -194,6 +264,7 @@ module.exports = {
   X6551Client,
   collectObjects,
   largestObjectArray,
+  normalizeTweets,
   normalizeWatch,
   normalizeWatchFlags,
   preserveWatchUsername

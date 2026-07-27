@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   buildSwapParams,
+  nativeFeeFields,
   resolveGasPriceWei
 } = require('../domains/trade/chain-adapters');
 
@@ -88,5 +89,61 @@ test('Ethereum uses an official gas tier and only enables auto fee for strategie
   } finally {
     if (previous === undefined) delete process.env.GMGN_ETH_GAS_LEVEL;
     else process.env.GMGN_ETH_GAS_LEVEL = previous;
+  }
+});
+
+test('all execution chains enforce retry fee caps and Robinhood rejects retry fee guessing', () => {
+  const originalPriority = process.env.GMGN_SOL_PRIORITY_FEE;
+  const originalTip = process.env.GMGN_SOL_TIP_FEE;
+  process.env.GMGN_SOL_PRIORITY_FEE = '0.00001';
+  process.env.GMGN_SOL_TIP_FEE = '0.00001';
+  try {
+    const sol = nativeFeeFields('sol', false, {}, {
+      attemptNo: 2,
+      retryConfig: { maxRetryFeeNative: 0.00002, feeEscalationEnabled: false }
+    });
+    assert.equal(sol.priority_fee, '0.00001');
+    assert.throws(() => nativeFeeFields('sol', false, {}, {
+      attemptNo: 2,
+      retryConfig: { maxRetryFeeNative: 0.000019, feeEscalationEnabled: false }
+    }), error => error.code === 'RETRY_FEE_CAP_EXCEEDED');
+
+    withoutGasOverrides(() => {
+      const gas = { average: '100000000', high: '150000000', estimated_gas: '21000' };
+      const bsc = nativeFeeFields('bsc', false, gas, {
+        attemptNo: 2,
+        retryConfig: { maxRetryFeeNative: 0.00001, feeEscalationEnabled: false }
+      });
+      assert.equal(bsc.gas_price, '100000000');
+      assert.equal(bsc.is_anti_mev, true);
+
+      const base = nativeFeeFields('base', false, gas, {
+        attemptNo: 2,
+        retryConfig: { maxRetryFeeNative: 0.00001, feeEscalationEnabled: false }
+      });
+      assert.equal(base.gas_price, '100000000');
+      assert.equal('is_anti_mev' in base, false);
+    });
+
+    const ethGas = { average: '10000000000', high: '15000000000', estimated_gas: '21000' };
+    assert.equal(nativeFeeFields('eth', false, ethGas, {
+      attemptNo: 2,
+      retryConfig: { maxRetryFeeNative: 0.001, feeEscalationEnabled: false }
+    }).gas_level, 'average');
+    assert.throws(() => nativeFeeFields('eth', false, ethGas, {
+      attemptNo: 2,
+      retryConfig: { maxRetryFeeNative: 0.0001, feeEscalationEnabled: false }
+    }), error => error.code === 'RETRY_FEE_CAP_EXCEEDED');
+
+    assert.deepEqual(nativeFeeFields('robinhood', false, {}, { attemptNo: 1 }), {});
+    assert.throws(() => nativeFeeFields('robinhood', false, {}, {
+      attemptNo: 2,
+      retryConfig: { maxRetryFeeNative: 1 }
+    }), error => error.code === 'RETRY_RUNTIME_DISABLED');
+  } finally {
+    if (originalPriority === undefined) delete process.env.GMGN_SOL_PRIORITY_FEE;
+    else process.env.GMGN_SOL_PRIORITY_FEE = originalPriority;
+    if (originalTip === undefined) delete process.env.GMGN_SOL_TIP_FEE;
+    else process.env.GMGN_SOL_TIP_FEE = originalTip;
   }
 });

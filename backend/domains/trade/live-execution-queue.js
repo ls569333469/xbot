@@ -42,12 +42,40 @@ class LiveExecutionQueue {
     if (!armedAt) return { status: 'skipped', reason: 'arm_time_unknown' };
     this.scanRunning = true;
     try {
+      const maxAgeSeconds = Math.max(1, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300));
+      await this.db.query(
+        `UPDATE trade_signals AS signal
+         SET status = 'expired',
+             reject_reason = CASE
+               WHEN lower(COALESCE(activity.provider, '')) = '6551'
+                 AND activity.source_created_at IS NULL THEN 'SOURCE_EVENT_TIME_MISSING'
+               ELSE 'SIGNAL_EXPIRED'
+             END,
+             updated_at = NOW()
+         FROM x_activities AS activity
+         WHERE signal.status = 'recorded' AND signal.execution_mode = 'live'
+           AND activity.id = signal.activity_id
+           AND (
+             (lower(COALESCE(activity.provider, '')) = '6551' AND activity.source_created_at IS NULL)
+             OR CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+               THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END
+               < NOW() - ($1 * INTERVAL '1 second')
+           )`,
+        [maxAgeSeconds]
+      );
       const result = await this.db.query(
-        `SELECT id, execution_mode
-         FROM trade_signals
-         WHERE status = 'recorded' AND execution_mode = 'live'
-           AND created_at >= $1
-         ORDER BY created_at ASC
+        `SELECT signal.id, signal.execution_mode
+         FROM trade_signals AS signal
+         JOIN x_activities AS activity ON activity.id = signal.activity_id
+         JOIN ca_whitelist AS whitelist ON whitelist.id = signal.whitelist_id
+         WHERE signal.status = 'recorded' AND signal.execution_mode = 'live'
+           AND whitelist.status = 'active'
+           AND whitelist.live_activation_state = 'live_ready'
+           AND (signal.activation_wait_version IS NULL
+             OR signal.activation_wait_version = whitelist.activation_version)
+           AND CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+             THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END >= $1
+         ORDER BY COALESCE(activity.source_created_at, signal.created_at) ASC
          LIMIT 20`,
         [armedAt]
       );
@@ -148,11 +176,12 @@ class LiveExecutionQueue {
       ? 'execution_enqueued_at = COALESCE(execution_enqueued_at, NOW())'
       : `execution_started_at = COALESCE(execution_started_at, NOW()),
          signal_to_execution_ms = GREATEST(0, ROUND(EXTRACT(EPOCH FROM
-           (NOW() - signal.created_at)) * 1000)::int)`;
+           (NOW() - COALESCE(activity.source_created_at, signal.created_at))) * 1000)::int)`;
     await this.db.query(
       `UPDATE x_provider_events AS provider_event
        SET ${assignment}, updated_at = NOW()
        FROM trade_signals AS signal
+       JOIN x_activities AS activity ON activity.id = signal.activity_id
        WHERE signal.id = $1
          AND signal.activity_id = ANY(COALESCE(provider_event.activity_ids, '{}'::int[]))`,
       [signalId]
@@ -162,18 +191,41 @@ class LiveExecutionQueue {
   async claimSignal(signalId) {
     const maxAgeSeconds = Math.max(1, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300));
     await this.db.query(
-      `UPDATE trade_signals SET status = 'expired', reject_reason = 'SIGNAL_EXPIRED', updated_at = NOW()
-       WHERE id = $1 AND status = 'recorded'
-         AND created_at < NOW() - ($2 * INTERVAL '1 second')`,
+      `UPDATE trade_signals AS signal
+       SET status = 'expired',
+           reject_reason = CASE
+             WHEN lower(COALESCE(activity.provider, '')) = '6551'
+               AND activity.source_created_at IS NULL THEN 'SOURCE_EVENT_TIME_MISSING'
+             ELSE 'SIGNAL_EXPIRED'
+           END,
+           updated_at = NOW()
+       FROM x_activities AS activity
+       WHERE signal.id = $1 AND signal.status = 'recorded'
+         AND activity.id = signal.activity_id
+         AND (
+           (lower(COALESCE(activity.provider, '')) = '6551' AND activity.source_created_at IS NULL)
+           OR CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+             THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END
+             < NOW() - ($2 * INTERVAL '1 second')
+         )`,
       [signalId, maxAgeSeconds]
     );
     const armedAt = this.engine.getArmedAt?.();
     if (!armedAt) return null;
     const result = await this.db.query(
-      `UPDATE trade_signals SET status = 'pending', updated_at = NOW()
-       WHERE id = $1 AND status = 'recorded' AND execution_mode = 'live'
-         AND created_at >= $2
-       RETURNING *`,
+      `UPDATE trade_signals AS signal
+       SET status = 'pending', updated_at = NOW()
+       FROM x_activities AS activity, ca_whitelist AS whitelist
+       WHERE signal.id = $1 AND signal.status = 'recorded' AND signal.execution_mode = 'live'
+         AND activity.id = signal.activity_id
+         AND whitelist.id = signal.whitelist_id
+         AND whitelist.status = 'active'
+         AND whitelist.live_activation_state = 'live_ready'
+         AND (signal.activation_wait_version IS NULL
+           OR signal.activation_wait_version = whitelist.activation_version)
+         AND CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+           THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END >= $2
+       RETURNING signal.*`,
       [signalId, armedAt]
     );
     return result.rows[0] || null;
@@ -181,6 +233,9 @@ class LiveExecutionQueue {
 
   async executeItem(item) {
     if (this.modeProvider() !== 'live' || !this.engine.getArmed()) {
+      if (this.engine.getStatus?.().status === 'paused_transient') {
+        return { status: 'skipped', reason: 'live_gate_temporarily_paused' };
+      }
       await this.db.query(
         `UPDATE trade_signals
          SET status = 'signal_only', reject_reason = 'LIVE_TRADING_STOPPED', updated_at = NOW()

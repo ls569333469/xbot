@@ -1,4 +1,3 @@
-// D:\AI_Projects\xbot\backend\jobs\budget-reset.js
 const logger = require('../lib/logger');
 
 async function reset() {

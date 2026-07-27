@@ -9,8 +9,12 @@ import PositionsPage from './pages/PositionsPage';
 import TradeLog from './pages/TradeLog';
 
 function App() {
+  const basename = import.meta.env.BASE_URL === '/'
+    ? undefined
+    : import.meta.env.BASE_URL.replace(/\/$/, '');
+
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
