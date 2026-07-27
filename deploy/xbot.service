@@ -1,0 +1,28 @@
+[Unit]
+Description=XBOT Trading and Monitoring Service
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=xbot
+Group=xbot
+WorkingDirectory=/opt/xbot/backend
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/xbot/backend/scripts/supervisor.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillMode=control-group
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/xbot/backend
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,7 @@
 # P18 Server Cleanup, GitHub Deployment, and XBOT Data Migration Plan
 
+> Implementation status (2026-07-28): XBOT release `p18.1-production-20260728` is deployed to `107.172.78.150`; database migration, local HTTP/API/WebSocket checks, TGBOT regression, and browser layout checks passed. Public DNS remains outside the cutover: `xiexiu.io` currently resolves to `34.84.35.236`, not the new server.
+
 ## 1. Scope and decision
 
 This plan covers the production server `107.172.78.150`:
@@ -115,12 +117,14 @@ Server import:
 The first server start is a cold deployment and must override any migrated runtime state with:
 
 ```dotenv
-TRADING_MODE=paper
+TRADING_MODE=live
 LIVE_TRADING_ENABLED=false
 EMERGENCY_STOP=true
 X_6551_WSS_ENABLED=false
 X_6551_WATCH_APPLY_ENABLED=false
 ```
+
+`TRADING_MODE=paper` is not used because the current runtime rejects it unless the legacy paper engine is explicitly re-enabled. `TRADING_MODE=live` does not permit an order while `LIVE_TRADING_ENABLED=false`, `EMERGENCY_STOP=true`, and the persisted engine state is stopped.
 
 This prevents the local and server instances from simultaneously consuming 6551 events, changing remote Watches, or executing a trade. The local supervisor remains stopped after the snapshot. Only after the server UI, API, database counts, WebSocket route, and TGBOT regression checks pass may 6551 ingestion be moved to the server. Live trading remains disabled until the existing readiness and live-approval flow is explicitly completed on the server.
 
@@ -140,6 +144,8 @@ The migration is a database snapshot transfer, not a conversion from MEME schema
 8. Confirm the local XBOT supervisor is stopped and only the server deployment can own 6551 ingestion and GMGN execution credentials.
 9. Keep server live trading disabled after technical deployment; activation requires a separate production readiness and approval action.
 10. Delete the remaining MEME database and old systemd/Nginx references only after separate confirmation.
+
+The public DNS gate is independent of server health. Before declaring `https://xiexiu.io/xbot/` live, the DNS A record and HTTPS termination must route `xiexiu.io` to `107.172.78.150`. Until that change, the verified server entry is `http://107.172.78.150/xbot/`; the existing host at `34.84.35.236` must not be overwritten as part of this plan.
 
 The release gate also includes:
 
