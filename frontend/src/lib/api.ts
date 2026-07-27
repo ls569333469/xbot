@@ -73,6 +73,7 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
   try {
     const res = await fetch(url, { ...options, headers });
     if (!res.ok && res.status === 401) {
+      window.dispatchEvent(new Event('xbot:unauthorized'));
       console.error('API 401: Token 无效或缺失');
       return { ok: false, error: 'Unauthorized' } as unknown as T;
     }
@@ -102,7 +103,17 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 }
 
 export function setAdminToken(token: string) {
-  localStorage.setItem('xbot_admin_token', token);
+  localStorage.setItem('xbot_admin_token', token.trim());
+}
+
+export function clearAdminToken() {
+  localStorage.removeItem('xbot_admin_token');
+}
+
+export function validateAdminToken(token: string) {
+  return fetchApi<ApiResponse<unknown>>('/api/system/engine-status', {
+    headers: { Authorization: `Bearer ${token.trim()}` },
+  });
 }
 
 export const api = {

@@ -1,6 +1,10 @@
 # P18 Production Deployment Assets
 
-These files record the configuration deployed to `107.172.78.150` for release `p18.1-production-20260728`.
+These files record the configuration deployed to `107.172.78.150` for release `p18.2-production-20260728`.
+
+The production JavaScript runtime is pinned to Node `20.20.x` and npm `10.8.x`. Both package manifests run `deploy/check-node-runtime.js` before dependency installation so a different npm major cannot silently rewrite the lockfiles.
+
+P18.2 adds an authenticated frontend gate. A missing or rejected `ADMIN_TOKEN` must render the login screen instead of an empty business table.
 
 - `xbot.service` runs the supervisor as the unprivileged `xbot` operating-system user.
 - `nginx-trading-platform.conf` mounts XBOT at `/xbot/` and preserves TGBOT at `/tg/`.

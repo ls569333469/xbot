@@ -1,16 +1,111 @@
-import React, { useState, useEffect } from 'react';
+import React, { FormEvent, useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useWebSocket } from './hooks/useWebSocket';
-import { api, getAuthToken } from './lib/api';
-import { LayoutDashboard, List, Users, Activity, Settings, ShieldAlert, ShieldCheck, Wifi, WifiOff, TrendingUp, History } from 'lucide-react';
+import { api, clearAdminToken, getAuthToken, setAdminToken, validateAdminToken } from './lib/api';
+import { Activity, Eye, EyeOff, History, KeyRound, LayoutDashboard, List, LogIn, Settings, ShieldAlert, ShieldCheck, TrendingUp, Users, Wifi, WifiOff } from 'lucide-react';
+
+type AuthState = 'checking' | 'authenticated' | 'signed_out';
+
+function AuthenticationScreen({ checking, initialError }: { checking: boolean; initialError?: string }) {
+  const [token, setToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(initialError || '');
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const candidate = token.trim();
+    if (!candidate) {
+      setError('请输入管理员口令');
+      return;
+    }
+
+    setSubmitting(true);
+    setError('');
+    const response = await validateAdminToken(candidate);
+    setSubmitting(false);
+    if (!response.ok) {
+      setError(response.error === 'Unauthorized' ? '管理员口令无效' : (response.error || '无法连接服务器'));
+      return;
+    }
+
+    setAdminToken(candidate);
+    window.location.reload();
+  };
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-labelledby="auth-title">
+        <div className="auth-mark"><KeyRound size={22} /></div>
+        <div>
+          <h1 id="auth-title">XBOT 管理登录</h1>
+          <p>{checking ? '正在验证登录状态' : '请输入生产环境管理员口令'}</p>
+        </div>
+        {!checking && <form onSubmit={handleSubmit} className="auth-form">
+          <label htmlFor="admin-token">管理员口令</label>
+          <div className="auth-token-input">
+            <input
+              id="admin-token"
+              type={showToken ? 'text' : 'password'}
+              value={token}
+              autoComplete="current-password"
+              autoFocus
+              onChange={(event) => setToken(event.target.value)}
+            />
+            <button type="button" onClick={() => setShowToken((value) => !value)} title={showToken ? '隐藏口令' : '显示口令'} aria-label={showToken ? '隐藏口令' : '显示口令'}>
+              {showToken ? <EyeOff size={17} /> : <Eye size={17} />}
+            </button>
+          </div>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button className="btn btn-primary auth-submit" type="submit" disabled={submitting}>
+            <LogIn size={16} /> {submitting ? '验证中' : '进入系统'}
+          </button>
+        </form>}
+        {checking && <div className="auth-checking" aria-label="正在验证" />}
+      </section>
+    </main>
+  );
+}
 
 export default function Layout() {
   const { isConnected, lastEvent } = useWebSocket();
+  const [authState, setAuthState] = useState<AuthState>(() => getAuthToken() ? 'checking' : 'signed_out');
+  const [authError, setAuthError] = useState('');
   const [engineStatus, setEngineStatus] = useState<'stopped' | 'recovering' | 'running' | 'fault_protected'>('stopped');
   const location = useLocation();
 
   useEffect(() => {
-    if (!getAuthToken()) return;
+    let active = true;
+    const handleUnauthorized = () => {
+      clearAdminToken();
+      setAuthError('登录已失效，请重新输入管理员口令');
+      setAuthState('signed_out');
+    };
+    window.addEventListener('xbot:unauthorized', handleUnauthorized);
+
+    const token = getAuthToken();
+    if (!token) {
+      setAuthState('signed_out');
+    } else {
+      void validateAdminToken(token).then((response) => {
+        if (!active) return;
+        if (response.ok) {
+          setAuthState('authenticated');
+        } else if (response.error !== 'Unauthorized') {
+          setAuthError(response.error || '无法连接服务器');
+          setAuthState('signed_out');
+        }
+      });
+    }
+
+    return () => {
+      active = false;
+      window.removeEventListener('xbot:unauthorized', handleUnauthorized);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (authState !== 'authenticated') return;
 
     let active = true;
     const refreshEngineStatus = async () => {
@@ -24,7 +119,7 @@ export default function Layout() {
       active = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [authState]);
 
   useEffect(() => {
     if (lastEvent?.type === 'engine:status') {
@@ -59,6 +154,10 @@ export default function Layout() {
     const current = navItems.find(item => item.path === location.pathname);
     return current ? current.label : 'xbot';
   };
+
+  if (authState !== 'authenticated') {
+    return <AuthenticationScreen checking={authState === 'checking'} initialError={authError} />;
+  }
 
   return (
     <div className="flex h-full app-shell" style={{ minHeight: '100vh' }}>

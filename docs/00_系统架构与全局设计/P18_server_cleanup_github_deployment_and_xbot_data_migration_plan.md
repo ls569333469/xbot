@@ -1,6 +1,6 @@
 # P18 Server Cleanup, GitHub Deployment, and XBOT Data Migration Plan
 
-> Implementation status (2026-07-28): XBOT release `p18.1-production-20260728` is deployed to `107.172.78.150`; database migration, local HTTP/API/WebSocket checks, TGBOT regression, and browser layout checks passed. Public DNS remains outside the cutover: `xiexiu.io` currently resolves to `34.84.35.236`, not the new server.
+> Implementation status (2026-07-28): XBOT release `p18.2-production-20260728` is deployed to `107.172.78.150`; database migration, authenticated frontend gate, Node/npm runtime pinning, local HTTP/API/WebSocket checks, TGBOT regression, and browser layout checks passed. Public DNS remains outside the cutover: `xiexiu.io` currently resolves to `34.84.35.236`, not the new server.
 
 ## 1. Scope and decision
 

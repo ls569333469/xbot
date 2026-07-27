@@ -3,7 +3,13 @@
   "version": "1.0.0",
   "description": "xbot backend",
   "main": "server.js",
+  "packageManager": "npm@10.8.2",
+  "engines": {
+    "node": "20.20.x",
+    "npm": "10.8.x"
+  },
   "scripts": {
+    "preinstall": "node ../deploy/check-node-runtime.js",
     "dev": "node --watch server.js --role=all",
     "start": "node scripts/supervisor.js",
     "start:all": "node server.js --role=all",
