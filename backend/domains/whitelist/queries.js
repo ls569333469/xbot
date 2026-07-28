@@ -1,5 +1,5 @@
 const db = require('../../lib/db');
-const { hydrateWhitelistRelations } = require('./relations');
+const { hydrateWhitelistRelations, hydrateWhitelistSummaries } = require('./relations');
 
 async function getAll(filters) {
   const baseWhere = filters.status === 'archived'
@@ -45,7 +45,8 @@ async function getAll(filters) {
   params.push(pageSize, offset);
 
   const res = await db.query(query, params);
-  return { rows: await hydrateWhitelistRelations(res.rows, db), total, page, pageSize };
+  const hydrate = filters.summary ? hydrateWhitelistSummaries : hydrateWhitelistRelations;
+  return { rows: await hydrate(res.rows, db), total, page, pageSize };
 }
 
 async function getById(id, executor = db) {

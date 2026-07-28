@@ -89,11 +89,12 @@ export default function WhitelistPage() {
   const [draftSeed, setDraftSeed] = useState<WhitelistDraftPayload | null>(null);
   const [workspaceVersion, setWorkspaceVersion] = useState(0);
   const [activationRetryId, setActivationRetryId] = useState<string | null>(null);
+  const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
   const { toast } = useToast();
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const params: Record<string, string> = { page: String(page), pageSize: '20' };
+    const params: Record<string, string> = { page: String(page), pageSize: '20', summary: 'true' };
     if (chainFilter !== 'all') params.chain_id = chainFilter;
     if (search.trim()) params.search = search.trim();
     const response = await api.whitelist.list(params);
@@ -139,9 +140,16 @@ export default function WhitelistPage() {
     setView('workspace');
   };
 
-  const openEdit = (item: WhitelistEntry) => {
-    setEditing(item);
-    setDraftSeed(item);
+  const openEdit = async (item: WhitelistEntry) => {
+    setEditLoadingId(item.id);
+    const response = await api.whitelist.get(item.id);
+    setEditLoadingId(null);
+    if (!response.ok || !response.data) {
+      toast(response.error || '白名单详情加载失败', 'error');
+      return;
+    }
+    setEditing(response.data);
+    setDraftSeed(response.data);
     setWorkspaceVersion((value) => value + 1);
     setView('workspace');
   };
@@ -235,7 +243,10 @@ export default function WhitelistPage() {
     { header: '触发规则', accessor: (row: WhitelistEntry) => {
       const ecosystemSources = (row.direct_sources || []).filter((item) => item.source_kind === 'ecosystem');
       const launchSources = (row.direct_sources || []).filter((item) => item.source_kind === 'launch');
-      const selectedHandles = new Set([
+      const ecosystemSourceCount = row.ecosystem_source_count ?? ecosystemSources.length;
+      const launchSourceCount = row.launch_source_count ?? launchSources.length;
+      const relationCount = row.relation_count ?? row.relations?.length ?? 0;
+      const selectedHandles = new Set(row.selected_actor_handles?.map(normalizeHandle) || [
         ...ecosystemSources.map((item) => normalizeHandle(item.actor_handle)),
         ...(row.relations || []).map((item) => normalizeHandle(item.actor_handle)),
       ]);
@@ -246,7 +257,7 @@ export default function WhitelistPage() {
       const coverage = chainHandles.size > 0
         ? `${selectedInChain}/${chainHandles.size} 当前链${selectedInChain === chainHandles.size ? '已全选' : '账号'}`
         : `${selectedHandles.size} 个唯一账号`;
-      return <div className="p16-table-rules"><strong>{ecosystemSources.length} CA 动态 · {row.relations?.length || 0} 互动</strong><span>{launchSources.length ? `含首发来源审计 · ${coverage}` : coverage}</span></div>;
+      return <div className="p16-table-rules"><strong>{ecosystemSourceCount} CA 动态 · {relationCount} 互动</strong><span>{launchSourceCount ? `含首发来源审计 · ${coverage}` : coverage}</span></div>;
     } },
     { header: '单笔金额', accessor: (row: WhitelistEntry) => <span className="font-mono">{row.budget_per_trade}</span> },
     { header: '累计预算', accessor: (row: WhitelistEntry) => <div style={{ width: 110 }}><ProgressBar value={Number(row.spent_budget) || 0} max={Number(row.total_budget)} /></div> },
@@ -262,7 +273,7 @@ export default function WhitelistPage() {
         <RefreshCw size={12} className={activationRetryId === row.id ? 'animate-spin' : ''} /> 重新同步
       </button>}
     </div> },
-    { header: '操作', accessor: (row: WhitelistEntry) => <div className="p16-table-actions"><button type="button" className="p16-icon-button" title="复制 CA" aria-label="复制 CA" onClick={() => { void navigator.clipboard.writeText(row.contract_address); toast('CA 已复制', 'success'); }}><Copy size={15} /></button><button type="button" className="p16-icon-button" title="编辑白名单" aria-label="编辑白名单" onClick={() => openEdit(row)}><Pencil size={15} /></button><button type="button" className="p16-icon-button danger" title="删除白名单" aria-label="删除白名单" onClick={() => handleDelete(row.id)}><Trash2 size={15} /></button></div> },
+    { header: '操作', accessor: (row: WhitelistEntry) => <div className="p16-table-actions"><button type="button" className="p16-icon-button" title="复制 CA" aria-label="复制 CA" onClick={() => { void navigator.clipboard.writeText(row.contract_address); toast('CA 已复制', 'success'); }}><Copy size={15} /></button><button type="button" className="p16-icon-button" title="编辑白名单" aria-label="编辑白名单" disabled={editLoadingId !== null} onClick={() => void openEdit(row)}>{editLoadingId === row.id ? <RefreshCw size={15} className="animate-spin" /> : <Pencil size={15} />}</button><button type="button" className="p16-icon-button danger" title="删除白名单" aria-label="删除白名单" onClick={() => handleDelete(row.id)}><Trash2 size={15} /></button></div> },
   ];
 
   const launchColumns = [

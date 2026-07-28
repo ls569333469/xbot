@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  hydrateWhitelistSummaries,
   normalizeRelationInputs,
   normalizeProjectAccounts,
   normalizeSourceInputs,
@@ -10,6 +11,50 @@ const {
   normalizeContractAddress,
   validateBudgetValues
 } = require('../domains/whitelist/service');
+
+test('hydrates compact whitelist summaries without relation evidence rows', async () => {
+  const executor = {
+    query: async (sql) => {
+      if (sql.includes('FROM x_signal_relations')) {
+        return { rows: [{ whitelist_id: 7, relation_count: 4, actor_handles: ['alice', 'bob'] }] };
+      }
+      if (sql.includes('FROM x_signal_source_rules')) {
+        return { rows: [{
+          whitelist_id: 7,
+          ecosystem_source_count: 2,
+          launch_source_count: 1,
+          actor_handles: ['bob', 'carol']
+        }] };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    }
+  };
+
+  const rows = await hydrateWhitelistSummaries([{ id: '7', symbol: 'TEST' }, { id: '8', symbol: 'EMPTY' }], executor);
+
+  assert.deepEqual(rows[0], {
+    id: '7',
+    symbol: 'TEST',
+    relation_count: 4,
+    ecosystem_source_count: 2,
+    launch_source_count: 1,
+    selected_actor_handles: ['alice', 'bob', 'carol'],
+    relations: [],
+    direct_sources: [],
+    project_accounts: []
+  });
+  assert.deepEqual(rows[1], {
+    id: '8',
+    symbol: 'EMPTY',
+    relation_count: 0,
+    ecosystem_source_count: 0,
+    launch_source_count: 0,
+    selected_actor_handles: [],
+    relations: [],
+    direct_sources: [],
+    project_accounts: []
+  });
+});
 
 test('normalizes Robinhood contract addresses as EVM addresses', () => {
   assert.equal(

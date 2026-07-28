@@ -374,6 +374,7 @@ export default function WhitelistWorkspace({
         chain_id: form.chain_id,
         page: String(page),
         pageSize: String(pageSize),
+        summary: 'true',
       });
       if (sequence !== copySourcesSequence.current) return;
       if (!response.ok) {
@@ -561,12 +562,19 @@ export default function WhitelistWorkspace({
               <option value="">{copySourcesLoading ? '正在加载当前链白名单' : '选择白名单'}</option>
               {sameChainWhitelists.map((item) => <option value={String(item.id)} key={item.id}>{item.symbol || item.contract_address}</option>)}
             </select>
-            <button type="button" className="btn btn-secondary" disabled={!copyChoice} onClick={() => {
+            <button type="button" className="btn btn-secondary" disabled={!copyChoice || copySourcesLoading} onClick={async () => {
               const item = sameChainWhitelists.find((entry) => String(entry.id) === copyChoice);
               if (!item) return;
-              applyCopy(item);
+              setCopySourcesLoading(true);
+              const response = await api.whitelist.get(item.id);
+              setCopySourcesLoading(false);
+              if (!response.ok || !response.data) {
+                toast(response.error || '白名单详情加载失败', 'error');
+                return;
+              }
+              applyCopy(response.data);
               setTemplateChooserOpen(false);
-            }}>应用</button>
+            }}>{copySourcesLoading ? '正在加载' : '应用'}</button>
           </div>}
           <button type="button" onClick={() => { applyBlank(); setTemplateChooserOpen(false); }}><FilePlus2 size={16} />从空白开始</button>
         </section>

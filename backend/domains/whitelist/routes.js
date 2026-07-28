@@ -54,7 +54,8 @@ router.get('/', async (req, res) => {
       status: req.query.status,
       search: req.query.search,
       page: req.query.page,
-      pageSize: req.query.pageSize
+      pageSize: req.query.pageSize,
+      summary: req.query.summary === 'true'
     };
     const result = await service.getWhitelists(filters);
     res.json({ ok: true, data: result.rows, total: result.total, page: result.page, pageSize: result.pageSize });

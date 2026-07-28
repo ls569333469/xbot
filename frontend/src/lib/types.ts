@@ -66,6 +66,10 @@ export interface WhitelistEntry {
   relations: XSignalRelation[];
   direct_sources: XDirectSource[];
   project_accounts: WhitelistProjectAccount[];
+  relation_count?: number;
+  ecosystem_source_count?: number;
+  launch_source_count?: number;
+  selected_actor_handles?: string[];
   budget_per_trade: number;
   total_budget: number;
   spent_budget: number;

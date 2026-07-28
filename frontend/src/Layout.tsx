@@ -114,7 +114,7 @@ export default function Layout() {
       setEngineStatus(res.data.status || (res.data.armed ? 'running' : 'stopped'));
     };
     void refreshEngineStatus();
-    const timer = window.setInterval(() => void refreshEngineStatus(), 2000);
+    const timer = window.setInterval(() => void refreshEngineStatus(), 10000);
     return () => {
       active = false;
       window.clearInterval(timer);

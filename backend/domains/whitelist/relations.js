@@ -331,6 +331,56 @@ async function hydrateWhitelistRelations(rows, executor) {
   }));
 }
 
+async function hydrateWhitelistSummaries(rows, executor) {
+  if (rows.length === 0) return rows;
+  const ids = rows.map((row) => Number(row.id));
+  const relationResult = await executor.query(
+    `SELECT relation.whitelist_id,
+            COUNT(*)::int AS relation_count,
+            array_agg(DISTINCT lower(regexp_replace(actor.x_handle, '^@+', ''))) AS actor_handles
+     FROM x_signal_relations AS relation
+     JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id
+     WHERE relation.whitelist_id = ANY($1::int[])
+       AND relation.enabled = true
+     GROUP BY relation.whitelist_id`,
+    [ids]
+  );
+  const sourceResult = await executor.query(
+    `SELECT rule.whitelist_id,
+            COUNT(*) FILTER (WHERE rule.source_kind = 'ecosystem')::int AS ecosystem_source_count,
+            COUNT(*) FILTER (WHERE rule.source_kind = 'launch')::int AS launch_source_count,
+            array_agg(DISTINCT lower(regexp_replace(actor.x_handle, '^@+', '')))
+              FILTER (WHERE rule.source_kind = 'ecosystem') AS actor_handles
+     FROM x_signal_source_rules AS rule
+     JOIN x_kol_accounts AS actor ON actor.id = rule.actor_id
+     WHERE rule.whitelist_id = ANY($1::int[])
+       AND rule.enabled = true
+     GROUP BY rule.whitelist_id`,
+    [ids]
+  );
+  const relationSummaries = new Map(relationResult.rows.map((row) => [Number(row.whitelist_id), row]));
+  const sourceSummaries = new Map(sourceResult.rows.map((row) => [Number(row.whitelist_id), row]));
+
+  return rows.map((row) => {
+    const relation = relationSummaries.get(Number(row.id));
+    const source = sourceSummaries.get(Number(row.id));
+    const selectedActorHandles = [...new Set([
+      ...(relation?.actor_handles || []),
+      ...(source?.actor_handles || []),
+    ])].sort();
+    return {
+      ...row,
+      relation_count: Number(relation?.relation_count || 0),
+      ecosystem_source_count: Number(source?.ecosystem_source_count || 0),
+      launch_source_count: Number(source?.launch_source_count || 0),
+      selected_actor_handles: selectedActorHandles,
+      relations: [],
+      direct_sources: [],
+      project_accounts: [],
+    };
+  });
+}
+
 module.exports = {
   X_HANDLE_PATTERN,
   DIRECT_SOURCE_EVENT_TYPES,
@@ -339,6 +389,7 @@ module.exports = {
   RELATION_EVENT_TYPES,
   findOrCreateActor,
   hydrateWhitelistRelations,
+  hydrateWhitelistSummaries,
   normalizeEventTypes,
   normalizeProjectAccounts,
   normalizeRelationInputs,
