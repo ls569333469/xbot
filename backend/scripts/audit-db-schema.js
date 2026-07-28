@@ -35,15 +35,18 @@ async function requireColumns(table, expected) {
 async function main() {
   await client.connect();
   const migration = await client.query(
-    "SELECT name FROM schema_migrations WHERE name = '025_p17_arm_failure_observability.sql'"
+    "SELECT name FROM schema_migrations WHERE name = '026_p18_watch_demand_idempotency.sql'"
   );
-  if (migration.rows.length !== 1) throw new Error('Migration 025 is not applied');
+  if (migration.rows.length !== 1) throw new Error('Migration 026 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',
     'activation_error_code', 'activation_error_detail', 'activation_checked_at', 'activated_at'
   ]);
   await requireColumns('trade_signals', ['activation_wait_version']);
+  await requireColumns('x_watch_sync_outbox', [
+    'desired_present', 'desired_flags', 'desired_fingerprint'
+  ]);
   await requireColumns('arm_preparations', [
     'token_hash', 'configuration_fingerprint', 'policy_fingerprint',
     'activation_versions', 'compact_summary', 'status', 'expires_at', 'consumed_at',

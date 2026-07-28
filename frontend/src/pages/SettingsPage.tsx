@@ -63,6 +63,8 @@ export default function SettingsPage() {
   const [restartMessage, setRestartMessage] = useState('');
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [x6551Status, setX6551Status] = useState<X6551Status | null>(null);
+  const [x6551Loading, setX6551Loading] = useState(false);
+  const [x6551Error, setX6551Error] = useState('');
   const [watchPlan, setWatchPlan] = useState<X6551WatchPlan | null>(null);
   const [watchPlanLoading, setWatchPlanLoading] = useState(false);
   const [runtimePolicy, setRuntimePolicy] = useState<TradeRuntimePolicy | null>(null);
@@ -104,15 +106,13 @@ export default function SettingsPage() {
     Promise.all([
       api.system.runtimeSummary(),
       api.system.getEnv(),
-      api.xMonitor.status6551(),
       api.trade.runtimePolicy(),
       api.config.getChains(),
-    ]).then(([summaryRes, envRes, x6551Res, runtimeRes, chainConfigRes]) => {
+    ]).then(([summaryRes, envRes, runtimeRes, chainConfigRes]) => {
       if (summaryRes.ok && summaryRes.data) {
         applyEngineStatus(summaryRes.data.engine);
       }
       if (envRes.ok && envRes.data) setEnvConfig((previous: any) => ({ ...previous, ...envRes.data }));
-      if (x6551Res.ok && x6551Res.data) setX6551Status(x6551Res.data);
       if (runtimeRes.ok && runtimeRes.data) setRuntimePolicy(runtimeRes.data);
       if (chainConfigRes.ok && chainConfigRes.data) {
         setChainConfigs(chainConfigRes.data);
@@ -120,6 +120,24 @@ export default function SettingsPage() {
       setLoading(false);
     });
   }, []);
+
+  useEffect(() => {
+    if (settingsSection !== 'status' || x6551Status || !getAuthToken()) return;
+    let active = true;
+    setX6551Loading(true);
+    setX6551Error('');
+    void api.xMonitor.status6551().then((response) => {
+      if (!active) return;
+      if (response.ok && response.data) setX6551Status(response.data);
+      else setX6551Error(response.error || '6551 状态读取失败');
+    }).finally(() => {
+      if (active) setX6551Loading(false);
+    });
+    return () => {
+      active = false;
+      setX6551Loading(false);
+    };
+  }, [settingsSection, x6551Status]);
 
   useEffect(() => {
     if (!getAuthToken()) return;
@@ -228,9 +246,15 @@ export default function SettingsPage() {
   };
 
   const refresh6551Status = async () => {
-    const res = await api.xMonitor.status6551();
+    setX6551Loading(true);
+    setX6551Error('');
+    const res = await api.xMonitor.status6551(true);
+    setX6551Loading(false);
     if (res.ok && res.data) setX6551Status(res.data);
-    else toast(`6551 状态刷新失败: ${res.error || 'Unknown error'}`, 'error');
+    else {
+      setX6551Error(res.error || '6551 状态刷新失败');
+      toast(`6551 状态刷新失败: ${res.error || 'Unknown error'}`, 'error');
+    }
   };
 
   const run6551WatchDryRun = async () => {
@@ -779,6 +803,20 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {settingsSection === 'status' && !x6551Status && (
+        <div className="card flex items-center justify-between gap-md" style={{ minHeight: '88px' }}>
+          <div className="flex flex-col gap-xs">
+            <h3 className="text-lg font-bold flex items-center gap-sm"><Radio size={18} /> 6551 Max</h3>
+            <span className={`text-sm ${x6551Error ? 'text-danger' : 'text-secondary'}`}>
+              {x6551Error || '正在读取远端监控状态...'}
+            </span>
+          </div>
+          {x6551Error
+            ? <button type="button" className="btn btn-secondary" onClick={() => void refresh6551Status()}><RefreshCw size={15} /> 重试</button>
+            : <RefreshCw size={18} className={x6551Loading ? 'animate-spin text-secondary' : 'text-secondary'} />}
+        </div>
+      )}
+
       {settingsSection === 'status' && x6551Status && (
         <div className="card flex flex-col gap-md">
           <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
@@ -786,8 +824,8 @@ export default function SettingsPage() {
               <Radio size={18} /> 6551 Max
             </h3>
             <div className="flex gap-sm">
-              <button type="button" className="btn flex items-center gap-xs" onClick={refresh6551Status}>
-                <RefreshCw size={15} /> 刷新
+              <button type="button" className="btn flex items-center gap-xs" disabled={x6551Loading} onClick={() => void refresh6551Status()}>
+                <RefreshCw size={15} className={x6551Loading ? 'animate-spin' : ''} /> 刷新
               </button>
               <button type="button" className="btn flex items-center gap-xs" onClick={run6551WatchDryRun}
                 disabled={watchPlanLoading}>

@@ -34,6 +34,17 @@ test('remote Watch may expose extra provider events while covering all desired e
   assert.equal(remoteFlagsCoverDesired(desired, { ...remote, newRetweetBol: false }), false);
 });
 
+test('managed Watch with stale extra flags is updated to the exact global demand', () => {
+  const desiredFlags = roleFlags('kol', { eventTypes: ['reply'] });
+  const remoteFlags = { ...desiredFlags, newTweetBol: true };
+  const plan = buildWatchPlan({
+    desired: [{ username: 'vladtenev', roles: ['kol'], flags: desiredFlags }],
+    remote: [{ username: 'vladtenev', flags: remoteFlags }],
+    local: [{ username: 'vladtenev', managed: true, roles: ['kol'] }]
+  });
+  assert.equal(plan.entries[0].action, 'update');
+});
+
 test('desired Watch union includes active pre-launch project and ecosystem accounts', async () => {
   const executor = {
     async query(sql) {

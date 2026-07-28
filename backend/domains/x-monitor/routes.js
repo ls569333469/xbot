@@ -185,7 +185,12 @@ router.post('/stream/sync', requireLegacyXProvider, async (req, res) => {
 
 router.get('/6551/status', async (req, res) => {
   try {
-    res.json({ ok: true, data: await get6551Status() });
+    res.json({
+      ok: true,
+      data: await get6551Status(undefined, undefined, {
+        refreshRemote: String(req.query.refresh || '').toLowerCase() === 'true'
+      })
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, code: 'X6551_STATUS_FAILED' });
   }

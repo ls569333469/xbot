@@ -160,3 +160,40 @@ The release gate also includes:
 - Do not reuse TGBOT's database or runtime directory for XBOT.
 - Do not expose XBOT API or WebSocket on a public standalone port.
 - Do not start live trading merely because the service is healthy; XBOT still requires the existing readiness and live-approval flow.
+
+## 10. P18.4 production synchronization and latency correction
+
+The post-deployment audit found two release defects that are part of P18 rather than new trading behavior.
+
+### 10.1 Watch demand must be idempotent
+
+Whitelist saves currently requeue every related 6551 Watch even when only budget or exit settings changed. When `X_6551_WATCH_APPLY_ENABLED=false`, those unnecessary rows remain pending and block whitelist activation.
+
+P18.4 stores an exact demand snapshot on each Watch Outbox row:
+
+- whether a managed remote Watch is currently required;
+- the complete normalized 6551 flag set;
+- a SHA-256 fingerprint of those two values.
+
+An Outbox version advances only when that fingerprint changes or when the observed remote state drifts from the current demand. Repeated saves with an already synchronized Watch complete as a no-op. Remote flags are compared exactly against the global union of all active whitelist and launch-monitor requirements; a stale remote superset is not accepted after an event type is removed.
+
+If a real Watch change is required while Watch apply is disabled, activation fails once with `WATCH_SYNC_DISABLED`. It must not retry five times as `WATCH_SYNC_PENDING`. Enabling Watch apply and explicitly retrying activation remains an operator action.
+
+### 10.2 Settings must not wait for the remote 6551 API
+
+The settings page loads engine state, environment configuration, runtime policy, and chain configuration as its core payload. The 6551 diagnostics load only after the operator opens the status tab. A slow or unavailable remote Watch list therefore cannot hold the full page skeleton.
+
+The backend caches the remote Watch count for 60 seconds. The explicit refresh button bypasses that cache; normal page navigation does not repeatedly spend a remote API request.
+
+### 10.3 Release acceptance
+
+P18.4 is accepted only when all of the following pass:
+
+1. An in-sync Watch plus a budget-only or exit-only whitelist edit does not become pending.
+2. Adding or removing a required event flag changes the fingerprint and queues a real Watch update.
+3. Watch apply disabled produces `WATCH_SYNC_DISABLED` without the five-attempt delay.
+4. Settings core content renders without waiting for `/api/x-monitor/6551/status`.
+5. Unit, integration, frontend lint/build, schema audit, privacy scan, and production smoke tests pass.
+6. Existing production failed rows are repaired only after migration `026` is applied and their current global demand is recalculated.
+
+P18.4 does not enable live trading, 6551 WSS ingestion, or remote Watch writes. Those flags retain their existing production values until separately approved.

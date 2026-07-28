@@ -201,7 +201,7 @@ export const api = {
     followPolls: () => fetchApi<ApiResponse<any[]>>('/api/x-monitor/follow-polls'),
     providerUsage: () => fetchApi<ApiResponse<any>>('/api/x-monitor/provider-usage'),
     syncStream: () => fetchApi<ApiResponse<any[]>>('/api/x-monitor/stream/sync', { method: 'POST' }),
-    status6551: () => fetchApi<ApiResponse<X6551Status>>('/api/x-monitor/6551/status'),
+    status6551: (refresh = false) => fetchApi<ApiResponse<X6551Status>>(`/api/x-monitor/6551/status${refresh ? '?refresh=true' : ''}`),
     watchPlan6551: () => fetchApi<ApiResponse<X6551WatchPlan>>('/api/x-monitor/6551/watch-plan'),
   },
 

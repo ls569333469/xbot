@@ -6,6 +6,46 @@ const { X6551Client } = require('../../../lib/x-client-6551');
 const { consumer } = require('./wss-consumer');
 const { HEARTBEAT_STALE_MS, latestHeartbeat } = require('../../../lib/service-heartbeat');
 
+const REMOTE_WATCH_CACHE_MS = 60000;
+let remoteWatchCache = {
+  token: null,
+  expiresAt: 0,
+  value: null,
+  inFlight: null
+};
+
+async function getRemoteWatchSummary(options = {}) {
+  const provider = String(process.env.X_DATA_PROVIDER || 'mock').toLowerCase();
+  const token = process.env.OPENNEWS_TOKEN || '';
+  if (provider !== '6551' || !token) {
+    return { count: null, error: 'X6551_PROVIDER_INACTIVE' };
+  }
+
+  const now = Date.now();
+  if (!options.force && remoteWatchCache.token === token
+      && remoteWatchCache.value && remoteWatchCache.expiresAt > now) {
+    return remoteWatchCache.value;
+  }
+  if (!options.force && remoteWatchCache.token === token && remoteWatchCache.inFlight) {
+    return remoteWatchCache.inFlight;
+  }
+
+  const request = new X6551Client(token).listWatches()
+    .then((rows) => ({ count: rows.length, error: null }))
+    .catch((error) => ({ count: null, error: error.code || 'X6551_WATCH_STATUS_UNAVAILABLE' }))
+    .then((value) => {
+      remoteWatchCache = {
+        token,
+        expiresAt: Date.now() + REMOTE_WATCH_CACHE_MS,
+        value,
+        inFlight: null
+      };
+      return value;
+    });
+  remoteWatchCache = { token, expiresAt: 0, value: remoteWatchCache.value, inFlight: request };
+  return request;
+}
+
 function countsByStatus(rows) {
   return Object.fromEntries(rows.map((row) => [row.status, Number(row.count)]));
 }
@@ -26,13 +66,8 @@ function usageLevel(usagePct) {
   return 'normal';
 }
 
-async function get6551Status(executor = db, consumerInstance = consumer) {
-  const provider = String(process.env.X_DATA_PROVIDER || 'mock').toLowerCase();
-  const remoteWatchPromise = provider === '6551' && process.env.OPENNEWS_TOKEN
-    ? new X6551Client(process.env.OPENNEWS_TOKEN).listWatches()
-      .then((rows) => ({ count: rows.length, error: null }))
-      .catch((error) => ({ count: null, error: error.code || 'X6551_WATCH_STATUS_UNAVAILABLE' }))
-    : Promise.resolve({ count: null, error: 'X6551_PROVIDER_INACTIVE' });
+async function get6551Status(executor = db, consumerInstance = consumer, options = {}) {
+  const remoteWatchPromise = getRemoteWatchSummary({ force: options.refreshRemote === true });
 
   const [watchRows, watchSyncRows, eventRows, eventTotals, restUsage, ingestionHeartbeat, remoteWatches] = await Promise.all([
     executor.query(
@@ -156,4 +191,10 @@ async function get6551Status(executor = db, consumerInstance = consumer) {
   };
 }
 
-module.exports = { countsByStatus, get6551Status, monthlyProjection, usageLevel };
+module.exports = {
+  countsByStatus,
+  get6551Status,
+  getRemoteWatchSummary,
+  monthlyProjection,
+  usageLevel
+};

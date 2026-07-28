@@ -221,6 +221,9 @@ CREATE TABLE IF NOT EXISTS x_watch_sync_outbox (
   last_error text,
   requested_at timestamptz NOT NULL DEFAULT NOW(),
   synced_at timestamptz,
+  desired_present boolean NOT NULL DEFAULT false,
+  desired_flags jsonb NOT NULL DEFAULT '{}'::jsonb,
+  desired_fingerprint text NOT NULL DEFAULT '',
   updated_at timestamptz NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_x_watch_sync_outbox_due

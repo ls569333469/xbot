@@ -133,9 +133,9 @@ function buildWatchPlan({ desired = [], remote = [], local = [] }) {
     if (desiredItem && !remoteItem) {
       action = 'add';
       estimatedPoints = 10;
-    } else if (desiredItem && remoteItem && remoteFlagsCoverDesired(desiredItem.flags, remoteItem.flags)) {
+    } else if (desiredItem && remoteItem && flagsEqual(desiredItem.flags, remoteItem.flags)) {
       if (!managed) action = 'adopt_required';
-    } else if (desiredItem && remoteItem && !remoteFlagsCoverDesired(desiredItem.flags, remoteItem.flags)) {
+    } else if (desiredItem && remoteItem && !flagsEqual(desiredItem.flags, remoteItem.flags)) {
       if (managed) {
         action = 'update';
         estimatedPoints = 10;

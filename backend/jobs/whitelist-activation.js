@@ -8,7 +8,12 @@ const { loadCachedContext } = require('../domains/trade/fast-path-context');
 const { compileExitStrategy } = require('../domains/trade/exit-strategy-compiler');
 const { probeRpc } = require('../domains/trade/chain-receipt-service');
 const { validateTokenAddress } = require('../domains/trade/chain-adapters');
-const { enqueueWatchSyncForHandles } = require('../domains/x-monitor/6551/watch-sync-outbox');
+const {
+  enqueueWatchSyncForHandles,
+  watchApplyEnabled,
+  watchDemandFingerprint
+} = require('../domains/x-monitor/6551/watch-sync-outbox');
+const { flagsEqual, loadDesiredWatches } = require('../domains/x-monitor/6551/watch-reconciler');
 const {
   claimActivationBatch,
   completeActivation,
@@ -21,7 +26,8 @@ const PERMANENT_CODES = new Set([
   'TOKEN_ADDRESS_INVALID',
   'WHITELIST_ACTIVATION_CONFIG_INVALID',
   'EXIT_STRATEGY_INVALID',
-  'LIVE_CHAIN_UNSUPPORTED'
+  'LIVE_CHAIN_UNSUPPORTED',
+  'WATCH_SYNC_DISABLED'
 ]);
 
 function fingerprint(value) {
@@ -67,10 +73,14 @@ function validateWhitelist(whitelist) {
 async function assertWatchesInSync(whitelist, executor = db) {
   if (String(process.env.X_DATA_PROVIDER || '').toLowerCase() !== '6551') return;
   const handles = whitelist.actor_handles || [];
+  await enqueueWatchSyncForHandles(handles, executor);
+  const desired = await loadDesiredWatches(executor);
+  const desiredByHandle = new Map(desired.map((item) => [String(item.username).toLowerCase(), item]));
   const result = await executor.query(
     `SELECT watch.username, watch.sync_status, watch.managed,
             watch.desired_flags, watch.remote_flags,
-            outbox.status AS outbox_status
+            outbox.status AS outbox_status,
+            outbox.desired_fingerprint AS outbox_desired_fingerprint
      FROM x_provider_watches AS watch
      LEFT JOIN x_watch_sync_outbox AS outbox ON outbox.actor_handle = watch.username
      WHERE watch.provider = '6551' AND watch.username = ANY($1::text[])`,
@@ -78,22 +88,19 @@ async function assertWatchesInSync(whitelist, executor = db) {
   );
   const inSync = new Set(result.rows
     .filter((item) => {
-      const desired = item.desired_flags || {};
-      const remote = item.remote_flags || {};
-      const flagsCovered = Object.entries(desired).every(([key, value]) => (
-        value !== true || remote[key] === true
-      ));
+      const expected = desiredByHandle.get(String(item.username).toLowerCase());
+      if (!expected) return false;
       return item.sync_status === 'in_sync'
         && item.managed === true
-        && !['pending', 'processing', 'failed'].includes(item.outbox_status)
-        && flagsCovered;
+        && item.outbox_status === 'succeeded'
+        && item.outbox_desired_fingerprint === watchDemandFingerprint(true, expected.flags)
+        && flagsEqual(item.remote_flags, expected.flags);
     })
     .map((item) => String(item.username).toLowerCase()));
   const missing = handles.filter((handle) => !inSync.has(String(handle).toLowerCase()));
   if (missing.length > 0) {
-    await enqueueWatchSyncForHandles(missing, executor);
     const error = new Error(`6551 Watch is not synchronized: ${missing.join(', ')}`);
-    error.code = 'WATCH_SYNC_PENDING';
+    error.code = watchApplyEnabled() ? 'WATCH_SYNC_PENDING' : 'WATCH_SYNC_DISABLED';
     throw error;
   }
 }
