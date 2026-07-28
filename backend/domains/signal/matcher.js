@@ -280,6 +280,7 @@ async function matchActivity(activity, executor = db, options = {}) {
     const match = representativeMatch(group);
     const signal = await signalQueries.createSignal({
         activity_id: activity.id,
+        trace_id: activity.trace_id,
         whitelist_id: group.whitelist.id,
         kol_id: activity.kol_id,
         kol_handle: activity.kol_handle,

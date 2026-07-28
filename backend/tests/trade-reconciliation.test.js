@@ -22,6 +22,21 @@ test('an immediate provider failure remains in the reconciliation queue', () => 
   assert.equal(submittedOrderStatus('pending'), 'pending');
 });
 
+test('order reconciliation exits when another worker owns the order claim', async () => {
+  let queried = false;
+  const reconciler = new TradeReconciler({
+    repository: {
+      claimOrderReconciliation: async () => null
+    },
+    gmgnHttp: {
+      queryOrder: async () => { queried = true; }
+    }
+  });
+  const result = await reconciler.reconcileOrder({ id: 91 });
+  assert.deepEqual(result, { orderId: 91, status: 'reconciliation_claimed_elsewhere' });
+  assert.equal(queried, false);
+});
+
 test('order reconciliation uses adaptive 1s, 2s, 5s, and 15-30s polling', () => {
   const originalNow = Date.now;
   Date.now = () => 1_000_000;

@@ -1,5 +1,6 @@
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
+const crypto = require('crypto');
 const gmgnHttp = require('../../lib/gmgn-http');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const receiptService = require('./chain-receipt-service');
@@ -176,10 +177,26 @@ class TradeReconciler {
     this.lastSuccessAt = null;
     this.lastError = null;
     this.processed = 0;
+    this.hotProcessed = 0;
+    this.hotTimers = new Set();
     this.wsBroadcast = null;
   }
 
   async reconcileOrder(row) {
+    if (typeof this.repository.claimOrderReconciliation !== 'function') {
+      return this.reconcileClaimedOrder(row);
+    }
+    const token = crypto.randomUUID();
+    const claimed = await this.repository.claimOrderReconciliation(row.id, token);
+    if (!claimed) return { orderId: row.id, status: 'reconciliation_claimed_elsewhere' };
+    try {
+      return await this.reconcileClaimedOrder(row);
+    } finally {
+      await this.repository.releaseOrderReconciliation(row.id, token).catch(() => {});
+    }
+  }
+
+  async reconcileClaimedOrder(row) {
     let normalized;
     if (row.normalized_status === 'chain_verifying') {
       normalized = orderFromStoredRow(row);
@@ -233,6 +250,7 @@ class TradeReconciler {
       if (replacement) return replacement;
     }
     if (receipt.status === 'confirmed') {
+      await this.repository.markReceiptAvailable?.(row.id);
       if (!receiptContainsTradedToken(row, receipt)
           || !receiptMatchesTradedAmount(row, normalized, receipt)
           || !receiptHasVerifiableNativeProceeds(row, receipt)) {
@@ -259,6 +277,7 @@ class TradeReconciler {
         };
       }
       const position = await this.repository.finalizeConfirmedOrder(row.id, normalized, receipt);
+      await this.repository.recordConfirmationTiming?.(row.id);
       return { orderId: row.id, status: 'confirmed', positionId: position.id };
     }
     if (['failed', 'reorged', 'replaced', 'dropped'].includes(receipt.status)) {
@@ -281,6 +300,27 @@ class TradeReconciler {
       [row.id, nextQueryAt(row, 'chain_verifying', this.random)]
     );
     return { orderId: row.id, status: `chain_${receipt.status}` };
+  }
+
+  wakeOrder(orderId) {
+    const delays = [0, 350, 850];
+    for (const delay of delays) {
+      const timer = setTimeout(() => {
+        this.hotTimers.delete(timer);
+        void (async () => {
+          const row = await this.repository.getOrderForReconciliation?.(orderId);
+          if (!row || row.normalized_status === 'confirmed') return;
+          const result = await this.reconcileOrder(row);
+          this.hotProcessed += 1;
+          this.wsBroadcast?.({ type: 'trade:order-updated', payload: result });
+        })().catch((error) => {
+          this.lastError = error.message;
+          this.logger.error('trade-reconciler', `Hot order ${orderId} reconciliation failed: ${error.message}`);
+        });
+      }, delay);
+      timer.unref?.();
+      this.hotTimers.add(timer);
+    }
   }
 
   async recoverEvmReplacement(row, previousOrder, previousReceipt) {
@@ -731,6 +771,8 @@ class TradeReconciler {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const timer of this.hotTimers) clearTimeout(timer);
+    this.hotTimers.clear();
   }
 
   async getStatus() {
@@ -758,6 +800,7 @@ class TradeReconciler {
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
       processed: this.processed,
+      hotProcessed: this.hotProcessed,
       backlog: backlog.rows,
       strategyBacklog: strategyBacklog.rows,
       pollingPolicy: [

@@ -27,20 +27,22 @@ test('live execution queue deduplicates a committed signal and submits once', as
     engine: { getArmed: () => true, getArmedAt: () => new Date(0) },
     modeProvider: () => 'live',
     execution: {
-      prepare: async (signalId) => ({ prepare_token: `prepare-${signalId}` }),
-      execute: async (signalId, token) => {
-        executions.push([signalId, token]);
+      executeAutomatic: async (signalId, operator) => {
+        executions.push([signalId, operator]);
         return { attempt_id: 91, status: 'submitted' };
       }
     },
     logger: { error() {}, warn() {} }
   });
+  queue.recordError({ code: 'HISTORICAL_FAILURE' });
   assert.equal(queue.enqueue([
     { id: 41, execution_mode: 'live' },
     { id: 41, execution_mode: 'live' }
   ]), 1);
   await queue.waitForIdle();
-  assert.deepEqual(executions, [[41, 'prepare-41']]);
+  assert.deepEqual(executions, [[41, '6551-live-worker']]);
+  assert.equal(queue.getStatus().lastError, null);
+  assert.equal(queue.getStatus().lastHistoricalError.code, 'HISTORICAL_FAILURE');
 });
 
 test('live execution queue never claims while signal-only or locked', async () => {
@@ -50,8 +52,7 @@ test('live execution queue never claims while signal-only or locked', async () =
     engine: { getArmed: () => false },
     modeProvider: () => 'signal',
     execution: {
-      prepare: async () => { throw new Error('should not prepare'); },
-      execute: async () => { throw new Error('should not execute'); }
+      executeAutomatic: async () => { throw new Error('should not execute'); }
     },
     logger: { error() {}, warn() {} }
   });
@@ -85,8 +86,7 @@ test('live execution queue scans durable recorded signals only after the arm bou
     engine: { getArmed: () => true, getArmedAt: () => armedAt },
     modeProvider: () => 'live',
     execution: {
-      prepare: async () => ({ prepare_token: 'prepare-43' }),
-      execute: async (signalId) => {
+      executeAutomatic: async (signalId) => {
         executions.push(signalId);
         return { attempt_id: 93, status: 'submitted' };
       }
@@ -112,8 +112,7 @@ test('live execution queue accepts committed signal notifications from the inges
     engine: { getArmed: () => true, getArmedAt: () => new Date(0) },
     modeProvider: () => 'live',
     execution: {
-      prepare: async () => ({ prepare_token: 'prepare-44' }),
-      execute: async (signalId) => {
+      executeAutomatic: async (signalId) => {
         executions.push(signalId);
         return { attempt_id: 94, status: 'submitted' };
       }
@@ -140,8 +139,7 @@ test('final policy rejection after queue claim never reaches the GMGN execution 
     engine: { getArmed: () => true, getArmedAt: () => new Date(0) },
     modeProvider: () => 'live',
     execution: {
-      prepare: async () => { throw error; },
-      execute: async () => { executed = true; }
+      executeAutomatic: async () => { throw error; }
     },
     logger: { error() {}, warn() {} }
   });

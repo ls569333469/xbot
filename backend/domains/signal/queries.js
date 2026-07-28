@@ -35,7 +35,8 @@ async function insertSignal(data, executor) {
     data.matched_relation_ids || [],
     data.matched_source_rule_ids || [],
     data.reject_reason || null,
-    data.activation_wait_version || null
+    data.activation_wait_version || null,
+    data.trace_id || null
   ];
 
   if (data.follow_once) {
@@ -53,8 +54,8 @@ async function insertSignal(data, executor) {
       `INSERT INTO trade_signals
         (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
          execution_mode, status, canonical_key, matched_project_handles, matched_whitelist_ids,
-         matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        ON CONFLICT DO NOTHING
        RETURNING *`,
       params
@@ -73,8 +74,8 @@ async function insertSignal(data, executor) {
     `INSERT INTO trade_signals
       (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
        execution_mode, status, canonical_key, matched_project_handles, matched_whitelist_ids,
-       matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      ON CONFLICT DO NOTHING
      RETURNING *`,
     params

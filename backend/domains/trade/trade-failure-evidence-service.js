@@ -114,11 +114,16 @@ class TradeFailureEvidenceService {
     const tokenDecimals = Number(context.tokenDecimals ?? context.token?.decimals);
     const [chainState, tokenBalance, activity] = await Promise.all([
       this.stateProvider.capture(attempt.chain, attempt.wallet_address),
-      this.gmgnHttp.getWalletTokenBalance(attempt.chain, attempt.wallet_address, tokenAddress),
+      this.gmgnHttp.getWalletTokenBalance(
+        attempt.chain,
+        attempt.wallet_address,
+        tokenAddress,
+        context.rateLease ? { rateLease: context.rateLease, deadlineAt: context.deadlineAt } : {}
+      ),
       this.gmgnHttp.getWalletActivity(attempt.chain, attempt.wallet_address, {
         token_address: tokenAddress,
         limit: 20
-      })
+      }, context.rateLease ? { rateLease: context.rateLease, deadlineAt: context.deadlineAt } : {})
     ]);
     const activities = activityRows(activity);
     return {

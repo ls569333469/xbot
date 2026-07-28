@@ -256,6 +256,7 @@ async function consumeRule(rule, activity, contractAddress, executor, options = 
     const canonicalKey = `launch:${activity.semantic_key || activity.id}|chain:${chainId}|ca:${contractAddress}`;
     signal = await signalQueries.createSignal({
       activity_id: activity.id,
+      trace_id: activity.trace_id,
       whitelist_id: whitelist.id,
       kol_id: activity.kol_id,
       kol_handle: activity.kol_handle,

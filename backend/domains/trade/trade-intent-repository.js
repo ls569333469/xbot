@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const db = require('../../lib/db');
 const { CHAIN_REGISTRY } = require('../../lib/chain-config');
 const { normalizedWallet, laneKey, walletWriteLane } = require('./wallet-write-lane');
@@ -200,7 +201,7 @@ async function insertAttempt(executor, intent, values = {}) {
   const attemptNo = Number(sequence.rows[0].attempt_no);
   const previous = attemptNo > 1
     ? (await executor.query(
-      'SELECT id FROM trade_attempts WHERE intent_id = $1 AND attempt_no = $2',
+      'SELECT id, trace_id FROM trade_attempts WHERE intent_id = $1 AND attempt_no = $2',
       [intent.id, attemptNo - 1]
     )).rows[0]
     : null;
@@ -209,9 +210,9 @@ async function insertAttempt(executor, intent, values = {}) {
        intent_id, attempt_no, retry_of_attempt_id, signal_id, whitelist_id,
        position_id, side, idempotency_key, chain, wallet_address,
        input_token, output_token, input_amount_raw, input_amount_display,
-       status, request_fingerprint, metadata, fee_escalation_level
+       status, request_fingerprint, metadata, fee_escalation_level, trace_id, timing_json
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
      ) RETURNING *`,
     [
       intent.id, attemptNo, previous?.id || null,
@@ -220,7 +221,8 @@ async function insertAttempt(executor, intent, values = {}) {
       `intent:${intent.id}:attempt:${attemptNo}`,
       intent.chain, intent.wallet_address, values.inputToken, values.outputToken,
       values.inputAmountRaw, values.inputAmountDisplay, values.status || 'reserved',
-      values.requestFingerprint, values.metadata || {}, Math.max(0, attemptNo - 1)
+      values.requestFingerprint, values.metadata || {}, Math.max(0, attemptNo - 1),
+      values.traceId || previous?.trace_id || crypto.randomUUID(), values.timing || {}
     ]
   );
   return result.rows[0];

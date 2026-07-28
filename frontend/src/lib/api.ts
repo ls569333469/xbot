@@ -11,6 +11,16 @@ const mountedBase = import.meta.env.BASE_URL === '/'
   ? ''
   : import.meta.env.BASE_URL.replace(/\/$/, '');
 const BASE_URL = configuredApiBase ?? mountedBase;
+const GET_CACHE_TTL_MS = 2000;
+const getCache = new Map<string, { expiresAt: number; value: unknown }>();
+const getInFlight = new Map<string, Promise<unknown>>();
+let cacheGeneration = 0;
+
+function invalidateGetCache() {
+  cacheGeneration += 1;
+  getCache.clear();
+  getInFlight.clear();
+}
 
 // 从 localStorage 或环境变量读取 token
 export function getAuthToken(): string {
@@ -64,12 +74,26 @@ function validatePayloadSchema(endpoint: string, payload: any) {
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${endpoint}`;
+  const method = String(options?.method || 'GET').toUpperCase();
+  const explicitAuthorization = new Headers(options?.headers).has('Authorization');
+  const cacheableGet = method === 'GET' && !explicitAuthorization;
+  const requestGeneration = cacheGeneration;
+  const cacheKey = `${requestGeneration}:${url}`;
+  if (cacheableGet) {
+    const cached = getCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+    const existing = getInFlight.get(cacheKey);
+    if (existing) return existing as Promise<T>;
+  } else if (method !== 'GET') {
+    invalidateGetCache();
+  }
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${getAuthToken()}`,
     ...(options?.headers as Record<string, string> || {}),
   };
 
+  const request = (async () => {
   try {
     const res = await fetch(url, { ...options, headers });
     if (!res.ok && res.status === 401) {
@@ -95,18 +119,33 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
     if (import.meta.env.DEV) {
       validatePayloadSchema(endpoint, data);
     }
-    return data as T;
+    const typed = data as T;
+    if (cacheableGet
+        && requestGeneration === cacheGeneration
+        && (data as { ok?: boolean })?.ok) {
+      getCache.set(cacheKey, { expiresAt: Date.now() + GET_CACHE_TTL_MS, value: typed });
+    }
+    return typed;
   } catch (err) {
     console.error(`API Error on ${endpoint}:`, err);
     return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' } as unknown as T;
   }
+  })();
+  if (cacheableGet) getInFlight.set(cacheKey, request as Promise<unknown>);
+  try {
+    return await request;
+  } finally {
+    if (cacheableGet) getInFlight.delete(cacheKey);
+  }
 }
 
 export function setAdminToken(token: string) {
+  invalidateGetCache();
   localStorage.setItem('xbot_admin_token', token.trim());
 }
 
 export function clearAdminToken() {
+  invalidateGetCache();
   localStorage.removeItem('xbot_admin_token');
 }
 

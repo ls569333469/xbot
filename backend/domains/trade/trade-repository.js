@@ -14,6 +14,26 @@ function fingerprint(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+function finalProductionAuthorization(authorization, currentScopeContext = null) {
+  if (!authorization) {
+    return { allowed: false, errorCode: 'CHAIN_PRODUCTION_NOT_APPROVED' };
+  }
+  if (authorization.has_scope) {
+    return {
+      allowed: Boolean(
+        authorization.scope_allowed
+        && currentScopeContext
+        && authorization.scope_context_hash === currentScopeContext
+      ),
+      errorCode: 'ACCEPTANCE_SCOPE_MISMATCH'
+    };
+  }
+  return {
+    allowed: Boolean(authorization.live_enabled),
+    errorCode: 'CHAIN_PRODUCTION_NOT_APPROVED'
+  };
+}
+
 function strategyLegAmountRaw(totalAmountRaw, condition = {}) {
   const total = BigInt(String(totalAmountRaw || '0'));
   const ratioValue = String(condition.sell_ratio ?? '100');
@@ -69,6 +89,7 @@ async function getSignalForExecution(signalId, executor = db) {
             signal.kol_handle,
             signal.matched_relation_ids,
             signal.matched_source_rule_ids,
+            signal.trace_id,
             activity.provider,
             activity.activity_type,
             whitelist.symbol,
@@ -84,6 +105,8 @@ async function getSignalForExecution(signalId, executor = db) {
             whitelist.exit_strategy,
             whitelist.exit_strategy_version,
             whitelist.current_buy_count,
+            whitelist.live_activation_state,
+            whitelist.activation_version,
             whitelist.status AS whitelist_status
      FROM trade_signals AS signal
      JOIN ca_whitelist AS whitelist ON whitelist.id = signal.whitelist_id
@@ -356,7 +379,9 @@ async function createBuyAttempt(prepared) {
         exit_strategy_version: signal.exit_strategy_version,
         token_decimals: prepared.token.decimals,
         token_symbol: prepared.token.symbol
-      }
+      },
+      traceId: prepared.traceId || signal.trace_id || null,
+      timing: prepared.timing || {}
     });
     const reservationResult = await client.query(
       `INSERT INTO budget_reservations
@@ -404,6 +429,207 @@ async function createBuyAttempt(prepared) {
     return { intent: intentResult.intent, attempt, reservation: reservationResult.rows[0], merged: false };
   } catch (error) {
     await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function beginBuySubmission(attemptId, options = {}) {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const contextResult = await client.query(
+      `SELECT attempt.*, signal.matched_relation_ids, signal.matched_source_rule_ids,
+              signal.activation_wait_version, activity.activity_type,
+              whitelist.status AS whitelist_status,
+              whitelist.live_activation_state, whitelist.activation_version
+       FROM trade_attempts AS attempt
+       JOIN trade_signals AS signal ON signal.id = attempt.signal_id
+       JOIN x_activities AS activity ON activity.id = signal.activity_id
+       JOIN ca_whitelist AS whitelist ON whitelist.id = attempt.whitelist_id
+       WHERE attempt.id = $1
+       FOR UPDATE OF attempt, whitelist`,
+      [attemptId]
+    );
+    const context = contextResult.rows[0];
+    if (!context || context.status !== 'reserved') {
+      const error = new Error('Attempt is not available for final submission');
+      error.code = 'TRADE_ATTEMPT_CAS_FAILED';
+      throw error;
+    }
+
+    const runtimeResult = await client.query(
+      `SELECT value_json FROM trade_runtime_state WHERE key = 'live_engine_control' FOR SHARE`
+    );
+    const runtime = runtimeResult.rows[0]?.value_json || {};
+    if (!runtime.desired_running || runtime.status !== 'running') {
+      const error = new Error('Persisted live engine gate is closed');
+      error.code = 'LIVE_ENGINE_NOT_ARMED';
+      throw error;
+    }
+    if (!options.configurationFingerprint
+        || runtime.configuration_fingerprint !== options.configurationFingerprint) {
+      const error = new Error('Persisted live configuration fingerprint changed');
+      error.code = 'LIVE_CONFIGURATION_CHANGED';
+      throw error;
+    }
+    if (options.emergencyStop) {
+      const error = new Error('Emergency stop is active');
+      error.code = 'EMERGENCY_STOP_ACTIVE';
+      throw error;
+    }
+    if (context.whitelist_status !== 'active'
+        || context.live_activation_state !== 'live_ready'
+        || Number(context.activation_version) !== Number(options.activationVersion)
+        || (context.activation_wait_version !== null
+          && Number(context.activation_wait_version) !== Number(context.activation_version))) {
+      const error = new Error('Whitelist activation changed before submission');
+      error.code = 'WHITELIST_ACTIVATION_CHANGED';
+      throw error;
+    }
+
+    const authorizationResult = await client.query(
+      `WITH acceptance_scope AS (
+         SELECT chain, whitelist_id, expires_at
+         FROM live_acceptance_scopes
+         WHERE status = 'active'
+         ORDER BY id DESC LIMIT 1
+       )
+       SELECT readiness.live_enabled,
+              EXISTS(SELECT 1 FROM acceptance_scope) AS has_scope,
+              (SELECT context_hash FROM acceptance_scope) AS scope_context_hash,
+              EXISTS(
+                SELECT 1 FROM acceptance_scope
+                WHERE chain = $1 AND whitelist_id = $2 AND expires_at > NOW()
+              ) AS scope_allowed,
+              EXISTS(
+                SELECT 1 FROM x_signal_relations AS relation
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = relation.kol_id AND actor.enabled = true
+                WHERE relation.id = ANY($3::bigint[])
+                  AND relation.whitelist_id = $2 AND relation.enabled = true
+                  AND $5 = ANY(relation.event_types)
+              ) OR EXISTS(
+                SELECT 1 FROM x_signal_source_rules AS rule
+                JOIN x_kol_accounts AS actor
+                  ON actor.id = rule.actor_id AND actor.enabled = true
+                WHERE rule.id = ANY($4::bigint[])
+                  AND rule.whitelist_id = $2 AND rule.enabled = true
+                  AND $5 = ANY(rule.event_types)
+              ) AS trigger_allowed
+       FROM chain_live_readiness AS readiness
+       WHERE readiness.chain = $1
+       FOR SHARE`,
+      [
+        context.chain,
+        context.whitelist_id,
+        context.matched_relation_ids || [],
+        context.matched_source_rule_ids || [],
+        String(context.activity_type || '').toLowerCase()
+      ]
+    );
+    const authorization = authorizationResult.rows[0];
+    let currentScopeContext = null;
+    if (authorization?.has_scope) {
+      const whitelistContextResult = await client.query(
+        `SELECT whitelist.*,
+                COALESCE((
+                  SELECT jsonb_agg(jsonb_build_object(
+                    'actor_handle', actor.x_handle,
+                    'target_x_handle', relation.target_x_handle,
+                    'event_types', relation.event_types
+                  ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')),
+                             relation.target_x_handle)
+                  FROM x_signal_relations AS relation
+                  JOIN x_kol_accounts AS actor
+                    ON actor.id = relation.kol_id AND actor.enabled = true
+                  WHERE relation.whitelist_id = whitelist.id AND relation.enabled = true
+                ), '[]'::jsonb) AS relations,
+                COALESCE((
+                  SELECT jsonb_agg(jsonb_build_object(
+                    'actor_handle', actor.x_handle,
+                    'event_types', rule.event_types,
+                    'match_mode', rule.match_mode,
+                    'source_kind', rule.source_kind
+                  ) ORDER BY lower(regexp_replace(actor.x_handle, '^@+', '')))
+                  FROM x_signal_source_rules AS rule
+                  JOIN x_kol_accounts AS actor
+                    ON actor.id = rule.actor_id AND actor.enabled = true
+                  WHERE rule.whitelist_id = whitelist.id AND rule.enabled = true
+                ), '[]'::jsonb) AS direct_sources
+         FROM ca_whitelist AS whitelist
+         WHERE whitelist.id = $1`,
+        [context.whitelist_id]
+      );
+      currentScopeContext = whitelistContextResult.rows[0]
+        ? liveApproval.contractContext(context.chain, whitelistContextResult.rows).contextHash
+        : null;
+    }
+    const productionAuthorization = finalProductionAuthorization(
+      authorization,
+      currentScopeContext
+    );
+    if (!productionAuthorization.allowed) {
+      const error = new Error('Chain production approval changed before submission');
+      error.code = productionAuthorization.errorCode;
+      throw error;
+    }
+    if (!authorization.trigger_allowed) {
+      const error = new Error('Signal trigger authorization changed before submission');
+      error.code = 'LIVE_TRIGGER_EVENT_NOT_ALLOWED';
+      throw error;
+    }
+    await tradeCircuitBreaker.assertBuyAllowed(context.chain, client);
+    await walletWriteLane.acquireInTransaction(client, {
+      chain: context.chain,
+      walletAddress: context.wallet_address,
+      attemptId
+    });
+    await intentRepository.savePreSubmitSnapshot(
+      attemptId,
+      options.snapshot,
+      options.estimatedFeeNative,
+      client
+    );
+    const attemptResult = await client.query(
+      `UPDATE trade_attempts
+       SET status = 'submitting', submit_started_at = NOW(), funds_write_started_at = NOW(),
+           timing_json = $2, updated_at = NOW()
+       WHERE id = $1 AND status = 'reserved'
+       RETURNING *`,
+      [attemptId, options.timing || {}]
+    );
+    if (!attemptResult.rows[0]) {
+      const error = new Error('Attempt changed before submission');
+      error.code = 'TRADE_ATTEMPT_CAS_FAILED';
+      throw error;
+    }
+    await intentRepository.setIntentStatusForAttempt(
+      client,
+      attemptId,
+      ['created', 'submitting', 'awaiting_result'],
+      'submitting'
+    );
+    await client.query(
+      `UPDATE x_provider_events AS provider_event
+       SET swap_started_at = NOW(),
+           receive_to_swap_ms = GREATEST(0, ROUND(EXTRACT(EPOCH FROM
+             (NOW() - COALESCE(provider_event.transport_received_at, provider_event.received_at))) * 1000)::int),
+           timing_json = COALESCE(timing_json, '{}'::jsonb) || $2::jsonb,
+           updated_at = NOW()
+       FROM trade_signals AS signal
+       WHERE signal.id = $1
+         AND signal.activity_id = ANY(COALESCE(provider_event.activity_ids, '{}'::int[]))`,
+      [context.signal_id, options.timing || {}]
+    );
+    await addAttemptEvent(client, attemptId, 'reserved', 'submitting', {
+      actor: options.operatorId || 'system'
+    });
+    await client.query('COMMIT');
+    return attemptResult.rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
     client.release();
@@ -612,6 +838,60 @@ async function recordSubmittedOrder(attemptId, normalizedOrder, quote, responseM
   }
 }
 
+async function recordExecutionTiming(attemptId, timing) {
+  await db.query(
+    `WITH updated_attempt AS (
+       UPDATE trade_attempts
+       SET timing_json = $2, updated_at = NOW()
+       WHERE id = $1
+       RETURNING signal_id
+     )
+     UPDATE x_provider_events AS provider_event
+     SET timing_json = COALESCE(provider_event.timing_json, '{}'::jsonb) || $2::jsonb,
+         swap_submitted_at = NOW(),
+         receive_to_submitted_ms = GREATEST(0, ROUND(EXTRACT(EPOCH FROM
+           (NOW() - COALESCE(provider_event.transport_received_at, provider_event.received_at))) * 1000)::int),
+         updated_at = NOW()
+     FROM updated_attempt
+     JOIN trade_signals AS signal ON signal.id = updated_attempt.signal_id
+     WHERE signal.activity_id = ANY(COALESCE(provider_event.activity_ids, '{}'::int[]))`,
+    [attemptId, timing || {}]
+  );
+}
+
+async function getExecutionTrace(traceId) {
+  const result = await db.query(
+    `SELECT provider_event.trace_id,
+            provider_event.provider_event_id,
+            provider_event.provider_created_at,
+            provider_event.transport_received_at,
+            provider_event.signal_committed_at,
+            provider_event.execution_started_at,
+            provider_event.swap_started_at,
+            provider_event.swap_submitted_at,
+            provider_event.receive_to_signal_ms,
+            provider_event.receive_to_swap_ms,
+            provider_event.receive_to_submitted_ms,
+            provider_event.timing_json,
+            signal.id AS signal_id, signal.status AS signal_status,
+            attempt.id AS attempt_id, attempt.status AS attempt_status,
+            attempt.timing_json AS attempt_timing,
+            orders.id AS order_id, orders.normalized_status AS order_status,
+            orders.receipt_available_at, orders.confirmed_at
+     FROM x_provider_events AS provider_event
+     LEFT JOIN x_activities AS activity
+       ON activity.id = ANY(COALESCE(provider_event.activity_ids, '{}'::int[]))
+     LEFT JOIN trade_signals AS signal ON signal.activity_id = activity.id
+     LEFT JOIN trade_attempts AS attempt ON attempt.signal_id = signal.id
+     LEFT JOIN trade_orders AS orders ON orders.attempt_id = attempt.id
+     WHERE provider_event.trace_id = $1
+     ORDER BY attempt.id DESC NULLS LAST, orders.id DESC NULLS LAST
+     LIMIT 20`,
+    [String(traceId || '').slice(0, 128)]
+  );
+  return result.rows;
+}
+
 async function markSubmissionUncertain(attemptId, error) {
   return transitionAttempt(attemptId, ['submitting'], 'submission_uncertain', {
     errorCode: error.code || 'GMGN_SUBMISSION_UNCERTAIN',
@@ -723,6 +1003,92 @@ async function listDueOrders(limit = 20) {
     [Math.min(100, Math.max(1, Number(limit)))]
   );
   return result.rows;
+}
+
+async function getOrderForReconciliation(orderId) {
+  const result = await db.query(
+    `SELECT orders.*, attempts.chain, attempts.wallet_address, attempts.signal_id,
+            attempts.side, attempts.intent_id, attempts.attempt_no,
+            attempts.whitelist_id, attempts.position_id,
+            attempts.metadata AS attempt_metadata,
+            attempts.status AS attempt_status,
+            attempts.input_token, attempts.output_token,
+            attempts.input_amount_raw AS attempt_input_amount_raw,
+            attempts.output_amount_raw AS attempt_output_amount_raw,
+            attempts.pre_submit_snapshot_json, attempts.snapshot_version,
+            attempts.failure_evidence_started_at,
+            intent.config_snapshot_json, intent.status AS intent_status,
+            intent.max_retries, intent.retry_count, intent.expires_at
+     FROM trade_orders AS orders
+     JOIN trade_attempts AS attempts ON attempts.id = orders.attempt_id
+     JOIN trade_intents AS intent ON intent.id = attempts.intent_id
+     WHERE orders.id = $1`,
+    [orderId]
+  );
+  return result.rows[0] || null;
+}
+
+async function claimOrderReconciliation(orderId, token, leaseMs = 15_000) {
+  const result = await db.query(
+    `UPDATE trade_orders
+     SET reconciliation_claim_token = $2, reconciliation_claimed_at = NOW(), updated_at = NOW()
+     WHERE id = $1
+       AND (
+         reconciliation_claim_token IS NULL
+         OR reconciliation_claimed_at < NOW() - ($3::double precision * interval '1 millisecond')
+       )
+     RETURNING *`,
+    [orderId, token, Math.max(1000, Number(leaseMs || 15_000))]
+  );
+  return result.rows[0] || null;
+}
+
+async function releaseOrderReconciliation(orderId, token) {
+  const result = await db.query(
+    `UPDATE trade_orders
+     SET reconciliation_claim_token = NULL, reconciliation_claimed_at = NULL, updated_at = NOW()
+     WHERE id = $1 AND reconciliation_claim_token = $2
+     RETURNING id`,
+    [orderId, token]
+  );
+  return Boolean(result.rows[0]);
+}
+
+async function markReceiptAvailable(orderId) {
+  await db.query(
+    `UPDATE trade_orders
+     SET receipt_available_at = COALESCE(receipt_available_at, NOW()), updated_at = NOW()
+     WHERE id = $1`,
+    [orderId]
+  );
+}
+
+async function recordConfirmationTiming(orderId) {
+  await db.query(
+    `WITH target AS (
+       SELECT attempt.id AS attempt_id, attempt.timing_json,
+              orders.receipt_available_at, attempt.signal_id
+       FROM trade_orders AS orders
+       JOIN trade_attempts AS attempt ON attempt.id = orders.attempt_id
+       WHERE orders.id = $1
+     ), updated_attempt AS (
+       UPDATE trade_attempts AS attempt
+       SET timing_json = COALESCE(attempt.timing_json, '{}'::jsonb)
+         || jsonb_build_object('receipt_to_confirmed_ms', GREATEST(0, ROUND(EXTRACT(EPOCH FROM
+              (NOW() - target.receipt_available_at)) * 1000)::int)),
+         updated_at = NOW()
+       FROM target WHERE attempt.id = target.attempt_id
+       RETURNING attempt.signal_id, attempt.timing_json
+     )
+     UPDATE x_provider_events AS provider_event
+     SET timing_json = COALESCE(provider_event.timing_json, '{}'::jsonb)
+       || updated_attempt.timing_json,
+       updated_at = NOW()
+     FROM updated_attempt
+     JOIN trade_signals AS signal ON signal.id = updated_attempt.signal_id
+     WHERE signal.activity_id = ANY(COALESCE(provider_event.activity_ids, '{}'::int[]))`,
+    [orderId]
+  );
 }
 
 async function listUncertainAttempts(limit = 10) {
@@ -2573,10 +2939,14 @@ module.exports = {
   claimExternalClose,
   claimStrategyClose,
   createBuyAttempt,
+  beginBuySubmission,
   createSellAttempt,
+  finalProductionAuthorization,
   fingerprint,
   getAttempt,
   getAttemptDetails,
+  getOrderForReconciliation,
+  getExecutionTrace,
   getPositionForClose,
   getPositionBalanceState,
   getSignalForExecution,
@@ -2587,11 +2957,16 @@ module.exports = {
   listDuePositionBalances,
   listDueStrategyGroups,
   listUncertainAttempts,
+  claimOrderReconciliation,
+  releaseOrderReconciliation,
+  markReceiptAvailable,
+  recordConfirmationTiming,
   markSubmissionUncertain,
   markSellUncertain,
   markPositionBalanceMismatch,
   observePositionBalance,
   recordSubmittedOrder,
+  recordExecutionTiming,
   releaseRejectedAttempt,
   rejectSellAttempt,
   resolveCancelledCloseAttempt,

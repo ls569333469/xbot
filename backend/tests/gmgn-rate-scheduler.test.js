@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   WeightedRateScheduler,
+  PRIORITIES,
   endpointWeight,
   parseResetAt
 } = require('../lib/gmgn-rate-scheduler');
@@ -24,6 +25,20 @@ test('scheduler reserves quote and swap atomically as seven weight', async () =>
   assert.equal(scheduler.getStatus().availableWeight, 7);
   now += 500;
   assert.equal(scheduler.getStatus().availableWeight, 14);
+});
+
+test('trade evidence uses an independent four-weight lease below critical reconciliation', async () => {
+  const scheduler = new WeightedRateScheduler({ now: () => 1_000_000, jitter: () => 0 });
+  const tradeLease = await scheduler.reserveTrade();
+  const evidenceLease = await scheduler.reserveTradeEvidence();
+  assert.equal(tradeLease.remainingWeight, 7);
+  assert.equal(evidenceLease.remainingWeight, 4);
+  assert.equal(scheduler.getStatus().reservedWeight, 11);
+  assert.ok(PRIORITIES.CRITICAL_RECONCILIATION < PRIORITIES.TRADE_EVIDENCE);
+  evidenceLease.consume(1);
+  evidenceLease.consume(3);
+  tradeLease.release();
+  assert.equal(scheduler.getStatus().reservedWeight, 0);
 });
 
 test('first 429 globally cools and degrades the scheduler', () => {

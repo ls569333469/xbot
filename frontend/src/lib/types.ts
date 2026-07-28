@@ -762,7 +762,11 @@ export interface TradeReadiness {
     active: boolean;
     lastRunAt: string | null;
     lastSuccessAt: string | null;
+    lastFailureAt?: string | null;
+    lastRecoveredAt?: string | null;
     lastError: string | null;
+    consecutiveFailures?: number;
+    systemFailure?: boolean;
     processed: number;
     batchSize: number;
   };
@@ -774,6 +778,7 @@ export interface TradeReadiness {
     signal: { count: number; p50: number | null; p95: number | null; p99: number | null };
     execution: { count: number; p50: number | null; p95: number | null; p99: number | null };
     receiveToSwap: { count: number; p50: number | null; p95: number | null; p99: number | null };
+    receiveToSubmitted: { count: number; p50: number | null; p95: number | null; p99: number | null };
   };
   contractProbes: Record<string, { ok: boolean; chain: string; error?: string }>;
   strategyProbes?: Record<string, { ok: boolean; returned?: number; error?: string }>;
@@ -923,6 +928,8 @@ export interface TradeRuntimePolicy {
     queueDepth: number;
     processed: number;
     lastError: string | null;
+    lastErrorAt?: string | null;
+    lastHistoricalError?: { code: string; at: string } | null;
     lastExecutionAt: string | null;
   };
 }

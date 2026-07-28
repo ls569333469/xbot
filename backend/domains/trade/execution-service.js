@@ -19,6 +19,13 @@ const { walletWriteLane } = require('./wallet-write-lane');
 const { tradeFailureEvidenceService } = require('./trade-failure-evidence-service');
 const { classifyWriteError } = require('./gmgn-write-error-classifier');
 const { probeRpc } = require('./chain-receipt-service');
+const { executionGateService } = require('./execution-gate-service');
+const { createExecutionTrace } = require('./execution-trace');
+
+function wakeOrderReconciliation(orderId) {
+  const { reconciler } = require('./reconciliation-service');
+  reconciler.wakeOrder(orderId);
+}
 
 function nativeBalance(wallet, symbol) {
   return gmgnAdapter.walletNativeBalance(wallet, symbol);
@@ -211,19 +218,40 @@ async function buildPrepared(signalId, options = {}) {
       : configuredSlippage
   };
   const cached = await loadCachedContext(signal, { fresh: Boolean(options.forceRefresh) });
+  options.trace?.mark('cache', {
+    fallback: Object.values(cached.cacheMeta || {}).some((entry) => !entry.hit)
+  });
   const inputAmountRaw = decimalToRaw(signal.budget_per_trade, cached.chain.decimals);
-  const quoteRaw = await gmgnHttp.quoteOrder(
-    cached.chain.id,
-    cached.wallet.address,
-    cached.chain.nativeToken,
-    signal.contract_address,
-    inputAmountRaw,
-    Number(signal.slippage),
-    options.rateLease ? { rateLease: options.rateLease, deadlineAt: options.deadlineAt } : {}
-  );
+  const evidencePromise = options.captureEvidence
+    ? options.captureEvidence({
+      side: 'buy',
+      chain: cached.chain.id,
+      wallet_address: cached.wallet.address,
+      input_token: cached.chain.nativeToken,
+      output_token: signal.contract_address,
+      input_amount_raw: inputAmountRaw,
+      snapshot_version: 1
+    }, {
+      tokenDecimals: cached.token.decimals,
+      gas: cached.gas
+    })
+    : Promise.resolve(null);
+  const [quoteRaw, walletBalance, preSubmitSnapshot] = await Promise.all([
+    gmgnHttp.quoteOrder(
+      cached.chain.id,
+      cached.wallet.address,
+      cached.chain.nativeToken,
+      signal.contract_address,
+      inputAmountRaw,
+      Number(signal.slippage),
+      options.rateLease ? { rateLease: options.rateLease, deadlineAt: options.deadlineAt } : {}
+    ),
+    resolveWalletNativeBalance(cached, options),
+    evidencePromise
+  ]);
+  options.trace?.mark('quote');
   const quote = gmgnAdapter.normalizeQuote(quoteRaw);
   const budgetNative = String(signal.budget_per_trade);
-  const walletBalance = await resolveWalletNativeBalance(cached, options);
   const walletNativeBalance = walletBalance.value;
   const nativeUsd = resolveNativePriceUsd(cached);
   const feeReserveNative = feeReserve(cached.chain.id);
@@ -260,6 +288,7 @@ async function buildPrepared(signalId, options = {}) {
   context.requiredNativeBalance = requiredNativeBalance;
   const policy = await livePolicy.evaluate(signal, { phase: options.policyPhase || 'live' });
   const risk = evaluateRisk(context);
+  options.trace?.mark('risk', { passed: risk.passed });
   const riskSnapshot = {
     ...risk,
     policy,
@@ -334,6 +363,13 @@ async function buildPrepared(signalId, options = {}) {
     risk,
     riskSnapshot,
     livePolicy: policy,
+    preSubmitSnapshot: preSubmitSnapshot ? {
+      ...preSubmitSnapshot,
+      quote: quote.raw || {},
+      native_usd_price: nativeUsd
+    } : null,
+    traceId: options.trace?.traceId || signal.trace_id || null,
+    timing: options.trace?.snapshot() || {},
     snapshotHash,
     summary: {
       signal_id: signal.signal_id,
@@ -428,11 +464,6 @@ async function execute(signalId, prepareToken, operatorId) {
       nativeUsd: prepared.nativeUsd,
       config: created.intent.config_snapshot_json
     });
-    await intentRepository.savePreSubmitSnapshot(
-      attempt.id,
-      snapshot,
-      prepared.feeReserveNative
-    );
     const swapParams = buildSwapParams({
       chain: prepared.chain.id,
       walletAddress: prepared.wallet.address,
@@ -445,12 +476,15 @@ async function execute(signalId, prepareToken, operatorId) {
       attemptNo: attempt.attempt_no,
       retryConfig: created.intent.config_snapshot_json?.chain_config
     });
-    await walletWriteLane.acquire({
-      chain: prepared.chain.id,
-      walletAddress: prepared.wallet.address,
-      attemptId: attempt.id
+    await repository.beginBuySubmission(attempt.id, {
+      snapshot,
+      estimatedFeeNative: prepared.feeReserveNative,
+      configurationFingerprint: readiness.configurationFingerprint,
+      activationVersion: prepared.signal.activation_version,
+      emergencyStop: String(process.env.EMERGENCY_STOP || 'false').toLowerCase() === 'true',
+      operatorId,
+      timing: prepared.timing
     });
-    await repository.transitionAttempt(attempt.id, ['reserved'], 'submitting', { actor: operatorId });
     swapStarted = true;
     const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
@@ -466,12 +500,149 @@ async function execute(signalId, prepareToken, operatorId) {
       response.meta
     );
     await walletWriteLane.settleSubmittedOrder(attempt, normalizedOrder);
+    wakeOrderReconciliation(order.id);
     return {
       intent_id: created.intent.id,
       attempt_id: attempt.id,
       attempt_no: attempt.attempt_no,
       order,
       status: normalizedOrder.status
+    };
+  } catch (error) {
+    rateLease.release();
+    if (!attempt) throw error;
+    const classification = classifyWriteError(error, { writeStarted: swapStarted });
+    if (classification.kind === 'uncertain') {
+      await repository.markSubmissionUncertain(attempt.id, error);
+      await walletWriteLane.quarantine(attempt, classification.code, {
+        error: error.message,
+        classification: classification.kind
+      });
+    } else {
+      await walletWriteLane.release(attempt.id, 'WRITE_REJECTED_OR_NOT_STARTED');
+      await repository.releaseRejectedAttempt(attempt.id, error);
+    }
+    throw error;
+  }
+}
+
+async function executeAutomatic(signalId, operatorId = '6551-live-worker', options = {}) {
+  assertLiveMode(engineState);
+  const trace = createExecutionTrace({ traceId: options.traceId });
+  trace.mark('claim');
+  let gate;
+  try {
+    gate = executionGateService.assertReady(options.chainId);
+  } catch (error) {
+    if (error.code !== 'EXECUTION_GATE_STALE') throw error;
+    const readiness = await readinessService.getSnapshot();
+    gate = executionGateService.assertReady(options.chainId);
+    if (!readiness.readyToArm) throw error;
+  }
+  trace.mark('gate');
+
+  const deadlineAt = Date.now()
+    + Math.max(1000, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300) * 1000);
+  const evidenceDeadlineAt = Math.min(deadlineAt, Date.now() + 1500);
+  const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
+  let attempt = null;
+  let swapStarted = false;
+  try {
+    const prepared = await buildPrepared(signalId, {
+      rateLease,
+      deadlineAt,
+      trace,
+      captureEvidence: async (provisionalAttempt, context) => {
+        const evidenceLease = await gmgnHttp.scheduler.reserveTradeEvidence({
+          deadlineAt: evidenceDeadlineAt,
+          context: { signalId, kind: 'pre_submit_evidence' }
+        });
+        try {
+          const snapshot = await tradeFailureEvidenceService.capturePreSubmitSnapshot(
+            provisionalAttempt,
+            { ...context, rateLease: evidenceLease, deadlineAt: evidenceDeadlineAt }
+          );
+          trace.mark('evidence');
+          return snapshot;
+        } finally {
+          evidenceLease.release();
+        }
+      }
+    });
+    assertTargetChainReady(gate, prepared.chain.id);
+    if (!prepared.livePolicy.allowed) {
+      const error = new Error(`Live policy rejected signal: ${prepared.livePolicy.blockers.join(', ')}`);
+      error.code = prepared.livePolicy.blockers[0] || 'LIVE_POLICY_REJECTED';
+      throw error;
+    }
+    if (!prepared.risk.passed) {
+      const error = new Error(`Risk rejected signal: ${prepared.risk.reasons.join(', ')}`);
+      error.code = prepared.risk.reasons[0] || 'RISK_REJECTED';
+      throw error;
+    }
+    const created = await repository.createBuyAttempt({
+      ...prepared,
+      traceId: trace.traceId,
+      timing: trace.snapshot()
+    });
+    if (created.merged || created.duplicate) {
+      rateLease.release();
+      return {
+        intent_id: created.intent.id,
+        attempt_id: null,
+        status: created.duplicate ? 'existing_trade_intent' : 'merged_into_active_intent'
+      };
+    }
+    attempt = created.attempt;
+    trace.mark('attempt');
+    const swapParams = buildSwapParams({
+      chain: prepared.chain.id,
+      walletAddress: prepared.wallet.address,
+      inputToken: prepared.chain.nativeToken,
+      outputToken: prepared.signal.contract_address,
+      inputAmountRaw: prepared.inputAmountRaw,
+      slippage: prepared.signal.slippage,
+      conditionOrders: prepared.conditionOrders,
+      gas: prepared.gas,
+      attemptNo: attempt.attempt_no,
+      retryConfig: created.intent.config_snapshot_json?.chain_config
+    });
+    await repository.beginBuySubmission(attempt.id, {
+      snapshot: prepared.preSubmitSnapshot,
+      estimatedFeeNative: prepared.feeReserveNative,
+      configurationFingerprint: gate.configurationFingerprint,
+      activationVersion: prepared.signal.activation_version,
+      emergencyStop: String(process.env.EMERGENCY_STOP || 'false').toLowerCase() === 'true',
+      operatorId,
+      timing: trace.snapshot()
+    });
+    trace.mark('lane');
+    trace.mark('swap');
+    swapStarted = true;
+    const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
+    const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
+    if (!normalizedOrder.providerOrderId) {
+      const error = new Error('GMGN swap response did not include order_id');
+      error.code = 'GMGN_ORDER_ID_MISSING';
+      throw error;
+    }
+    const order = await repository.recordSubmittedOrder(
+      attempt.id,
+      normalizedOrder,
+      prepared.quote,
+      response.meta
+    );
+    trace.mark('submitted', { http_ms: response.meta?.latencyMs ?? null });
+    await repository.recordExecutionTiming(attempt.id, trace.snapshot());
+    await walletWriteLane.settleSubmittedOrder(attempt, normalizedOrder);
+    wakeOrderReconciliation(order.id);
+    return {
+      intent_id: created.intent.id,
+      attempt_id: attempt.id,
+      attempt_no: attempt.attempt_no,
+      order,
+      status: normalizedOrder.status,
+      trace_id: trace.traceId
     };
   } catch (error) {
     rateLease.release();
@@ -561,11 +732,6 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       nativeUsd: prepared.nativeUsd,
       config: intent.config_snapshot_json
     });
-    await intentRepository.savePreSubmitSnapshot(
-      attempt.id,
-      snapshot,
-      prepared.feeReserveNative
-    );
     const swapParams = buildSwapParams({
       chain: prepared.chain.id,
       walletAddress: prepared.wallet.address,
@@ -578,12 +744,15 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       attemptNo: attempt.attempt_no,
       retryConfig: chainConfig
     });
-    await walletWriteLane.acquire({
-      chain: prepared.chain.id,
-      walletAddress: prepared.wallet.address,
-      attemptId: attempt.id
+    await repository.beginBuySubmission(attempt.id, {
+      snapshot,
+      estimatedFeeNative: prepared.feeReserveNative,
+      configurationFingerprint: readiness.configurationFingerprint,
+      activationVersion: prepared.signal.activation_version,
+      emergencyStop: String(process.env.EMERGENCY_STOP || 'false').toLowerCase() === 'true',
+      operatorId,
+      timing: prepared.timing
     });
-    await repository.transitionAttempt(attempt.id, ['reserved'], 'submitting', { actor: operatorId });
     swapStarted = true;
     const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
@@ -599,6 +768,7 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       response.meta
     );
     await walletWriteLane.settleSubmittedOrder(attempt, normalizedOrder);
+    wakeOrderReconciliation(order.id);
     return {
       intent_id: intent.id,
       attempt_id: attempt.id,
@@ -627,6 +797,7 @@ module.exports = {
   derivePriceImpactPct,
   evaluateRisk,
   execute,
+  executeAutomatic,
   feeReserve,
   loadCachedContext,
   nativeBalance,

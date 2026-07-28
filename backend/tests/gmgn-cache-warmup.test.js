@@ -71,4 +71,24 @@ test('cache warmer releases its running guard after a loader failure', async () 
 
   assert.deepEqual(await warmer.runOnce(), { status: 'completed', processed: 1, total: 1 });
   assert.equal(warmer.getStatus().lastError, null);
+  assert.equal(warmer.getStatus().consecutiveFailures, 0);
+  assert.ok(warmer.getStatus().lastRecoveredAt instanceof Date);
+});
+
+test('cache warmer reports a system failure only after three consecutive failures', async () => {
+  const { warmer } = createWarmer({
+    rows: [{ id: 1, chain_id: 'sol', contract_address: 'Token1' }],
+    loader: async () => {
+      const error = new Error('provider unavailable');
+      error.code = 'GMGN_NETWORK_ERROR';
+      throw error;
+    }
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await assert.rejects(() => warmer.runOnce(), { code: 'GMGN_NETWORK_ERROR' });
+    assert.equal(warmer.getStatus().systemFailure, attempt >= 3);
+  }
+  assert.equal(warmer.getStatus().consecutiveFailures, 3);
+  assert.ok(warmer.getStatus().failureStartedAt instanceof Date);
 });

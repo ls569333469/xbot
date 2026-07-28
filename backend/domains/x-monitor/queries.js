@@ -46,8 +46,9 @@ async function insertActivity(data, executor = db) {
     `INSERT INTO x_activities
       (kol_id, kol_handle, activity_type, tweet_id, tweet_text, target_x_handle,
        target_x_handles, extracted_cas, extracted_tickers, provider_event_id,
-       source_created_at, provider, semantic_key, observation_started_at, observation_ended_at, raw_json)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       source_created_at, provider, semantic_key, observation_started_at, observation_ended_at,
+       raw_json, trace_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT DO NOTHING
      RETURNING *`,
     [
@@ -56,7 +57,8 @@ async function insertActivity(data, executor = db) {
       data.extracted_cas || [], data.extracted_tickers || [],
       data.provider_event_id, data.source_created_at, data.provider,
       data.semantic_key || null,
-      data.observation_started_at, data.observation_ended_at, data.raw_json
+      data.observation_started_at, data.observation_ended_at, data.raw_json,
+      data.trace_id || null
     ]
   );
   return res.rows[0];

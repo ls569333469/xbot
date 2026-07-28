@@ -5,6 +5,7 @@ const OFFICIAL_CAPACITY = 20;
 const INTERNAL_RATE = 14;
 const INTERNAL_CAPACITY = 14;
 const TRADE_RESERVATION_WEIGHT = 7;
+const TRADE_EVIDENCE_WEIGHT = 4;
 
 const ENDPOINT_WEIGHTS = new Map([
   ['GET /v1/user/info', 1],
@@ -26,9 +27,10 @@ const ENDPOINT_WEIGHTS = new Map([
 const PRIORITIES = Object.freeze({
   CRITICAL_RECONCILIATION: 0,
   NEW_TRADE: 1,
-  STRATEGY_ACTION: 2,
-  STABLE_RECONCILIATION: 3,
-  CACHE_WARMUP: 4
+  TRADE_EVIDENCE: 2,
+  STRATEGY_ACTION: 3,
+  STABLE_RECONCILIATION: 4,
+  CACHE_WARMUP: 5
 });
 
 function endpointWeight(method, path) {
@@ -188,6 +190,13 @@ class WeightedRateScheduler extends EventEmitter {
     });
   }
 
+  reserveTradeEvidence(options = {}) {
+    return this.acquire(TRADE_EVIDENCE_WEIGHT, {
+      ...options,
+      priority: PRIORITIES.TRADE_EVIDENCE
+    });
+  }
+
   registerLease(lease) {
     this.activeLeases.add(lease);
   }
@@ -289,6 +298,7 @@ module.exports = {
   OFFICIAL_RATE,
   PRIORITIES,
   TRADE_RESERVATION_WEIGHT,
+  TRADE_EVIDENCE_WEIGHT,
   WeightedRateScheduler,
   endpointWeight,
   parseResetAt,

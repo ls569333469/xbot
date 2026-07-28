@@ -59,8 +59,9 @@ router.get('/positions', async (req, res) => {
 
 router.get('/runtime-policy', async (req, res) => {
   try {
+    const cachedReadiness = readinessService.getLatestSnapshot(5000);
     const [readiness, acceptanceScope] = await Promise.all([
-      readinessService.getSnapshot(),
+      cachedReadiness || readinessService.getSnapshot(),
       liveApproval.getAcceptanceScope()
     ]);
     res.json({
@@ -247,6 +248,14 @@ router.get('/attempts/:id', async (req, res) => {
     const attempt = await repository.getAttemptDetails(req.params.id);
     if (!attempt) return res.status(404).json({ ok: false, error: 'Trade attempt not found', code: 'ATTEMPT_NOT_FOUND' });
     res.json({ ok: true, data: attempt });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.get('/traces/:traceId', async (req, res) => {
+  try {
+    res.json({ ok: true, data: await repository.getExecutionTrace(req.params.traceId) });
   } catch (error) {
     sendError(res, error);
   }

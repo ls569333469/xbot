@@ -22,6 +22,40 @@ class WalletWriteLane {
     this.leaseMs = Math.max(5000, Number(options.leaseMs || 30000));
   }
 
+  async acquireInTransaction(executor, { chain, walletAddress, attemptId }) {
+    const address = normalizedWallet(chain, walletAddress);
+    const key = laneKey(chain, address);
+    await executor.query(
+      `INSERT INTO wallet_write_lanes(chain, wallet_address, lane_key)
+       VALUES ($1,$2,$3) ON CONFLICT (chain, wallet_address) DO NOTHING`,
+      [chain, address, key]
+    );
+    const result = await executor.query(
+      `SELECT * FROM wallet_write_lanes
+       WHERE chain = $1 AND wallet_address = $2 FOR UPDATE`,
+      [chain, address]
+    );
+    const current = result.rows[0];
+    if (current.state === 'quarantined') {
+      throw laneError('WALLET_QUARANTINED', 'Wallet funds writes are quarantined', current);
+    }
+    if (current.state !== 'idle'
+        && Number(current.owner_attempt_id) !== Number(attemptId)) {
+      throw laneError('WALLET_WRITE_LANE_BUSY', 'Another funds write owns this wallet lane', current);
+    }
+    const acquired = await executor.query(
+      `UPDATE wallet_write_lanes
+       SET state = 'submitting', owner_attempt_id = $3, reason_code = NULL,
+           evidence_json = '{}'::jsonb, released_at = NULL, released_by = NULL,
+           release_reason = NULL,
+           lease_expires_at = NOW() + ($4::double precision * interval '1 millisecond'),
+           updated_at = NOW()
+       WHERE chain = $1 AND wallet_address = $2 RETURNING *`,
+      [chain, address, attemptId, this.leaseMs]
+    );
+    return acquired.rows[0];
+  }
+
   async acquire({ chain, walletAddress, attemptId }) {
     const client = await this.db.pool.connect();
     const address = normalizedWallet(chain, walletAddress);

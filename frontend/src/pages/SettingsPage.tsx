@@ -688,7 +688,8 @@ export default function SettingsPage() {
                 ['事件入库', runtimePolicy.readiness.latencySlo.inbox],
                 ['信号生成', runtimePolicy.readiness.latencySlo.signal],
                 ['执行准备', runtimePolicy.readiness.latencySlo.execution],
-                ['接收事件 → 发起下单', runtimePolicy.readiness.latencySlo.receiveToSwap]
+                ['接收事件 → 发起下单', runtimePolicy.readiness.latencySlo.receiveToSwap],
+                ['接收事件 → GMGN 接单', runtimePolicy.readiness.latencySlo.receiveToSubmitted]
               ] as const).map(([label, metric]) => (
                 <div key={label} className="font-mono text-xs">
                   <span className="text-secondary">{label}</span>

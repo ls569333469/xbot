@@ -15,7 +15,12 @@ class GmgnCacheWarmer {
     this.running = false;
     this.lastRunAt = null;
     this.lastSuccessAt = null;
+    this.lastFailureAt = null;
+    this.failureStartedAt = null;
+    this.lastRecoveredAt = null;
     this.lastError = null;
+    this.consecutiveFailures = 0;
+    this.consecutiveSuccesses = 0;
     this.processed = 0;
   }
 
@@ -23,11 +28,10 @@ class GmgnCacheWarmer {
     if (this.running) return { status: 'skipped', reason: 'already_running' };
     this.running = true;
     this.lastRunAt = new Date();
-    this.lastError = null;
     try {
       const policy = await this.policy.getPolicy();
       if (policy.whitelistIds.length === 0 || policy.chains.length === 0) {
-        this.lastSuccessAt = new Date();
+        this.recordSuccess();
         return { status: 'completed', processed: 0 };
       }
       const result = await this.db.query(
@@ -39,7 +43,7 @@ class GmgnCacheWarmer {
       );
       const rows = result.rows;
       if (rows.length === 0) {
-        this.lastSuccessAt = new Date();
+        this.recordSuccess();
         return { status: 'completed', processed: 0 };
       }
       const batch = [];
@@ -51,14 +55,34 @@ class GmgnCacheWarmer {
         await this.loader(whitelist);
         this.processed += 1;
       }
-      this.lastSuccessAt = new Date();
+      this.recordSuccess();
       return { status: 'completed', processed: batch.length, total: rows.length };
     } catch (error) {
-      this.lastError = error.code || error.message;
+      this.recordFailure(error);
       throw error;
     } finally {
       this.running = false;
     }
+  }
+
+  recordSuccess() {
+    const now = new Date();
+    const wasFailing = this.consecutiveFailures > 0;
+    this.lastSuccessAt = now;
+    this.consecutiveSuccesses += 1;
+    this.consecutiveFailures = 0;
+    this.failureStartedAt = null;
+    this.lastError = null;
+    if (wasFailing) this.lastRecoveredAt = now;
+  }
+
+  recordFailure(error) {
+    const now = new Date();
+    this.lastFailureAt = now;
+    this.failureStartedAt ||= now;
+    this.lastError = error.code || error.message;
+    this.consecutiveFailures += 1;
+    this.consecutiveSuccesses = 0;
   }
 
   start(options = {}) {
@@ -86,7 +110,13 @@ class GmgnCacheWarmer {
       active: this.running,
       lastRunAt: this.lastRunAt,
       lastSuccessAt: this.lastSuccessAt,
+      lastFailureAt: this.lastFailureAt,
+      failureStartedAt: this.failureStartedAt,
+      lastRecoveredAt: this.lastRecoveredAt,
       lastError: this.lastError,
+      consecutiveFailures: this.consecutiveFailures,
+      consecutiveSuccesses: this.consecutiveSuccesses,
+      systemFailure: this.consecutiveFailures >= 3,
       processed: this.processed,
       batchSize: this.batchSize
     };

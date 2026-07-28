@@ -126,14 +126,22 @@ export default function WhitelistPage() {
 
   useEffect(() => { void fetchData(); }, [fetchData]);
   useEffect(() => { void fetchLaunchData(); }, [fetchLaunchData]);
-  useEffect(() => { void fetchTemplates(); }, [fetchTemplates]);
-  useEffect(() => {
-    void api.kol.list().then((response) => {
-      if (response.ok && response.data) setKolAccounts(response.data);
-    });
-  }, []);
+  const ensureWorkspaceDependencies = useCallback(async () => {
+    const [templateResponse, kolResponse] = await Promise.all([
+      api.whitelist.templates.list(),
+      api.kol.list(),
+    ]);
+    if (!templateResponse.ok || !kolResponse.ok) {
+      toast(templateResponse.error || kolResponse.error || '白名单工作区数据加载失败', 'error');
+      return false;
+    }
+    setTemplates(templateResponse.data || []);
+    setKolAccounts(kolResponse.data || []);
+    return true;
+  }, [toast]);
 
-  const openCreate = () => {
+  const openCreate = async () => {
+    if (!await ensureWorkspaceDependencies()) return;
     setEditing(null);
     setDraftSeed(null);
     setWorkspaceVersion((value) => value + 1);
@@ -142,9 +150,12 @@ export default function WhitelistPage() {
 
   const openEdit = async (item: WhitelistEntry) => {
     setEditLoadingId(item.id);
-    const response = await api.whitelist.get(item.id);
+    const [response, dependenciesReady] = await Promise.all([
+      api.whitelist.get(item.id),
+      ensureWorkspaceDependencies(),
+    ]);
     setEditLoadingId(null);
-    if (!response.ok || !response.data) {
+    if (!dependenciesReady || !response.ok || !response.data) {
       toast(response.error || '白名单详情加载失败', 'error');
       return;
     }
@@ -159,14 +170,16 @@ export default function WhitelistPage() {
     setView('research');
   };
 
-  const openLaunchCreate = () => {
+  const openLaunchCreate = async () => {
+    if (!await ensureWorkspaceDependencies()) return;
     setEditingLaunch(null);
     setWorkspaceVersion((value) => value + 1);
     setView('launch-workspace');
   };
 
-  const openLaunchEdit = (item: LaunchMonitor) => {
+  const openLaunchEdit = async (item: LaunchMonitor) => {
     if (item.status === 'triggered') return;
+    if (!await ensureWorkspaceDependencies()) return;
     setEditingLaunch(item);
     setWorkspaceVersion((value) => value + 1);
     setView('launch-workspace');
@@ -216,10 +229,13 @@ export default function WhitelistPage() {
   };
 
   if (view === 'research') {
-    return <ResearchWorkspace draft={draftSeed || {}} onBack={() => setView('workspace')} onUseDraft={(draft) => {
+    return <ResearchWorkspace draft={draftSeed || {}} onBack={() => void openCreate()} onUseDraft={(draft) => {
+      void ensureWorkspaceDependencies().then((ready) => {
+        if (!ready) return;
       setDraftSeed(draft);
       setWorkspaceVersion((value) => value + 1);
       setView('workspace');
+      });
     }} />;
   }
 
@@ -250,13 +266,7 @@ export default function WhitelistPage() {
         ...ecosystemSources.map((item) => normalizeHandle(item.actor_handle)),
         ...(row.relations || []).map((item) => normalizeHandle(item.actor_handle)),
       ]);
-      const chainHandles = new Set(kolAccounts
-        .filter((item) => item.enabled !== false && item.chain_ids?.includes(row.chain_id))
-        .map((item) => normalizeHandle(item.x_handle)));
-      const selectedInChain = [...selectedHandles].filter((handle) => chainHandles.has(handle)).length;
-      const coverage = chainHandles.size > 0
-        ? `${selectedInChain}/${chainHandles.size} 当前链${selectedInChain === chainHandles.size ? '已全选' : '账号'}`
-        : `${selectedHandles.size} 个唯一账号`;
+      const coverage = `${selectedHandles.size} 个唯一账号`;
       return <div className="p16-table-rules"><strong>{ecosystemSourceCount} CA 动态 · {relationCount} 互动</strong><span>{launchSourceCount ? `含首发来源审计 · ${coverage}` : coverage}</span></div>;
     } },
     { header: '单笔金额', accessor: (row: WhitelistEntry) => <span className="font-mono">{row.budget_per_trade}</span> },
@@ -305,7 +315,7 @@ export default function WhitelistPage() {
       </div>
       <div className="p16-list-toolbar">
         <div className="p16-chain-filter">{CHAINS.map((chain) => <button type="button" key={chain} className={chainFilter === chain ? 'active' : ''} onClick={() => { setChainFilter(chain); setPage(1); }}>{chain === 'all' ? '全部' : chain.toUpperCase()}</button>)}</div>
-        <div className="p16-list-actions"><div className="p16-search-field"><Search size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={productMode === 'known' ? '搜索 CA / 代币 / 项目' : '搜索项目 / X 账号'} /></div>{productMode === 'known' ? <><button type="button" className="btn btn-secondary" onClick={() => openResearch({})}><Search size={16} />快速投研</button><button type="button" className="btn btn-primary" onClick={openCreate}><FilePlus2 size={16} />添加白名单</button></> : <button type="button" className="btn btn-primary" onClick={openLaunchCreate}><FilePlus2 size={16} />添加未发币监控</button>}</div>
+        <div className="p16-list-actions"><div className="p16-search-field"><Search size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={productMode === 'known' ? '搜索 CA / 代币 / 项目' : '搜索项目 / X 账号'} /></div>{productMode === 'known' ? <><button type="button" className="btn btn-secondary" onClick={() => openResearch({})}><Search size={16} />快速投研</button><button type="button" className="btn btn-primary" onClick={() => void openCreate()}><FilePlus2 size={16} />添加白名单</button></> : <button type="button" className="btn btn-primary" onClick={() => void openLaunchCreate()}><FilePlus2 size={16} />添加未发币监控</button>}</div>
       </div>
 
       {productMode === 'known'

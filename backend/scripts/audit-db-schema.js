@@ -35,15 +35,24 @@ async function requireColumns(table, expected) {
 async function main() {
   await client.connect();
   const migration = await client.query(
-    "SELECT name FROM schema_migrations WHERE name = '026_p18_watch_demand_idempotency.sql'"
+    "SELECT name FROM schema_migrations WHERE name = '027_p19_low_latency_execution.sql'"
   );
-  if (migration.rows.length !== 1) throw new Error('Migration 026 is not applied');
+  if (migration.rows.length !== 1) throw new Error('Migration 027 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',
     'activation_error_code', 'activation_error_detail', 'activation_checked_at', 'activated_at'
   ]);
   await requireColumns('trade_signals', ['activation_wait_version']);
+  await requireColumns('x_provider_events', [
+    'trace_id', 'timing_json', 'swap_submitted_at', 'receive_to_submitted_ms'
+  ]);
+  await requireColumns('x_activities', ['trace_id']);
+  await requireColumns('trade_signals', ['trace_id']);
+  await requireColumns('trade_attempts', ['trace_id', 'timing_json']);
+  await requireColumns('trade_orders', [
+    'reconciliation_claim_token', 'reconciliation_claimed_at', 'receipt_available_at'
+  ]);
   await requireColumns('x_watch_sync_outbox', [
     'desired_present', 'desired_flags', 'desired_fingerprint'
   ]);

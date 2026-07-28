@@ -18,6 +18,8 @@ class LiveExecutionQueue {
     this.wsBroadcast = options.wsBroadcast || null;
     this.processed = 0;
     this.lastError = null;
+    this.lastErrorAt = null;
+    this.lastHistoricalError = null;
     this.lastExecutionAt = null;
     this.idleWaiters = [];
     this.scanTimer = null;
@@ -26,6 +28,18 @@ class LiveExecutionQueue {
     this.listenerRetryTimer = null;
     this.listenerConnected = false;
     this.lastNotificationAt = null;
+  }
+
+  recordError(error) {
+    const code = error?.code || error?.message || String(error);
+    this.lastError = code;
+    this.lastErrorAt = new Date();
+    this.lastHistoricalError = { code, at: this.lastErrorAt };
+  }
+
+  recordSuccess() {
+    this.lastError = null;
+    this.lastErrorAt = null;
   }
 
   configure(options = {}) {
@@ -93,7 +107,7 @@ class LiveExecutionQueue {
       this.lastNotificationAt = new Date();
       return this.enqueue(signals, { source: 'postgres-notify' });
     } catch (error) {
-      this.lastError = 'LIVE_SIGNAL_NOTIFICATION_INVALID';
+      this.recordError({ code: 'LIVE_SIGNAL_NOTIFICATION_INVALID' });
       this.logger.error('live-execution-queue', `Invalid live signal notification: ${error.message}`);
       return 0;
     }
@@ -118,7 +132,7 @@ class LiveExecutionQueue {
         if (this.listenerClient !== client) return;
         this.listenerConnected = false;
         this.listenerClient = null;
-        this.lastError = error.code || error.message;
+        this.recordError(error);
         try { client.release(true); } catch {}
         this.scheduleListenerReconnect();
       });
@@ -126,7 +140,7 @@ class LiveExecutionQueue {
       this.listenerConnected = true;
     } catch (error) {
       this.listenerConnected = false;
-      this.lastError = error.code || error.message;
+      this.recordError(error);
       if (this.listenerClient) {
         try { this.listenerClient.release(true); } catch {}
         this.listenerClient = null;
@@ -141,12 +155,12 @@ class LiveExecutionQueue {
     await this.startListener();
     const intervalMs = Math.max(250, Number(options.intervalMs || 500));
     void this.scanOnce().catch((error) => {
-      this.lastError = error.code || error.message;
+      this.recordError(error);
       this.logger.error('live-execution-queue', `Initial queue scan failed: ${error.message}`);
     });
     this.scanTimer = setInterval(() => {
       void this.scanOnce().catch((error) => {
-        this.lastError = error.code || error.message;
+        this.recordError(error);
         this.logger.error('live-execution-queue', `Queue scan failed: ${error.message}`);
       });
     }, intervalMs);
@@ -213,19 +227,33 @@ class LiveExecutionQueue {
     const armedAt = this.engine.getArmedAt?.();
     if (!armedAt) return null;
     const result = await this.db.query(
-      `UPDATE trade_signals AS signal
-       SET status = 'pending', updated_at = NOW()
-       FROM x_activities AS activity, ca_whitelist AS whitelist
-       WHERE signal.id = $1 AND signal.status = 'recorded' AND signal.execution_mode = 'live'
-         AND activity.id = signal.activity_id
-         AND whitelist.id = signal.whitelist_id
-         AND whitelist.status = 'active'
-         AND whitelist.live_activation_state = 'live_ready'
-         AND (signal.activation_wait_version IS NULL
-           OR signal.activation_wait_version = whitelist.activation_version)
-         AND CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
-           THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END >= $2
-       RETURNING signal.*`,
+      `WITH claimed AS (
+         UPDATE trade_signals AS signal
+         SET status = 'pending', updated_at = NOW()
+         FROM x_activities AS activity, ca_whitelist AS whitelist
+         WHERE signal.id = $1 AND signal.status = 'recorded' AND signal.execution_mode = 'live'
+           AND activity.id = signal.activity_id
+           AND whitelist.id = signal.whitelist_id
+           AND whitelist.status = 'active'
+           AND whitelist.live_activation_state = 'live_ready'
+           AND (signal.activation_wait_version IS NULL
+             OR signal.activation_wait_version = whitelist.activation_version)
+           AND CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
+             THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END >= $2
+         RETURNING signal.*
+       ), timing AS (
+         UPDATE x_provider_events AS provider_event
+         SET execution_started_at = COALESCE(execution_started_at, NOW()),
+             signal_to_execution_ms = GREATEST(0, ROUND(EXTRACT(EPOCH FROM
+               (NOW() - COALESCE(activity.source_created_at, claimed.created_at))) * 1000)::int),
+             updated_at = NOW()
+         FROM claimed
+         JOIN x_activities AS activity ON activity.id = claimed.activity_id
+         WHERE claimed.activity_id = ANY(COALESCE(provider_event.activity_ids, '{}'::int[]))
+       )
+       SELECT claimed.*, whitelist.chain_id
+       FROM claimed
+       JOIN ca_whitelist AS whitelist ON whitelist.id = claimed.whitelist_id`,
       [signalId, armedAt]
     );
     return result.rows[0] || null;
@@ -246,14 +274,13 @@ class LiveExecutionQueue {
     }
     const signal = await this.claimSignal(item.signalId);
     if (!signal) return { status: 'skipped', reason: 'not_claimable' };
-    await this.markTiming(item.signalId, 'started');
     try {
-      const prepared = await this.execution.prepare(item.signalId, '6551-live-worker');
-      const result = await this.execution.execute(
+      const result = await this.execution.executeAutomatic(
         item.signalId,
-        prepared.prepare_token,
-        '6551-live-worker'
+        '6551-live-worker',
+        { chainId: signal.chain_id, traceId: signal.trace_id }
       );
+      this.recordSuccess();
       this.lastExecutionAt = new Date();
       this.wsBroadcast?.({
         type: 'trade:execution-submitted',
@@ -261,7 +288,7 @@ class LiveExecutionQueue {
       });
       return { status: 'submitted', result };
     } catch (error) {
-      this.lastError = error.code || error.message;
+      this.recordError(error);
       await this.db.query(
         `UPDATE trade_signals SET status = 'rejected', reject_reason = $2, updated_at = NOW()
          WHERE id = $1 AND status = 'pending'`,
@@ -327,6 +354,8 @@ class LiveExecutionQueue {
       queueDepth: this.queue.length,
       processed: this.processed,
       lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
+      lastHistoricalError: this.lastHistoricalError,
       lastExecutionAt: this.lastExecutionAt
     };
   }

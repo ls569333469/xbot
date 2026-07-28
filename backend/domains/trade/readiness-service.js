@@ -17,14 +17,25 @@ const { probeRpc } = require('./chain-receipt-service');
 const { CHAIN_REGISTRY } = require('../../lib/chain-config');
 const { tradeRetryOrchestrator } = require('./trade-retry-orchestrator');
 const liveApproval = require('./live-approval-service');
+const { executionGateService } = require('./execution-gate-service');
 
-const REQUIRED_MIGRATION = '025_p17_arm_failure_observability.sql';
+const REQUIRED_MIGRATION = '027_p19_low_latency_execution.sql';
 const TRANSIENT_BLOCKERS = new Set([
   'X_6551_INGESTION_UNHEALTHY',
   'GMGN_SCHEDULER_NOT_HEALTHY',
   'GMGN_TRADE_WEIGHT_UNAVAILABLE',
-  'GMGN_RECENT_429'
+  'GMGN_RECENT_429',
+  'FAST_PATH_WARMER_SYSTEM_FAILURE'
 ]);
+let latestSnapshot = null;
+
+function getLatestSnapshot(maxAgeMs = 5000) {
+  if (!latestSnapshot) return null;
+  const generatedAt = new Date(latestSnapshot.generatedAt).getTime();
+  return Number.isFinite(generatedAt) && Date.now() - generatedAt <= maxAgeMs
+    ? latestSnapshot
+    : null;
+}
 
 function schedulerReadiness(status) {
   const blockers = [];
@@ -606,7 +617,11 @@ async function getSnapshot(options = {}) {
          COUNT(receive_to_swap_ms)::int AS receive_swap_count,
          percentile_cont(0.50) WITHIN GROUP (ORDER BY receive_to_swap_ms) AS receive_swap_p50,
          percentile_cont(0.95) WITHIN GROUP (ORDER BY receive_to_swap_ms) AS receive_swap_p95,
-         percentile_cont(0.99) WITHIN GROUP (ORDER BY receive_to_swap_ms) AS receive_swap_p99
+         percentile_cont(0.99) WITHIN GROUP (ORDER BY receive_to_swap_ms) AS receive_swap_p99,
+         COUNT(receive_to_submitted_ms)::int AS receive_submitted_count,
+         percentile_cont(0.50) WITHIN GROUP (ORDER BY receive_to_submitted_ms) AS receive_submitted_p50,
+         percentile_cont(0.95) WITHIN GROUP (ORDER BY receive_to_submitted_ms) AS receive_submitted_p95,
+         percentile_cont(0.99) WITHIN GROUP (ORDER BY receive_to_submitted_ms) AS receive_submitted_p99
        FROM x_provider_events
        WHERE provider = '6551' AND received_at >= NOW() - INTERVAL '24 hours'`
     ),
@@ -777,7 +792,8 @@ async function getSnapshot(options = {}) {
     inbox: latencyMetric(latencyRow, 'inbox'),
     signal: latencyMetric(latencyRow, 'signal'),
     execution: latencyMetric(latencyRow, 'execution'),
-    receiveToSwap: latencyMetric(latencyRow, 'receive_swap')
+    receiveToSwap: latencyMetric(latencyRow, 'receive_swap'),
+    receiveToSubmitted: latencyMetric(latencyRow, 'receive_submitted')
   };
   latencySlo.passed = latencySlo.signal.count >= latencySlo.requiredSamples
     && latencySlo.execution.count >= latencySlo.requiredSamples
@@ -890,7 +906,8 @@ async function getSnapshot(options = {}) {
   advisories.push(...schedulerGate.advisories);
   if (options.probe && missingCacheKeys.length > 0) advisories.push('FAST_PATH_CACHE_NOT_READY');
   if (policy.whitelistIds.length > 0 && !cacheWarmerStatus.running) blockers.push('FAST_PATH_WARMER_NOT_RUNNING');
-  if (cacheWarmerStatus.lastError) blockers.push('FAST_PATH_WARMER_ERROR');
+  if (cacheWarmerStatus.systemFailure) blockers.push('FAST_PATH_WARMER_SYSTEM_FAILURE');
+  else if (cacheWarmerStatus.lastError) advisories.push('FAST_PATH_WARMER_DEGRADED');
   if (options.probe && Object.values(contractProbes).some((probe) => !probe.ok)) {
     blockers.push('CONTRACT_PROBE_FAILED');
   }
@@ -1003,11 +1020,14 @@ async function getSnapshot(options = {}) {
     pollingPolicy: reconcilerStatus.pollingPolicy
   };
   snapshot.snapshotHash = hashSnapshot(snapshot);
+  latestSnapshot = snapshot;
+  executionGateService.update(snapshot);
   return snapshot;
 }
 
 async function assertReadyToArm() {
   const snapshot = await getSnapshot({ probe: true });
+  executionGateService.update(snapshot);
   if (!snapshot.readyToArm) {
     const error = new Error(`Live readiness failed: ${snapshot.blockers.join(', ')}`);
     error.code = 'LIVE_READINESS_FAILED';
@@ -1058,6 +1078,7 @@ class ReadinessMonitor {
     }
     try {
       const snapshot = await this.snapshotProvider();
+      executionGateService.update(snapshot);
       if (snapshot.readyToArm) {
         if (!transientPaused) return { status: 'ready', snapshot };
         this.healthyCount += 1;
@@ -1163,6 +1184,7 @@ module.exports = {
   applyRpcBalanceFallback,
   assertReadyToArm,
   getSnapshot,
+  getLatestSnapshot,
   schedulerReadiness,
   jsonb,
   monitor,

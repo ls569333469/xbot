@@ -41,9 +41,9 @@ async function insertInboxEvent(event, executor = db, timing = {}) {
     `INSERT INTO x_provider_events
       (provider, provider_event_id, event_type, tw_account, provider_created_at,
        raw_payload, status, last_error, transport_received_at, inbox_committed_at,
-       receive_to_inbox_ms)
+       receive_to_inbox_ms, trace_id)
      VALUES ('6551', $1, $2, $3, $4, $5, $6, $7, $8, NOW(),
-       GREATEST(0, ROUND(EXTRACT(EPOCH FROM (NOW() - $8::timestamptz)) * 1000)::int))
+       GREATEST(0, ROUND(EXTRACT(EPOCH FROM (NOW() - $8::timestamptz)) * 1000)::int), $9)
      ON CONFLICT (provider, provider_event_id) DO NOTHING
      RETURNING *`,
     [
@@ -54,7 +54,8 @@ async function insertInboxEvent(event, executor = db, timing = {}) {
       redactPayload(event || {}),
       identity.stable ? 'pending' : 'dead_letter',
       identity.stable ? null : 'Provider event is missing a stable ID',
-      transportReceivedAt
+      transportReceivedAt,
+      crypto.randomUUID()
     ]
   );
   return { row: result.rows[0] || null, duplicate: result.rows.length === 0, identity };
@@ -151,7 +152,8 @@ async function processInboxEvent(row, options = {}) {
         semantic_key: item.semanticKey,
         observation_started_at: row.transport_received_at || row.received_at,
         observation_ended_at: new Date(),
-        raw_json: item.raw
+        raw_json: item.raw,
+        trace_id: row.trace_id
       }, executor);
       if (!activity) continue;
       activities.push(activity);
