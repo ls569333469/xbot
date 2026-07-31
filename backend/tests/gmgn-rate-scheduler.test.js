@@ -58,4 +58,8 @@ test('official endpoint weights include read, quote, swap, and strategy writes',
   assert.equal(endpointWeight('GET', '/v1/trade/quote'), 2);
   assert.equal(endpointWeight('POST', '/v1/trade/swap'), 5);
   assert.equal(endpointWeight('POST', '/v1/trade/strategy/cancel'), 2);
+  assert.equal(endpointWeight('GET', '/v1/market/rank'), 1);
+  assert.equal(endpointWeight('POST', '/v1/market/hot_searches'), 3);
+  assert.equal(endpointWeight('POST', '/v1/trenches'), 3);
+  assert.equal(endpointWeight('GET', '/v1/market/token_top_holders'), 5);
 });

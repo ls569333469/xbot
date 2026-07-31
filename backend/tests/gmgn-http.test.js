@@ -140,3 +140,34 @@ test('legacy local-wallet swap calls fail closed', () => {
     (error) => error.code === 'GMGN_LEGACY_FLOW_REMOVED'
   );
 });
+
+test('P20 market methods use the official read-only routes and payload shapes', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  gmgnHttp.scheduler.resetForTests();
+  global.fetch = async (url, options) => {
+    calls.push({ url: new URL(String(url)), options });
+    return jsonResponse({ code: 0, data: {} });
+  };
+  try {
+    await withEnv({ GMGN_API_KEY: 'gmgn-test-key' }, async () => {
+      await gmgnHttp.getMarketRank('bsc', '24h', { limit: 100 });
+      await gmgnHttp.getMarketHotSearches([{ chain: 'bsc', interval: '24h', limit: 100 }]);
+      await gmgnHttp.getMarketTrenches('bsc', { version: 'v2', new_creation: { limit: 80 } });
+      await gmgnHttp.getTokenTopHolders('bsc', '0xabc', { tag: 'renowned' });
+    });
+    assert.deepEqual(calls.map((call) => [call.options.method, call.url.pathname]), [
+      ['GET', '/v1/market/rank'],
+      ['POST', '/v1/market/hot_searches'],
+      ['POST', '/v1/trenches'],
+      ['GET', '/v1/market/token_top_holders']
+    ]);
+    assert.deepEqual(JSON.parse(calls[1].options.body), {
+      params: [{ chain: 'bsc', interval: '24h', limit: 100 }]
+    });
+    assert.equal(calls.every((call) => call.options.headers['X-Signature'] === undefined), true);
+  } finally {
+    global.fetch = originalFetch;
+    gmgnHttp.scheduler.resetForTests();
+  }
+});

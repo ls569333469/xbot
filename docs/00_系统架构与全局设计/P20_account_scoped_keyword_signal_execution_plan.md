@@ -1,1139 +1,822 @@
-# P20 账号限定关键词触发与安全映射方案
+# P20 高权重账号动态关键词信号与 CA 解析方案
 
-> 状态：待审核，尚未实施。日期：2026-07-30。
+> 版本：v3。状态：P20.0/P20.1 只读实现已完成，P20.2 及后续阶段未实施。更新日期：2026-07-31。
 >
-> 本文只定义技术方案、实施顺序和验收标准。本阶段不修改业务代码、不执行数据库 Migration、不部署服务器、不改变 Engine 状态，也不会自动开启任何真实交易。
+> 本文定义技术方案、实施顺序和验收标准。当前只新增独立 Candidate Index、Asset Family/Variant、Resolver、Intent Gate、GMGN 只读接口和 Migration 028；未接入 6551 实时事件、现有 Matcher、Live Policy、Engine、资金提交或真实交易。
 >
-> 代码基线：`d1db9e5 feat: deliver P19 low-latency live execution`。正式实施前必须重新核对 GitHub、生产服务器 `/opt/xbot` 和本地备份的提交号；生产服务器版本是唯一部署与实盘验收对象，本地仅承担开发、测试和备份。
+> 生产服务器版本是后续实施、测试和实盘验收的唯一基线；GitHub 用于版本备份，本地工作区仅用于开发、测试和备份。实施前必须重新核对三者提交号并检查密钥、数据库、日志和运行数据不会进入 Git。
 
-## 1. 结论
+## 1. 最终目标
 
-可以新增关键词触发，但必须作为独立的第三条触发线路，不能恢复为“白名单 Symbol 自动匹配所有 Tweet”。
+P20 包含两条相互独立但共享研究数据的线路：
 
-目标语义固定为：
+1. **账号清洗与历史回测工具**：批量输入 X 账号，分析哪些账号适合发帖自动交易，统计直接意图率、CA 解析成功率、误报率、历史收益和可执行胜率。
+2. **动态关键词交易线路**：清洗后合格的高权重账号发帖后，识别完整 CA、Cashtag、Hashtag 或项目名，动态寻找与当次事件匹配的正确 `chain + CA`，再继承账号级资金和离场模板进入现有交易链路。
+
+目标链路如下：
 
 ```text
-指定 X 来源账号
-  -> 指定事件类型
-  -> 显式配置的精确关键词/短语
-  -> 当前白名单的固定链 + 固定 CA
-  -> 现有 Signal、Live Policy、风控与 P19 实盘快路径
+合格 KOL 发帖
+  -> 提取完整 CA / $TOKEN / #TOKEN / 项目名 / URL / 被引用账号
+  -> 确定性逐帖 Intent Gate 判断是否为当前买入意图
+  -> Dynamic CA Resolver 构建候选集合
+  -> GMGN 快速核验身份、平台、池子和可交易性
+  -> 事件级消歧
+  -> 账号级 Dynamic Policy 最终授权
+  -> 动态物化交易标的
+  -> 复用 P19 Signal / 风控 / Quote / Swap / 离场链路
 ```
 
-三条线路互相独立：
+### 1.1 明确结论
 
-| 线路 | 当前/新增 | 判断条件 | 目标 CA 从哪里来 |
+- Token **不需要预先存在于白名单**。
+- 不为每个 `Actor + Token` 提前固定 CA。
+- Grok 不进入实时 CA 解析和资金热路径。
+- 关键词匹配发生在 XBOT 本地，不为每个关键词创建 6551 Watch。
+- 同一个 Symbol 可能对应多个假币，也可能对应原盘、迁移盘、社区重启盘等多个真实版本。
+- “正确 CA”是**相对于当次帖子上下文的正确版本**，不一定存在全局唯一答案。
+- 只有事件上下文将候选收敛为一个可交易版本时才允许继续；`0` 个或多个未消歧候选都必须失败关闭。
+- 当前公开 GMGN 数据源不能覆盖任意未知 Symbol；候选缺失只能进入 Research/Record，不能猜测 CA。
+- 账号历史清洗只决定该 Actor 是否值得配置，不能代替每条实时帖子的买入意图判断。
+- 动态物化记录只是交易系统的数据载体，不构成资金授权；最终授权必须来自账号级 Dynamic Policy。
+
+## 2. 本轮 GMGN 实测证据
+
+测试时间：2026-07-31。Host 为 GMGN 官方 `https://openapi.gmgn.ai`。所有请求均为只读请求，未调用 `/trade/*`，未创建订单，未修改白名单或 Engine。
+
+### 2.1 接口权重与实测延迟
+
+| 能力 | 接口 | 官方权重 | 本轮典型延迟 | 用途 |
+|---|---|---:|---:|---|
+| Token 身份 | `GET /v1/token/info` | 1 | 约 200–600ms | Symbol、名称、X、平台、池子、创建时间、标签统计 |
+| Token 安全 | `GET /v1/token/security` | 1 | 约 197–345ms | Honeypot、税、可卖性、权限和安全标志 |
+| Pool | `GET /v1/token/pool_info` | 1 | 约 205–224ms | 主池与流动性复核 |
+| KOL Holder | `GET /v1/market/token_top_holders` | 5 | 约 246–598ms | 区分主动买入、转入、已清仓和异常钱包 |
+| Smart Money Holder | 同上，`tag=smart_degen` | 5 | 约 251–351ms | 辅助判断真实市场参与 |
+| Trending | `GET /v1/market/rank` | 1 | 约 239–597ms | 构建活跃 Token 候选缓存 |
+| Hot Search | `POST /v1/market/hot_searches` | 3 | 约 310ms | 扩大跨链热搜候选缓存 |
+| Trenches | `POST /v1/trenches` | 3 | 约 724ms | 发现新创建、接近迁移和已迁移 Token |
+
+本轮没有出现 429。现有 `gmgn-rate-scheduler.js` 尚未登记 Rank、Hot Search、Trenches 和 Top Holders 的正式权重，未登记接口会回退为权重 5；实施时必须补齐，不能依赖调用者手工覆盖。
+
+### 2.2 已知 CA 核验
+
+| Token | Chain | CA | GMGN 结果 |
 |---|---|---|---|
-| 生态账号自己发布完整 CA | 已有 | 指定账号的正文含当前白名单完整 CA | 当前白名单 |
-| 生态账号与项目账号互动 | 已有 | 指定生态账号对指定项目账号发生 Reply/Quote/Retweet/Follow | 当前白名单 |
-| 指定账号发布关键词 | P20 新增 | 指定账号正文命中人工确认的精确词条 | 当前白名单 |
+| PONS | Robinhood | `0x39dbed3a2bd333467115de45665cc57f813c4571` | 命中 `@ponsdotfamily`、Uniswap V3、约 133 万美元流动性 |
+| INDEX | Robinhood | `0x56910d4409f3a0c78c64dd8d0545ff0705389870` | 命中 `@TheIndexFi`、Uniswap V4、约 39 万美元流动性 |
+| USELESS | Solana | `Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk` | Token Info、Security、Pool 可正常读取 |
+| LIT | Ethereum | `0x232ce3bd40fcd6f80f3d55a522d03f25df784ee2` | Token Info、Security、Pool 可正常读取 |
 
-关键词线路不是搜索系统，也不根据 Tweet 临时猜测代币。每条规则在保存时就已经绑定一个确定的 `chain_id + contract_address`。运行时 GMGN、Grok 和 6551 REST 均不进入交易热路径。
+`token/info` 对 Robinhood 也能返回 `wallet_tags_stat`，但字段缺失时必须保存为 `unknown`，不能将未知伪装成 `0`。
 
-P20 的默认安全策略为：
+### 2.3 榜单覆盖率与重名风险
 
-1. 新规则默认“仅记录”，不自动交易。
-2. 默认只匹配原创 Tweet；Quote、Reply、Retweet 必须分别开启。
-3. 不允许用户输入正则表达式，不做模糊匹配、拼音匹配、翻译或 AI 语义猜测。
-4. 同一 Actor、同一事件、同一标准化关键词只能指向一个链和一个 CA。
-5. 同一 Tweet 命中多个 CA 时全部阻止，记录 `KEYWORD_AMBIGUOUS`。
-6. Tweet 同时出现其他完整 CA 时阻止关键词交易，记录 `KEYWORD_CA_CONFLICT`。
-7. 多个别名命中同一 CA，或与现有 CA/互动线路同时命中同一 CA，只生成一条 Signal。
-8. 规则只有在历史回测通过、6551 Watch 满足、Matcher 缓存已激活且用户显式切换为“实盘”后，才有资格进入 Live Policy。
+本轮组合以下数据：
 
-## 2. 本轮数据证据
+- 五条链各取 24h Rank 前 100，共 500 个唯一 CA；
+- Hot Search 返回 483 个唯一 CA；
+- 合并去重后得到 691 个 CA、605 个标准化 Symbol；
+- 其中 60 个 Symbol 存在重名候选，最大单 Symbol 有 6 个候选。
 
-### 2.1 GMGN 多链样本
+已知样本覆盖：
 
-2026-07-30 通过项目现有 GMGN OpenAPI 能力只读拉取以下样本：
+| Token | Rank | Hot Search | 合并结果 |
+|---|---:|---:|---:|
+| PONS | 命中 | 命中 | 1 个同名候选 |
+| INDEX | 命中 | 命中 | 1 个同名候选 |
+| USELESS | 未命中 | 未命中 | 无候选 |
+| LIT | 未命中 | 未命中 | 无候选 |
 
-- BSC、ETH、Robinhood、SOL 各链 `24h` 热门前 100；
-- 各链 `history_highest_market_cap >= $100M` 的前 100 个可用结果；
-- 相同链和 CA 合并去重后共 425 个项目。
+因此：
 
-| 链 | 24h 热门 | ATH > $100M | 合并去重 | Symbol 长度 <= 3 | 链内 Symbol 重名组 |
-|---|---:|---:|---:|---:|---:|
-| BSC | 100 | 4 | 104 | 28 | 11 |
-| ETH | 100 | 62 | 119 | 37 | 3 |
-| Robinhood | 100 | 1 | 100 | 11 | 7 |
-| SOL | 100 | 3 | 102 | 12 | 3 |
-| 合计 | 400 | 70 | 425 | 88 | 24 |
+- Rank + Hot Search 可以形成快速热缓存，但不是任意 Symbol 搜索服务；
+- 当前 GMGN OpenAPI/官方 CLI 文档没有提供“输入任意 Symbol 返回全部 CA”的公开接口；
+- 仅依赖热门榜会漏掉已存在但当前不在榜单的 Token；
+- 候选库必须同时吸收 Trenches、历史研究记录、帖子中的完整 CA/平台链接、既有 Token 记录和后续新增的数据源。
 
-样本结论：
+### 2.4 Trenches 新盘发现能力
 
-- 只有 `160/425` 个项目的 Name 与 Symbol 相同，不能只保存 Symbol。
-- 样本中有 24 组链内 Symbol 重名，另有 25 组跨链 Symbol 重名。
-- 典型冲突包括 `ASTEROID`、`CATE`、`GME`、`LUNA`、`MarsCoin`、`LINK`、`AI`。
-- BSC 存在中文名称和默认不可见字符，例如 `中͏国͏人͏能͏飞`。
-- SOL 样本包含日文、韩文和其他多语言名称，ASCII 单词边界不足以覆盖。
-- SOL `Buttcoin` 的 GMGN ATH 约为 `$37.9T`，明显异常。ATH 只适合候选采样，不能作为关键词可信度或自动实盘依据。
-- GMGN 的 X 字段可能是账号、Tweet URL、Community URL 或其他内容，不能直接转换为 6551 Watch。
+BSC 单次 Trenches 返回：
 
-用户指定的 BSC 样本：
+| 分类 | 数量 | 本轮时间覆盖 | Flap 数量 |
+|---|---:|---:|---:|
+| `new_creation` | 80 | 最近约 5–127 秒 | 79 |
+| `pump` | 80 | 最近约 91 秒–23.8 小时 | 72 |
+| `completed` | 80 | 最近约 21 分钟–19.3 天 | 67 |
 
-```text
-CA:     0xd0bc8ab397851ecfa58009d03bbc1a41fc764444
-Symbol: 币有
-Name:   何必东奔西走 币安全部都有
-```
+结论：Trenches 适合做新盘增量发现，尤其适合在关键词事件后开启短时事件驱动轮询；但它仍然是有限窗口和有限条数的榜单，不能保证覆盖所有 Token。
 
-真实来源文本会出现类似：
+### 2.5 “币有”双真实版本案例
 
-```text
-何必东奔西走，币安全部都有
-```
+同一名称当前至少存在两个真实版本：
 
-因此该项目适合使用“标点与空格归一后的完整短语匹配”，不适合使用裸 Symbol `币有`。如果仅匹配 `币有`，普通中文语境中的误触发风险不可接受。
+| 版本 | CA | GMGN 平台 | 创建时间特征 | 当前语义 |
+|---|---|---|---|---|
+| 原盘 | `0xd0bc8ab397851ecfa58009d03bbc1a41fc764444` | `fourmeme` | 源 X 帖子后约 107 秒创建 | 原始 Four.meme 版本 |
+| 社区重启盘 | `0xe9337dde3dd9e97f1f45a56412767ce5098e7777` | `flap` | 后续因 Flap 热度重新启动 | 当前社区重启版本 |
 
-### 2.2 生产历史 Tweet 回测
+两个版本都已迁移到 PancakeSwap，都不是简单意义上的假币。重启盘 metadata 引用了原盘 BscScan 地址，这应被解释为**版本关系证据**，不能作为硬拒绝条件。
 
-只读检查现有生产历史数据：
+运行时判断：
 
-| 指标 | 数量/范围 |
+| 帖子上下文 | 结果 |
 |---|---|
-| `x_activities` 总记录 | 202 |
-| 有 Tweet 文本 | 145 |
-| Actor 数量 | 13 |
-| 时间范围 | 2026-07-21 至 2026-07-27 |
+| 只有“币有”或 `$币有` | 两个真实版本均合理，`ambiguous_variant`，不自动交易 |
+| 含 Flap、重启、新盘、对应平台 URL | 选择 Flap 重启盘 `0xe933...7777` |
+| 含 Four.meme、原盘或完整原 CA | 选择原盘 `0xd0bc...4444` |
+| 含完整新 CA | 精确选择新盘 |
 
-将 425 个项目的 Symbol 对 145 条文本做初步边界匹配，出现以下结果：
+该案例证明 P20 必须保存“资产家族”和“具体版本”，不能把所有同名候选压缩成一个 Token，也不能按最高流动性、最高 KOL 数或最早创建时间机械选取。
 
-- `ROBINHOOD` 命中 8 次，多数是普通平台语义，不是代币指代。
-- `LINK` 命中 4 次，部分只是普通“链接”。
-- `AI` 命中 3 次，均为普通 AI 语义。
-- `TIME`、`IF`、`WEN`、`DEX`、`LOOKS`、`WALLET`、`CHIPS` 等都出现普通词误命中。
-- `PONS` 命中 7 次，其中 5 次是 `$PONS`，Token Tag 明显更可靠。
-- `CASHCAT` 同时出现 `$CASHCAT` 和 `#CASHCAT`，适合显式 Tag 词条。
+## 3. 核心数据模型
 
-这批历史数据很小，只能证明“裸 Symbol 自动触发不安全”，不能证明任何关键词已经足够安全。正式保存规则前必须按具体 Actor、事件类型和词条重新回测，不能只依赖本次全局样本。
+### 3.1 四个不同概念
 
-### 2.3 6551 成本
+1. **Observed Term**：帖子中观察到的 `$PONS`、`#PONS`、`币有`、项目名或完整 CA。
+2. **Asset Family**：同一叙事或项目族，例如“币有”。
+3. **Asset Variant**：原盘、跨链版本、迁移盘、社区重启盘等具体 `chain + CA`。
+4. **Resolution Candidate**：本次事件中可能对应的 Asset Variant，包含事件证据、市场证据和风险证据。
 
-关键词匹配发生在 XBOT 本地，不会给 6551 上传关键词，也不会为每个关键词创建 Watch。
+### 3.2 唯一候选的准确含义
 
-当前成本模型：
-
-| 操作 | 6551 增量成本 |
-|---|---:|
-| 给已经 Watch 且已启用对应事件的账号增加 1 个关键词 | 0 points |
-| 给同一账号增加 100 个关键词 | 0 points |
-| 新增一个唯一 Watch | 约 10 points，一次性 |
-| 已托管 Watch 需要变更事件权限 | 当前删除重建约 10 points |
-| WSS 消息 | 当前口径约每 20 条推送 1 point |
-
-当前检查到的 20 个 Watch 均已有 `newTweetBol=true`。因此为这些账号增加原创 Tweet 关键词规则，预计不会产生 Watch 增量点数，也不会增加推送消息量。
-
-## 3. 当前代码审计
-
-### 3.1 旧 Symbol 匹配仍有残留
-
-`backend/domains/signal/matcher.js` 当前仍包含：
+“唯一候选”不是白名单，也不是数据库中只有一个同名 Token，而是：
 
 ```text
-hasSymbolKeyword()
-  -> whitelist.symbol
-  -> ticker_mention
+本次帖子上下文
+  + 账号允许链
+  + 平台/URL/项目账号/完整 CA 证据
+  + GMGN 身份与可交易性核验
+  -> 最终只剩一个满足授权门槛的 Asset Variant
 ```
 
-该实现的问题是：
+如果两个真实版本都满足条件但帖子没有说明版本，结果必须是 `ambiguous_variant`，不得按市场热度猜测。
 
-- Symbol 来自代币元数据，不是用户确认的交易关键词。
-- 使用 ASCII 边界，无法正确覆盖全部 Unicode 文本。
-- 没有 Actor + 关键词 + 固定 CA 的独立授权记录。
-- 没有保存前历史回测。
-- 没有跨链重名、同 Tweet 多目标和其他 CA 冲突安全门。
+## 4. 总体架构
 
-P20 不在这个函数上继续增加条件。新实现完成后，应停止创建新的隐式 `ticker_mention`，但历史 Signal 继续保留可读，不做破坏性回填或删除。
+```mermaid
+flowchart LR
+    A["6551 WSS 账号事件"] --> B["Content Extractor"]
+    B --> C["完整 CA / Tag / 名称 / URL / 账号 / 引用上下文"]
+    C --> D["Dynamic CA Resolver"]
+    E["本地 Candidate Index"] --> D
+    F["GMGN Info / Security / Pool"] --> D
+    G["GMGN Holder 深度证据"] --> D
+    D --> H{"事件级唯一版本?"}
+    H -->|否| I["Research / Record + 原因"]
+    H -->|是| J["账号级 Dynamic Policy"]
+    J --> K{"资金授权通过?"}
+    K -->|否| I
+    K -->|是| L["动态物化 Target"]
+    L --> M["P19 Signal / Risk / Quote / Swap / Exit"]
+```
 
-### 3.2 P16 已明确直接来源只能匹配 CA
+### 4.1 与现有线路的边界
 
-Migration `018_p16_final_product_convergence.sql` 已把 `x_signal_source_rules.match_mode` 强制为 `ca_only`。这条边界是正确的，P20 不修改：
+- P16“项目账号直接发布完整 CA”继续只匹配完整 CA，不改成 Symbol。
+- P16“生态账号与项目账号互动”继续使用已配置关系，不与关键词动态解析混存。
+- P20 新增独立的动态关键词证据 `matched_dynamic_resolution_id`。
+- 现有 `matched_relation_ids` 和 `matched_source_rule_ids` 保持原语义。
+- 新线路必须穿透 Signal、Live Policy、最终资金提交前授权和 UI 解释，不能只在 Matcher 内匹配成功。
 
-- “生态账号自己发布完整 CA”继续只认完整 CA；
-- 关键词规则使用新表和新授权数组；
-- 项目账号身份、生态互动关系和关键词映射不混存。
+## 5. 内容提取标准
 
-### 3.3 当前最终实盘授权只有两类证据
+按以下顺序提取，结果可以同时存在：
 
-现有资金写入前会复核：
+1. 完整 EVM/Solana CA；
+2. Launchpad、DEX、GMGN、区块浏览器 URL 中的 CA；
+3. `$TOKEN`；
+4. `#TOKEN`；
+5. 用户批准的完整中文项目短语；
+6. 明确项目 `@handle`、被引用账号和 Reply 目标；
+7. Tweet、Quote、Reply 的原始事件类型和引用链。
 
-- `matched_relation_ids`；
-- `matched_source_rule_ids`。
+### 5.1 匹配规则
 
-P20 必须增加第三类 `matched_keyword_rule_ids`，并同步改造：
+- 英文 Cashtag/Hashtag 不区分大小写：`$ANSEM` 与 `$ansem` 等价。
+- `$ANSEM` 不得命中 `$ANSEMX`。
+- `$PONS` 与 `#PONS` 是两个显式 Tag 入口，均可产生 `PONS` observed term。
+- 裸英文词默认不进入实盘，避免 `LIT`、`INDEX`、`CASH` 等普通词误报。
+- 中文项目名没有 `$`/`#` 时，只允许完整短语或已批准别名，不做模糊分词、拼音或语义猜测。
+- Retweet 必须在本地检查顶层 `retweetedStatus/isRetweet`，不能只相信 Provider 的 `includeRetweets=false`。
+- Quote 与 Reply 必须保存作者正文和引用正文的边界，不能把被引用者的 CA 错归给当前 Actor。
 
-- `backend/domains/signal/live-policy.js`；
-- `backend/domains/trade/trade-repository.js` 的 `beginSubmission()`；
-- `backend/domains/system/routes.js` 的 Signal 实盘授权展示；
-- `backend/domains/signal/queries.js` 的 Signal 持久化。
+### 5.2 确定性逐帖 Intent Gate
 
-只在 Matcher 中匹配成功、但没有进入最终资金授权检查的实现，不得发布实盘。
-
-### 3.4 当前 Symbol 展示值被强制大写
-
-`backend/domains/research/sanitizers.js` 当前对 Symbol 执行 `.toUpperCase()`。P20 要区分：
-
-- `symbol_display`：GMGN 原始展示值，不改变多语言和项目大小写；
-- `keyword_normalized`：按匹配模式生成的内部标准化值；
-- 两者不可互相覆盖，不能把标准化结果写回用户可见名称。
-
-## 4. 范围与非目标
-
-### 4.1 P20 必须实现
-
-1. 为一个白名单配置多个来源账号和多个显式关键词别名。
-2. 每个账号独立配置事件类型，默认仅原创 Tweet。
-3. 支持 Token Tag、完整词、归一化短语三种模式。
-4. 保存前按 Actor 历史 Tweet 回测，并显示命中原文与风险原因。
-5. 支持“仅记录 / 影子验证 / 实盘”三级发布状态。
-6. 新增规则不暂停同一白名单的其他正常触发线路。
-7. 规则热更新、Watch 复用、Matcher 缓存刷新和失败重试。
-8. Signal、Live Policy、最终提交前授权和页面解释完整贯通。
-9. 保持 P19 延迟目标，不在实时路径调用 GMGN、Grok 或 6551 REST。
-10. 提供完整自动化测试、灰度、回滚与生产验收流程。
-
-### 4.2 P20 不做
-
-- 不根据任意热门词自动买入未知 CA。
-- 不让同一个关键词同时对应多个链或多个 CA。
-- 不做模糊相似度、拼写纠错、拼音、翻译、Embedding 或 Grok 实时判断。
-- 不把 GMGN 推荐词直接自动启用为实盘。
-- 不使用用户输入的正则表达式。
-- 不因为关键词数量增加 6551 Watch。
-- 不改未发币项目监控的首次 CA 发现逻辑。
-- 不改变现有交易金额、累计上限、重复买入和离场策略语义。
-- 不在 Migration 或部署脚本中自动 Arm。
-
-## 5. 产品语义
-
-### 5.1 规则的最小完整信息
-
-一组关键词规则必须同时包含：
+CA 解析正确不等于交易方向正确。每条事件必须先通过本地、可版本化、可回放的 `Intent Gate`；Grok 不参与该热路径。Gate 输出固定枚举和原因码，而不是自由文本分数：
 
 ```text
-Actor:          谁发文，例如 @theunipcs
-Event Types:    Tweet / Quote / Reply / Retweet
-Terms:          $PONS、#PONS、完整中文项目短语等
-Target Chain:   固定链，来自当前白名单
-Target CA:      固定 CA，来自当前白名单
-Rollout Mode:   signal / paper / live
-Backtest:       样本范围、命中数、人工审核状态
-Activation:     draft / syncing / ready / failed / paused
+buy_direct
+launch_direct
+full_ca_solo
+neutral_reference
+comparison_or_list
+historical_review
+sell_or_exit
+negative_or_warning
+security_incident
+quoted_only
+multi_asset_ambiguous
+unknown
 ```
 
-缺少 Actor、词条、固定链或固定 CA 的规则不能保存。`follow` 和 `unfollow` 没有正文，不属于关键词事件。
+初始 Live 只允许 `buy_direct`、`launch_direct`，以及“Actor 原文仅包含一个完整 CA/平台 URL 且没有任何拒绝语义”的 `full_ca_solo`。其余状态全部降级为 Research/Record；Paper 可以采集但必须保留原状态。
 
-### 5.2 三种匹配模式
+判定顺序必须固定：
 
-#### A. `token_tag_exact`
+1. 只在 Actor 自己撰写的正文中确定动作和主资产；引用正文、Reply 上文只提供候选证据，不能自动继承买入意图。
+2. 先执行安全事件、否定、警告、清仓/卖出、历史回顾和比较语境硬拒绝，再识别买入、建仓、看多、发布、上线等显式正向动作。
+3. 初始 Live 一条帖子只允许一个主资产；出现多个不同资产词条时一律 `multi_asset_ambiguous`，不按词频或市值选一个。
+4. Retweet 初始 Live 禁止；Quote/Reply 只有 Actor 自己的新增正文同时包含允许的正向动作和主资产时才可继续。
+5. 否定作用域必须覆盖 `not/no/never/don't/avoid/scam/hack/sold/exit` 及经人工审核的中文等价词；命中拒绝词后不得被普通正向词抵消。
+6. 纯 Cashtag、纯 Hashtag、裸项目名不能自动等同买入；可在 Record/Paper 统计后，按 Actor 单独批准例外。完整 CA 单独成帖是唯一初始例外，但仍需通过账号安全状态、可交易性和资金门。
+7. 规则词典、事件类型和 Actor 例外都必须有 revision；修改后使相关 Live Approval 失效。
 
-用途：明确的 Cashtag 或 Hashtag。
+必须保存 `intent_class`、`intent_reason_codes[]`、`intent_rule_revision`、`author_owned_terms[]`、`quoted_terms[]` 和拒绝命中的文本位置，供回放和最终下单前复核。
+
+## 6. Candidate Index
+
+### 6.1 候选来源优先级
+
+| 优先级 | 来源 | 说明 |
+|---:|---|---|
+| 1 | 当前帖子完整 CA 或 URL 中 CA | 最强、最快入口 |
+| 2 | 当前引用链中的项目账号/平台链接/项目帖 CA | 强事件上下文 |
+| 3 | 本地已研究 Token、历史动态 Target、现有白名单 Token | 只复用数据，不要求预先授权 |
+| 4 | GMGN Trenches | 新创建、接近迁移、已迁移 Token |
+| 5 | GMGN Rank / Hot Search / Token Signal | 活跃和热门 Token |
+| 6 | 异步 Grok 研究结果 | 只补充项目身份和别名，不实时决定 CA |
+
+### 6.2 索引结构
+
+至少维护：
 
 ```text
-配置 PONS
-匹配 $PONS、$pons、#PONS
-不匹配 PONS
-不匹配 $PONSA
+normalized_symbol -> candidate variant ids[]
+normalized_name   -> candidate variant ids[]
+x_handle          -> candidate variant ids[]
+source_post_id    -> candidate variant ids[]
+launchpad         -> candidate variant ids[]
+chain + ca        -> full token snapshot
+asset_family_id   -> variant ids[]
 ```
 
-实现要求：
+每条索引记录必须保存来源、抓取时间、过期时间和字段可用性。`unknown`、`0` 和 `false` 必须严格区分。
 
-- `$` 和 `#` 均为显式 Tag 前缀；
-- 英文忽略大小写；
-- Tag Body 使用 Unicode 字母、数字和下划线边界；
-- 保存原始显示值，内部只保存去前缀后的标准化 Body；
-- 可将 `$PONS` 与 `#PONS` 配置为两个可见别名，也可由一个“Tag 两种前缀”选项生成，数据库仍保存明确词条证据。
+### 6.3 刷新策略
 
-这是英文/拉丁 Symbol 的默认推荐模式。
+- Rank：各允许链错峰刷新，建议 30–60 秒一次。
+- Hot Search：30–60 秒一次，多链单请求。
+- Trenches 后台：各活跃链错峰 10 秒一次。
+- 事件驱动 Trenches：当合格 Actor 提到未知 Tag 且无候选时，只对该 Actor 允许链开启 2 秒一次、最长 30 秒的短时轮询。
+- GMGN Token Info：活跃候选短 TTL，冷候选长 TTL；具体 TTL 由实现压测确定。
+- Token Signal：只在 GMGN 支持的 Solana/BSC 上作为补充，不作为跨链统一入口。
 
-#### B. `word_exact`
+所有刷新任务的优先级必须低于 Quote、Swap、订单查询和关键 Reconciliation；实时交易必须保留现有调度器的交易权重储备。
 
-用途：确实作为独立专有词使用、且历史回测证明安全的名称。
+## 7. Dynamic CA Resolver
+
+### 7.1 固定执行顺序
 
 ```text
-配置 ANSEM
-匹配 "ANSEM looks interesting"
-不匹配 "ANSEMX"
-不匹配 "$ANSEM" 或 "#ANSEM"，Tag 由 token_tag_exact 负责
+Step 1  解析 Actor、事件类型、正文、引用链、URL、CA、Tag、名称
+Step 2  执行逐帖 Intent Gate；非明确当前买入意图停止交易解析并记录原因
+Step 3  读取 Actor Dynamic Policy 和允许链；未授权立即停止
+Step 4  从本地 Candidate Index 取候选
+Step 5  候选为空且属于新盘语义时，开启受限的事件驱动 Trenches 窗口
+Step 6  对候选执行 GMGN Token Info 快速核验
+Step 7  建立 Asset Family / Variant 关系，不把重启盘自动标成假币
+Step 8  用完整 CA、平台、URL、项目账号、来源帖子和时间关系做事件级消歧
+Step 9  对剩余候选并行执行 Security / Pool
+Step 10 只有低成本证据仍不能区分时，才调用 Top Holders 深度证据
+Step 11 应用账号级资金、风险、重复买入和离场策略
+Step 12 唯一且授权通过时物化动态 Target；否则保存 Research/Record 原因
 ```
 
-实现要求：
+### 7.2 强锚点
 
-- 使用 Unicode 字母、数字、组合标记和下划线定义词边界；
-- 英文忽略大小写；
-- 裸词少于 4 个 Unicode Code Point 默认禁止切换实盘；
-- `AI`、`IF`、`TIME`、`LINK`、`DEX`、`WALLET` 等通用词即使满足长度，也必须根据 Actor 历史回测判定，不能只看长度；
-- 高风险通用词允许保存为“仅记录”，不允许直接实盘。
+以下证据可以直接绑定具体 Variant，但仍需通过可交易性门：
 
-#### C. `phrase_normalized`
+- 当前 Actor 原文中的完整 CA；
+- 当前 Actor 原文中的 Launchpad/DEX URL 精确包含 CA；
+- 被允许的项目账号原文明确发布完整 CA；
+- 引用链中有完整 CA，且规则明确允许使用引用正文；
+- 帖子明确写出平台，且同一 Asset Family 只有一个候选属于该平台。
 
-用途：中文、多词项目名和标点变化明显的完整短语。
+GMGN metadata 中的 X、Website 和描述由 Token 创建者控制，只能作为候选证据，不能单独成为强锚点。
+
+### 7.3 支持证据
+
+- `link.twitter_username` 与项目账号一致；
+- `launchpad_platform` 与帖子中的 Flap/Four.meme/Pump.fun 等平台词一致；
+- Token 创建时间与源叙事帖或 Launch 事件接近；
+- 同一 X 帖子 ID 被多个 Variant 引用时的先后关系；
+- 主池、流动性、交易量、Holder 数和 Token 年龄；
+- Creator 历史、改名历史、Dev 持仓状态；
+- 有效 KOL/Smart Money 主动买入；
+- 版本 metadata 对旧 CA 的引用，用于建立重启/迁移关系。
+
+市场数据只能辅助确认“这是一个真实可交易市场”，不能单独证明“这就是当前帖子所指版本”。
+
+#### 7.3.1 多候选市场主导版本规则
+
+2026-07-31 对 `BRODIE`、`JUGGERNAUT`、`MARSCOIN` 和 `UNI` 的真实样本回放表明，可以增加一条确定性候选排序，但它只能在强锚点和正文上下文之后运行：
 
 ```text
-配置：何必东奔西走 币安全部都有
-匹配：何必东奔西走，币安全部都有
-匹配：何必东奔西走\n币安全部都有
-不匹配：币有
-不匹配：东奔西走
+1. 应用允许链、可交易性和明确上下文过滤
+2. 只保留 wallet_tags_stat.renowned_wallets >= 3 的候选
+3. 分别按当前 market_cap 和 liquidity 降序排列
+4. 只有同一个 CA 同时位列两项第一时，才得到 market_dominant_variant
+5. holder_count 第一作为额外一致性证据
+6. 两项冠军不同、字段 unknown 或正文与冠军冲突时，继续返回歧义
 ```
 
-实现要求：
+本轮四组样本按该规则均选择了人工核验的版本：
 
-- 只做确定性的 Unicode 与分隔符归一化；
-- 不翻译、不转拼音、不做词序调整；
-- 默认要求至少 4 个 CJK 字符或至少 8 个 Unicode Code Point；
-- 短于门槛的词条只能“仅记录”，不能实盘；
-- 完整短语在标准化文本中连续出现才算命中。
+| 词条 | 选中版本 | 关键结果 |
+|---|---|---|
+| `BRODIE` | Robinhood Pons `0x45f8...60e0` | 高市值仿盘 KOL=0，被预过滤 |
+| `JUGGERNAUT` | Robinhood Noxa `0xd732...3b88` | 市值、流动性、Holder 数均第一，且匹配 Noxa 正文 |
+| `MARSCOIN` | BSC Flap `0xfe18...7777` | KOL=94，市值和流动性显著领先，匹配两天约 10x 的正文 |
+| `UNI` | Ethereum `0x1f98...f984` | 两项显著领先，且原文完整 CA 直接确认 |
 
-### 5.3 Unicode 标准化顺序
+该规则的字段语义必须固定：
 
-每条 Tweet 只标准化一次，并把结果在该 Activity 的匹配过程中复用：
+- `renowned_wallets` 是 GMGN 标记的 KOL 总数，用于候选身份预过滤；
+- `active_kol_buyers` 是当前仍主动持仓的有效 KOL，用于交易热度和风险；
+- 二者不能互换。本轮四个赢家的 `active_kol_buyers` 为 `4 / 0 / 9 / 2`，若错误地设置“有效 KOL >= 3”身份门槛，会误杀 JUGGERNAUT 和 UNI；
+- 市场主导规则不能覆盖完整 CA、明确平台、项目账号或账号安全状态；`$PUMP` 当前热榜单候选与正文语义冲突，仍必须拒绝；
+- 市值和流动性的最小领先倍数必须通过更大样本校准，未达到领先要求时继续 `DYNAMIC_CA_AMBIGUOUS_VARIANT`。
 
-1. 输入必须是合法字符串；空值直接不匹配。
-2. 执行 Unicode `NFKC`，统一全角/半角和兼容字符。
-3. 删除 `Default_Ignorable_Code_Point`，包括零宽字符和方向控制字符。
-4. 将 `CRLF`、换行、Tab 和 Unicode Space Separator 归一为普通空格。
-5. `phrase_normalized` 额外将 Unicode 标点序列归一为单个空格。
-6. 连续空格折叠为一个，首尾去空格。
-7. 对不区分大小写的模式执行稳定 Case Fold；显示文本保持原值。
-8. 不做易混淆字符替换，例如西里尔字母 `А` 不自动当作拉丁字母 `A`。
+### 7.4 硬拒绝条件
 
-标准化函数必须是独立纯函数，有固定测试向量和 `normalizer_version`。修改算法时必须提升版本并重新回测受影响规则，不能静默改变已实盘规则的语义。
+- Chain 不在 Actor Dynamic Policy 允许范围；
+- GMGN 返回地址与请求 CA 不一致；
+- Honeypot、不可卖、黑名单或超过策略允许税率；
+- 无有效主池、流动性低于账号模板下限；
+- Provider 关键字段为 `unknown`，但当前策略要求该字段必须已知；
+- Token metadata 出现可疑指令或提示注入内容；
+- 候选版本超过单次解析数量上限；
+- 最终仍有多个合法 Variant，且既没有足够事件锚点，也不满足市场主导版本条件；
+- 解析超时、GMGN 429/5xx、缓存过期且无法刷新。
 
-### 5.4 可匹配正文的边界
+### 7.5 歧义状态
 
-关键词只能检查当前事件语义下由 Actor 发布的正文，不能把 Provider Payload 中所有字符串拼接后匹配：
-
-- 原创 Tweet：匹配 Actor 自己发布的正文；
-- Reply：只匹配 Actor 的回复正文，不匹配被回复 Tweet；
-- Quote：只匹配 Actor 添加的评论正文，不匹配被引用 Tweet；
-- Retweet：只有显式开启 Retweet 时，才匹配被转发原文，并在证据中标记 `content_source=retweeted`；
-- URL、链接预览标题、图片 Alt、Community 名称、显示名、Profile Bio 和目标账号 Handle 不参与关键词匹配；
-- URL 优先依据 Provider Entity Offset 移除；Entity 不完整时使用经过测试的 URL Parser，不能使用可能误删 Unicode 文本的临时正则；
-- 如果 Quote/Reply Payload 无法可靠分离 Actor 正文与嵌入内容，该事件 fail closed 并记录 `KEYWORD_TEXT_SCOPE_UNVERIFIED`。
-
-该边界必须在 Ingestion Sanitizer 中形成明确的 `authored_text` 或等价结构。Matcher 不直接猜测 `raw_json` 内哪个字段属于 Actor。
-
-## 6. 冲突与安全模型
-
-### 6.1 配置时冲突
-
-保存规则的事务按 Actor 获取 PostgreSQL Advisory Lock，再检查所有启用或正在激活的规则：
+标准错误码：
 
 ```text
-同一 actor_id
-+ event_types 有交集
-+ 标准化词条相同或匹配集合重叠
-+ target chain/CA 不同
-= 拒绝保存 KEYWORD_RULE_TARGET_CONFLICT
+DYNAMIC_CA_NOT_FOUND
+DYNAMIC_CA_WAITING_FOR_LAUNCH
+DYNAMIC_CA_MULTIPLE_CANDIDATES
+DYNAMIC_CA_AMBIGUOUS_VARIANT
+DYNAMIC_CA_CONTEXT_MISMATCH
+DYNAMIC_CA_PROVIDER_UNKNOWN
+DYNAMIC_CA_PROVIDER_TIMEOUT
+DYNAMIC_CA_UNTRADABLE
+DYNAMIC_CA_POLICY_BLOCKED
 ```
 
-例如：
+所有失败都必须保留候选列表、每个候选的通过/拒绝原因和数据快照；前端不能只显示“失败”。
 
-- `@actor + tweet + PONS -> Robinhood/CA-A` 已存在；
-- 再保存 `@actor + tweet + PONS -> BSC/CA-B`；
-- 系统必须拒绝，而不是靠运行时猜测。
+## 8. 有效 KOL 与 Smart Money 证据
 
-不同 Actor 可以使用相同词条，因为来源账号已经提供独立作用域。
+`wallet_tags_stat.renowned_wallets` 和 `smart_wallets` 是标签地址数量，不是有效买家数量，不能直接设置“>= 3 就是真币”。
 
-跨模式冲突也必须检测，不能只比较数据库中的 `normalized_value` 是否相等：
+### 8.1 有效主动买家建议口径
 
-- `word_exact=PONS` 与 `phrase_normalized=PONS FAMILY` 指向不同 CA 时存在包含重叠；
-- 两个归一化短语互为完整包含且可在同一正文同时命中时存在重叠；
-- `word_exact` 明确不匹配 `$`/`#` 前缀，因而与同 Body 的 `token_tag_exact` 保持集合分离；
-- 无法静态证明互斥的跨模式规则，保存时标记 `review_required`，不得直接进入实盘；
-- 配置冲突检测与运行时冲突检测共用同一 Matcher 测试向量，避免两套语义漂移。
+一个地址至少满足：
 
-### 6.2 运行时多目标冲突
+- `buy_tx_count_cur > 0`；
+- `buy_volume_cur > 0`；
+- 当前 `balance/amount_cur > 0`；
+- `sell_amount_percentage < 1`；
+- 不是纯 `transfer_in`；
+- `is_suspicious != true`。
 
-同一 Activity 匹配完成后，先按 `chain_id + normalized_ca` 分组：
+再分别统计：
 
-- 多个词条命中同一目标：合并为一个候选；
-- 关键词与完整 CA 线路命中同一目标：合并为一个 Signal，并保留全部证据；
-- 关键词与生态互动线路命中同一目标：合并为一个 Signal；
-- 最终候选包含两个或更多不同目标：全部拒绝自动交易，记录 `KEYWORD_AMBIGUOUS`。
+- `active_buyer_count`：满足上述基本条件；
+- `net_buyer_count`：同时仍为净买入或净持仓；
+- `transfer_only_count`：只有转入，没有主动买入；
+- `fully_exited_count`：已全部卖出；
+- `bundler/wash_trader/rat_trader` 标签分布。
 
-被拒绝的每个候选仍生成可审计的 rejected Signal，Signal 页面按同一 Tweet 聚合显示，不进入 Live Queue。
+### 8.2 平台相关解释
 
-### 6.3 Tweet 中存在完整 CA
+Bundler、Wash Trader、Top10 和 Creator 持仓都不能设为跨链统一身份硬门槛：
 
-关键词规则命中后检查 `activity.extracted_cas`：
+- Flap、Four.meme 等平台的启动机制会显著影响 Bundler 标签；
+- 创始人、团队、交易所、LP、Burn、Bridge、Vesting 地址会扭曲 Top10；
+- 同一个项目的原盘和重启盘可能呈现完全不同的钱包结构。
 
-- 没有 CA：继续关键词流程；
-- 只有当前目标 CA：与 CA 证据合并并去重；
-- 出现任意其他完整 CA：拒绝关键词交易，记录 `KEYWORD_CA_CONFLICT`；
-- 无法识别链归属的 CA：按冲突处理，不做乐观放行。
+这些字段进入平台相关风险评分和仓位限制，不决定 Variant 身份。初始的 `有效 KOL >= 3` 或 `有效 KOL >= 2 且有效 Smart Money >= 1` 只能作为待回测参数，不能直接硬编码为实盘标准。
 
-这条安全门防止一条 Tweet 同时讨论其他合约时，关键词错误映射到预设 CA。
+## 9. 账号级 Dynamic Policy
 
-### 6.4 规则状态变化
-
-Signal 必须保存匹配时的 Rule ID、Rule Revision、Term ID 和标准化版本。进入资金写入前再次验证：
-
-- Rule 仍为 `enabled=true`；
-- `activation_state=ready`；
-- `rollout_mode=live`；
-- Actor 仍启用；
-- Rule 仍属于该白名单；
-- Event Type 仍被允许；
-- Signal 中的 Revision 与当前激活 Revision 一致。
-
-任一项变化都以 `KEYWORD_RULE_CHANGED` 失败关闭，不继续 Swap。
-
-## 7. 数据库设计
-
-### 7.1 Migration 028
-
-建议新增：
+每个可执行账号只创建一个 6551 Watch，并配置一份独立的 Dynamic Policy：
 
 ```text
-backend/db/migrations/028_p20_account_scoped_keyword_signals.sql
+enabled
+rollout_mode: research / record / paper / live
+allowed_event_types
+allowed_chains
+allowed_launchpads
+allowed_term_modes: cashtag / hashtag / approved_phrase / full_ca
+buy_amount_usd
+max_new_tokens_per_day
+max_daily_dynamic_notional_usd
+max_single_token_notional_usd
+max_candidates_per_resolution
+launch_wait_window_seconds
+minimum_liquidity_usd_by_chain
+maximum_price_impact_pct
+maximum_buy_tax / maximum_sell_tax
+minimum_resolution_confidence
+minimum_score_margin
+ambiguous_action: research_only
+existing_position_policy
+repeat_buy_policy / cooldown
+exit_strategy_template_id
 ```
 
-新增逻辑规则表：
+只有用户显式批准为 `live` 的账号级策略才能为未知 Token 提供资金授权。Actor Profile、Grok 画像、历史胜率和自动创建的 Target 均不能替代该授权。
 
-```sql
-CREATE TABLE x_signal_keyword_rules (
-  id bigserial PRIMARY KEY,
-  whitelist_id int NOT NULL REFERENCES ca_whitelist(id) ON DELETE CASCADE,
-  actor_id int NOT NULL REFERENCES x_kol_accounts(id) ON DELETE CASCADE,
-  event_types text[] NOT NULL DEFAULT ARRAY['tweet']::text[],
-  rollout_mode text NOT NULL DEFAULT 'signal',
-  enabled boolean NOT NULL DEFAULT true,
-  activation_state text NOT NULL DEFAULT 'draft',
-  revision bigint NOT NULL DEFAULT 1,
-  normalizer_version text NOT NULL DEFAULT 'p20-v1',
-  backtest_status text NOT NULL DEFAULT 'pending',
-  backtest_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
-  backtest_fingerprint text,
-  last_backtested_at timestamptz,
-  approved_at timestamptz,
-  approved_by text,
-  last_error_code text,
-  last_error text,
-  created_at timestamptz NOT NULL DEFAULT NOW(),
-  updated_at timestamptz NOT NULL DEFAULT NOW(),
-  UNIQUE(whitelist_id, actor_id)
-);
-```
+## 10. 动态 Target 物化
 
-约束值：
-
-- `event_types` 只能包含 `tweet/retweet/quote/reply`，且至少一个；
-- `rollout_mode` 只能是 `signal/paper/live`；
-- `activation_state` 只能是 `draft/syncing/ready/failed/paused`；
-- `backtest_status` 只能是 `pending/review_required/approved/blocked`。
-
-`backtest_fingerprint` 必须覆盖 Actor、Event Types、全部词条、匹配模式、目标链/CA、Rule Revision、Normalizer Version 和历史样本边界。任一字段变化时，在同一事务中清空批准信息并重置为 `pending`；不能沿用旧版本的批准状态。
-
-新增词条表：
-
-```sql
-CREATE TABLE x_signal_keyword_terms (
-  id bigserial PRIMARY KEY,
-  rule_id bigint NOT NULL REFERENCES x_signal_keyword_rules(id) ON DELETE CASCADE,
-  display_value text NOT NULL,
-  normalized_value text NOT NULL,
-  match_mode text NOT NULL,
-  risk_flags text[] NOT NULL DEFAULT '{}',
-  enabled boolean NOT NULL DEFAULT true,
-  created_at timestamptz NOT NULL DEFAULT NOW(),
-  updated_at timestamptz NOT NULL DEFAULT NOW(),
-  UNIQUE(rule_id, match_mode, normalized_value)
-);
-```
-
-`match_mode` 只能是：
-
-- `token_tag_exact`；
-- `word_exact`；
-- `phrase_normalized`。
-
-索引：
+现有交易链路依赖 `whitelist_id`。P20 不要求用户提前创建白名单，但可以在解析成功后由系统物化一条兼容记录：
 
 ```text
-(actor_id, enabled, activation_state)
-(whitelist_id, enabled)
-(rule_id, enabled)
-GIN(event_types)
-```
-
-### 7.2 Activity 正文作用域字段
-
-`x_activities` 增加：
-
-```text
-authored_text text
-text_scope_status text NOT NULL DEFAULT 'unknown'
-content_source text
-```
-
-约束值：
-
-- `text_scope_status`：`verified/unknown/unavailable`；
-- `content_source`：`original/reply/quote_commentary/retweeted` 或空值。
-
-新 Ingestion 事件必须在入库前确定正文作用域；关键词 Matcher 只接受 `text_scope_status=verified`。既有历史记录不做乐观回填，保持 `unknown`：可以用于人工辅助回测，但必须标记“旧数据正文范围未核验”，不能单独据此批准实盘规则。规则进入 Paper/Live 前必须至少经过新版 Ingestion 的 verified 事件观察。
-
-### 7.3 Signal 证据字段
-
-`trade_signals` 增加：
-
-```text
-matched_keyword_rule_ids bigint[] NOT NULL DEFAULT '{}'
-matched_keyword_term_ids bigint[] NOT NULL DEFAULT '{}'
-keyword_match_evidence jsonb NOT NULL DEFAULT '{}'
-```
-
-`keyword_match_evidence` 只保存审计所需内容：
-
-```json
-{
-  "normalizer_version": "p20-v1",
-  "rule_revision": 3,
-  "text_scope_status": "verified",
-  "content_source": "original",
-  "terms": [
-    { "term_id": 12, "mode": "token_tag_exact", "display": "$PONS" }
-  ],
-  "conflicts": []
-}
-```
-
-`signal_type` 增加 `keyword_match`。历史 `ticker_mention` 保留可读，但新 Matcher 不再隐式创建。
-
-### 7.4 Migration 安全要求
-
-- Migration 只新增表、字段、索引和兼容约束，不创建任何默认关键词规则。
-- 不从 `ca_whitelist.symbol` 自动回填关键词。
-- 不改变现有白名单状态、Watch、Signal、Position、Order 或 Engine 状态。
-- 修改 `trade_signals.signal_type` CHECK 时使用 `NOT VALID -> VALIDATE`，先验证已有数据。
-- 新列均使用安全默认值，现有查询在旧字段为空时仍能读取。
-- 初次回滚只关闭 Feature Flag 和新规则，不立即 Drop 表或字段，避免历史 Signal 失去证据。
-
-## 8. 后端实施
-
-### 8.1 新模块
-
-建议增加：
-
-```text
-backend/domains/signal/keyword-normalizer.js
-backend/domains/signal/keyword-matcher.js
-backend/domains/whitelist/keyword-rules.js
-backend/domains/whitelist/keyword-backtest.js
-backend/domains/whitelist/keyword-rule-cache.js
-backend/jobs/keyword-shadow-evaluator.js
-```
-
-职责边界：
-
-- `keyword-normalizer.js`：纯函数、Unicode 标准化、长度和风险标记。
-- `keyword-matcher.js`：只接受已编译规则和已验证作用域的 `authored_text`，不访问网络或数据库。
-- `keyword-rules.js`：校验、冲突检查、保存、状态切换、Activation Outbox。
-- `keyword-backtest.js`：扫描指定 Actor 的历史 `x_activities`，输出样本和风险。
-- `keyword-rule-cache.js`：按 `actor_id + event_type` 提供不可变规则快照。
-- `keyword-shadow-evaluator.js`：在全局实盘模式下独立处理 `paper` 关键词 Signal，只执行授权与风险影子判断，代码层禁止调用真实 Swap。
-
-### 8.2 Matcher 接入
-
-`backend/domains/signal/matcher.js` 调整为：
-
-1. 保留完整 CA 和生态互动匹配。
-2. 删除 `whitelist.symbol -> ticker_mention` 的新信号生成路径。
-3. 对有正文的 Activity 获取 Actor/Event 对应关键词快照。
-4. 标准化 Tweet 一次。
-5. 执行三种精确匹配。
-6. 与已有候选按链和 CA 合并。
-7. 执行多目标和其他 CA 冲突检查。
-8. 生成一条可追踪 Signal 或拒绝诊断 Signal。
-
-同一 Activity 不得为每个关键词单独访问数据库，也不得为每个别名单独创建 Signal。
-
-### 8.3 规则缓存和热激活
-
-缓存结构：
-
-```text
-Map<actor_id:event_type, CompiledKeywordRule[]>
+source = dynamic_keyword
+managed_by_system = true
+actor_policy_id
+resolution_attempt_id
+asset_family_id
+asset_variant_id
+chain
+contract_address
+token_snapshot
+trade_template_snapshot
+expires_at
 ```
 
 要求：
 
-- 进程启动时加载所有 `ready + enabled` 规则；
-- 保存规则后通过现有激活 Outbox 唤醒刷新；
-- 只重建受影响 Actor/Event 的不可变快照；
-- 缓存发布采用原子引用替换，不在匹配中原地修改数组；
-- 缓存未就绪时新规则 fail closed，已有其他规则继续工作；
-- 新增/编辑关键词规则不得把整个白名单改为不可交易；
-- 规则自身显示 `syncing/failed`，不影响该白名单已有 CA 或互动触发线路；
-- 服务重启后从数据库完整重建，不依赖浏览器状态。
+- 唯一键至少覆盖 `actor_policy_id + chain + contract_address`；
+- 并发解析只能物化一次；
+- 物化和 Signal 创建必须在同一事务或可靠 Outbox 内完成；
+- `dynamic_targets` 是动态授权上下文的主记录，`ca_whitelist` 只是一对一兼容载体；两者必须互相保存外键，不能只靠 JSON 关联；
+- Migration 必须显式扩展当前 `ca_whitelist.source` 约束以允许 `dynamic_keyword`，并增加 `managed_by_system`、`dynamic_target_id`、`actor_policy_id` 和 `actor_policy_revision`；
+- 当前 `uq_whitelist_ca_chain_active` 会阻止不同 Actor 对同一 CA 物化，不能直接沿用。新约束必须分别保证“手工活跃记录按 `chain + CA` 唯一”和“动态活跃记录按 `actor_policy + chain + CA` 唯一”，且不能破坏已有手工记录；
+- 同一钱包、同一 `chain + CA` 的 Active Intent 和已开仓检查必须跨 `whitelist_id` 执行。不同 Actor 命中同一 Token 时默认合并/拒绝重复买入，只有显式重复买入策略才可追加；
+- 资金、重复买入、每日总额和离场模板以不可变的 `trade_template_snapshot + actor_policy_revision` 为准，不能让后来修改的兼容白名单行重写历史 Signal；
+- 动态兼容行不得要求新建 6551 Watch 或 P16 Relation。P17 Activation、Readiness 和 Live Approval 必须增加 Dynamic Policy 分支，不能因没有 Relation 被永久卡在 `syncing`；
+- 自动物化记录不能出现在普通手工白名单中造成误解，应显示为“动态关键词标的”；
+- 记录过期不等于自动卖出，持仓仍由已绑定离场策略管理；
+- 删除或暂停 Actor Policy 必须阻止新的动态买入，但不能破坏已有仓位对账和离场。
 
-编辑实盘规则会提升 `revision`。新版本激活期间，仅该关键词规则短暂 fail closed；其他白名单和其他触发线路不停止。
+## 11. 数据库设计
 
-### 8.4 规则与全局运行模式
+建议新增独立 Migration，编号在实施前按生产 schema 重新确认：
 
-Signal 的有效执行模式取“规则模式”和“系统运行模式”中更保守的一档：
+### 11.1 核心表
 
-```text
-signal < paper < live
-effective_mode = min(rule.rollout_mode, runtime_mode)
-```
+- `x_actor_dynamic_policies`：账号级动态授权与资金模板；
+- `dynamic_asset_families`：项目/叙事家族；
+- `dynamic_asset_variants`：具体 `chain + CA + launchpad` 版本；
+- `dynamic_asset_variant_relations`：original、relaunch、migration、cross_chain、cto、unknown；
+- `dynamic_ca_resolution_attempts`：每次事件的候选、证据、结果、延迟和失败原因；
+- `dynamic_ca_resolution_candidates`：逐候选评分、字段可用性和拒绝原因；
+- `dynamic_targets`：系统物化的兼容交易标的；
+- `x_actor_screening_runs`：账号清洗批次；
+- `x_actor_screening_results`：账号统计、回测和建议等级。
 
-因此：
+### 11.2 Signal 证据
 
-- Engine 已实盘，但关键词规则是 `signal`：只记录，不交易；
-- 关键词规则是 `live`，但系统处于 `signal`：仍只记录；
-- 只有两者都为 `live`，且所有安全门通过，才进入实盘队列。
-
-该规则必须在 `backend/domains/signal/queries.js` 创建 Signal 时显式生效，不能继续无条件使用全局 `getTradingMode()` 覆盖规则配置。
-
-当前 `backend/jobs/signal-matcher.js` 只领取全局运行模式对应的 Signal。P20 必须增加独立 Shadow Worker，使 Engine 处于 `live` 时仍能领取关键词 `paper` Signal。Shadow Worker 与 Live Queue 使用不同查询条件和执行入口：
-
-- 只领取带 `matched_keyword_rule_ids` 且 `execution_mode=paper` 的 Signal；
-- 可以执行 Live Policy 镜像判断、风险检查和 `would_execute` 记录；
-- 不获取钱包写通道、不创建真实 Trade Intent、不预留真实预算、不调用 GMGN Swap；
-- 代码中不注入真实执行器，并以自动化测试证明无法进入 `beginSubmission()`；
-- Shadow Worker 故障不阻塞 Live Queue，也不能改变 Engine Armed 状态。
-
-## 9. Live Policy 与 P19 快路径
-
-### 9.1 Live Policy
-
-`backend/domains/signal/live-policy.js` 增加：
-
-- `keywordRuleAllowsSignal()`；
-- `resolveActivePolicy()` 对 `ready + enabled + live` 关键词规则的 UNION；
-- `triggerAllowsSignal()` 接受 Relation、Source Rule、Keyword Rule 三种任一有效证据；
-- `LIVE_EXPLICIT_TRIGGER_REQUIRED` 判断覆盖第三类规则数组。
-
-### 9.2 最终资金写入前授权
-
-`backend/domains/trade/trade-repository.js` 的 `beginSubmission()` 必须在现有同一事务中增加 Keyword Rule EXISTS 校验：
+Signal 至少新增：
 
 ```text
-rule id 属于 signal.whitelist_id
-actor enabled
-rule enabled
-activation_state = ready
-rollout_mode = live
-event_type 被允许
-revision 与 Signal 证据一致
+matched_dynamic_resolution_id
+dynamic_target_id
+observed_terms
+intent_class
+intent_reason_codes
+intent_rule_revision
+resolved_asset_family_id
+resolved_asset_variant_id
+resolution_confidence
+resolution_reason_codes
+provider_snapshot_at
+actor_policy_revision
+trade_template_snapshot
 ```
 
-该检查合并进当前授权 SQL，不新增一次数据库往返。内存缓存只负责快速预检，不能代替最终持久化授权。
+最终资金提交前必须重新检查：
 
-### 9.3 Signal 页面授权展示
+- Actor Policy 仍为 Live；
+- Revision 未变化；
+- Intent Gate 仍为允许的 Live 状态且规则 Revision 未变化；
+- 解析结果仍是同一 `chain + CA`；
+- Dynamic Target 未过期；
+- 重复买入、持仓、预算和 Engine 门仍通过。
 
-`backend/domains/system/routes.js` 当前只把 `matched_relation_ids` 当成自动授权证据，已与 Source Rule 存在展示偏差。P20 一并修复为统一判断：
+## 12. 后端模块
+
+建议新增：
 
 ```text
-has relation evidence
-OR has source-rule evidence
-OR has keyword-rule evidence
+backend/domains/dynamic-signal/content-extractor.js
+backend/domains/dynamic-signal/intent-gate.js
+backend/domains/dynamic-signal/candidate-index.js
+backend/domains/dynamic-signal/gmgn-market-source.js
+backend/domains/dynamic-signal/asset-family-service.js
+backend/domains/dynamic-signal/ca-resolver.js
+backend/domains/dynamic-signal/resolution-policy.js
+backend/domains/dynamic-signal/dynamic-target-service.js
+backend/domains/dynamic-signal/routes.js
+backend/jobs/gmgn-candidate-cache-warmup.js
+backend/jobs/dynamic-launch-window.js
+backend/domains/actor-screening/*
 ```
 
-页面显示实际授权类型和拒绝原因，不能出现后端可交易但页面显示不可交易，或相反的情况。
+现有模块需要接入：
 
-### 9.4 延迟预算
+- `gmgn-http.js`：增加正式只读方法和正确 endpoint weight；
+- `gmgn-rate-scheduler.js`：登记 Rank、Hot Search、Trenches 和 Top Holders 的真实权重，禁止未知接口回退为错误权重；
+- `gmgn-adapter.js`：规范化 Link、Launchpad、Dev、Stat、Wallet Tag、Holder 行为字段；
+- `signal/matcher.js`：停止继续扩展旧隐式 `ticker_mention`；
+- `signal/queries.js`：持久化动态解析证据；
+- `signal/live-policy.js`：加入 Actor Dynamic Policy；
+- `trade-repository.js`：提交前复核动态授权；
+- `system/routes.js`：展示第三类实盘授权证据；
+- Provider usage、日志和监控：记录 GMGN 权重、缓存命中率和各阶段延迟。
 
-P20 不改变 P19 指标口径：
+## 13. 延迟与 GMGN 成本设计
 
-- 关键词归一化与匹配本地处理 P95 <= 5 ms；
-- 1000 个已编译词条/Actor 的基准测试 P95 <= 10 ms；
-- `receive_to_signal` 继续满足 P19 P95 <= 50 ms；
-- 不增加 GMGN Quote、Swap、RPC 或 6551 REST 调用；
-- 最终授权并入现有 SQL，目标是 0 个新增数据库 Round Trip。
+### 13.1 热路径分层
 
-Trace 增加：
-
-```text
-keyword_normalize_ms
-keyword_match_ms
-keyword_candidates
-keyword_conflict_code
-keyword_cache_revision
-```
-
-## 10. 6551 Watch Reconciler
-
-`backend/domains/x-monitor/6551/watch-reconciler.js` 的 Desired Watch UNION 增加关键词规则：
-
-```text
-x_signal_keyword_rules
-  JOIN x_kol_accounts
-  JOIN ca_whitelist
-  UNNEST event_types
-```
-
-只包含：
-
-- Rule `enabled=true`；
-- Activation 非 `paused/failed`；
-- Actor 启用；
-- 白名单未归档且未过期。
-
-仍然遵循“一账号一个全局 Watch，权限取并集”：
-
-- 同一账号关联 1 个或 100 个 CA，仍只有一个 Watch；
-- 多个关键词不增加 Watch；
-- 已有 `newTweetBol=true` 时增加 Tweet 规则成本为 0；
-- 新 Actor 或新增 Quote/Reply/Retweet 权限时，先在前端展示 Watch Impact；
-- Watch 同步失败时新规则保持 `syncing/failed`，已有交易规则不受影响。
-
-## 11. 保存前历史回测
-
-### 11.1 回测输入
-
-```json
-{
-  "whitelist_id": 12,
-  "actor_ids": [3, 8],
-  "event_types": ["tweet"],
-  "terms": [
-    { "value": "PONS", "match_mode": "token_tag_exact" },
-    { "value": "Pons Family", "match_mode": "phrase_normalized" }
-  ]
-}
-```
-
-### 11.2 回测输出
-
-每个 Actor 和词条返回：
-
-- 扫描的文本数量和时间范围；
-- 命中次数；
-- 每次命中的 Tweet ID、时间、截断原文和匹配位置；
-- 是否出现其他完整 CA；
-- 是否同时命中其他已配置目标；
-- `text_scope_status` 和 `content_source`，旧数据范围不明时明确提示；
-- 通用词、短词、跨链 Symbol 重名、不可见字符等风险标记；
-- 推荐状态：`safe_candidate / review_required / blocked`。
-
-回测结果不能只显示“通过/失败”，用户必须能看到原文样本和明确原因。
-
-### 11.3 实盘晋级要求
-
-规则从 `signal` 切换到 `live` 前必须满足：
-
-1. `backtest_status=approved`；
-2. 当前 `normalizer_version` 下已回测；
-3. 所有历史命中样本已审核，未发现错误目标；
-4. 无跨目标冲突；
-5. 无其他 CA 冲突未处理记录；
-6. Watch 已满足所需事件权限；
-7. Rule Cache 已激活；
-8. 白名单本身为 `live_ready`；
-9. 用户在紧凑确认框中显式确认该规则进入实盘。
-
-此外，规则必须观察到新版 Ingestion 产生的 `text_scope_status=verified` 事件；旧 `tweet_text` 样本只能辅助审核，不能独立解除实盘安全门。
-
-历史样本为 0 不代表安全。此类规则先运行“仅记录”或“影子验证”，不能直接因“零误报”进入实盘。
-
-## 12. API 设计
-
-新增接口建议：
-
-```text
-POST   /api/whitelist/:id/keyword-rules/preview
-GET    /api/whitelist/:id/keyword-rules
-POST   /api/whitelist/:id/keyword-rules
-PUT    /api/whitelist/:id/keyword-rules/:ruleId
-PATCH  /api/whitelist/:id/keyword-rules/:ruleId/mode
-DELETE /api/whitelist/:id/keyword-rules/:ruleId
-POST   /api/whitelist/:id/keyword-rules/:ruleId/retry-activation
-```
-
-`preview` 同时返回：
-
-- 标准化预览；
-- GMGN 元数据建议词，但不自动勾选；
-- 历史回测；
-- 冲突检查；
-- 6551 Watch Impact；
-- 是否具备保存为 signal/paper/live 的资格。
-
-服务端必须重新计算所有结果，不能信任前端提交的 `normalized_value`、回测状态、Watch 状态或 Live 资格。
-
-## 13. 前端交互方案
-
-### 13.1 页面分区
-
-在白名单工作区的“X 触发”步骤中保持三个明确分区，不混成一张长表单：
-
-```text
-1. 完整 CA 来源
-2. 生态账号互动
-3. 关键词触发
-```
-
-每个分区默认只显示摘要和启用数量，展开后编辑。关键词区摘要示例：
-
-```text
-关键词触发  3 个账号 / 7 个词条
-仅记录 2  |  影子 1  |  实盘 0
-```
-
-### 13.2 新增规则的最短流程
-
-1. 当前白名单的链、Logo、Symbol 和 CA 固定显示，不重复填写。
-2. 从 KOL/生态账号库多选来源账号，可按当前链、跨链、全部和分类标签筛选。
-3. 系统展示 GMGN Name/Symbol 建议：`$SYMBOL`、`#SYMBOL`、完整 Name；默认不勾选。
-4. 用户选择词条及模式，可新增手工完整短语。
-5. 点击“预览命中”，展示历史原文、冲突和 Watch 成本。
-6. 点击“保存为仅记录”。
-7. 规则在列表中显示 `同步中 -> 已就绪` 或具体失败原因。
-8. 后续单独执行“影子验证”或“开启实盘”，不要求重新填写整张白名单。
-
-### 13.3 规则列表
-
-使用紧凑行而不是大卡片：
-
-| 来源账号 | 关键词 | 事件 | 回测 | 状态 | 操作 |
-|---|---|---|---|---|---|
-| `@theunipcs` | `$PONS`、`#PONS` | 原创 | 5 命中/0 冲突 | 仅记录·已就绪 | 编辑/停用 |
-
-交互要求：
-
-- 词条超过 3 个显示“+N”，点击后在 Popover 中完整查看；
-- 支持多选账号批量创建相同词条，但后端仍生成独立 Actor 规则和独立回测；
-- Event Types 放在“高级设置”，默认原创 Tweet；
-- 危险裸词不能只显示黄色图标，必须写明“普通语义误命中”或“跨链重名”等原因；
-- `syncing/failed` 提供重试，允许直接停用或删除；
-- `approved/live` 的正确规则仍可停用，但 UI 不把“已核验”误当成不可移除；
-- 不显示内部 6551 参数，只显示“无需新增 Watch / 新增 1 个 Watch，约 10 points / 权限更新约 10 points”。
-
-### 13.4 Signal 页面
-
-关键词 Signal 展示：
-
-```text
-触发：@actor 原创 Tweet
-命中：$PONS（Token Tag 精确匹配）
-目标：ROBINHOOD / CA...
-授权：关键词规则 #12 rev.3
-结果：仅记录 / 影子 / 实盘 / 已阻止
-原因：KEYWORD_AMBIGUOUS 等中文解释
-```
-
-不得只显示 `ticker_mention` 或内部 ID，让用户无法知道究竟是哪一个词触发。
-
-## 14. GMGN 与建议词的使用边界
-
-GMGN 只参与配置期：
-
-1. 从当前白名单 CA 获取原始 Name、Symbol 和 Logo。
-2. 生成候选 Tag 和完整短语。
-3. 提示链内/跨链同名风险。
-4. 将本次样本统计作为风险参考。
-
-以下行为禁止：
-
-- GMGN Symbol 自动保存为实盘词条；
-- GMGN ATH 高就降低关键词安全门；
-- GMGN 请求失败就回退到模糊匹配；
-- 在收到 Tweet 后等待 GMGN 确认目标再交易。
-
-Grok 可在投研阶段解释项目账号和名称，但不得决定实时关键词是否命中，也不得进入 P19 快路径。
-
-## 15. 可观测性与错误码
-
-新增指标：
-
-```text
-keyword_activities_scanned_total
-keyword_rules_considered_total
-keyword_matches_total
-keyword_signals_signal_only_total
-keyword_signals_paper_total
-keyword_signals_live_total
-keyword_ambiguous_total
-keyword_ca_conflict_total
-keyword_cache_reload_total
-keyword_cache_reload_failure_total
-keyword_match_duration_ms
-```
-
-核心错误码：
-
-| 错误码 | 含义 | 是否交易 |
+| 路径 | 运行方式 | 目标 |
 |---|---|---|
-| `KEYWORD_RULE_TARGET_CONFLICT` | 保存时与同 Actor 的其他目标冲突 | 否 |
-| `KEYWORD_BACKTEST_REQUIRED` | 尚未完成当前版本回测 | 否 |
-| `KEYWORD_MATCH_UNSAFE` | 短词、通用词或历史误命中风险 | 否 |
-| `KEYWORD_AMBIGUOUS` | 同一 Tweet 命中多个目标 | 否 |
-| `KEYWORD_CA_CONFLICT` | Tweet 出现其他完整 CA | 否 |
-| `KEYWORD_RULE_NOT_READY` | Watch 或缓存尚未激活 | 否 |
-| `KEYWORD_RULE_CHANGED` | 匹配后规则 Revision 已变化 | 否 |
-| `KEYWORD_RULE_NOT_LIVE` | 规则只允许记录或影子验证 | 否 |
-| `KEYWORD_TEXT_SCOPE_UNVERIFIED` | 无法确认正文是否由 Actor 自己发布 | 否 |
+| 完整 CA | 直接并行 Info + Security + Pool | 解析阶段目标 `< 800ms`，以生产 p95 验收 |
+| Symbol/Name + 缓存唯一候选 | Info 复核后进入 Security/Pool | 解析阶段目标 `< 900ms` |
+| 多候选但有平台/URL强锚点 | 只深查被锚定候选 | 避免对所有同名 Token 调 Holder |
+| 未知新盘 | 事件驱动 Trenches 短轮询 | 允许等待新盘出现，不伪造候选 |
+| 多个合法版本且无锚点 | 立即失败关闭 | 不为了成交延长热路径或调用 Grok |
 
-日志不得记录 API Key、完整签名、私钥、钱包敏感响应或包含鉴权参数的 URL。Tweet 原文在普通日志中只输出截断摘要，完整文本继续使用现有受控数据库记录。
+上述目标只覆盖 CA 解析，不等于最终链上成交时间。完整交易还包括 6551 推送、Signal、风控、Quote、Swap 提交和链上确认，必须继续使用 P19 Execution Trace 分段统计。
 
-## 16. 自动化测试矩阵
+### 13.2 重接口使用原则
 
-### 16.1 Normalizer
+- Info/Security/Pool 每次权重 1，可并行但必须经过统一 Scheduler；
+- Top Holders 每次权重 5，KOL + Smart Money 共 10，只在低成本证据不足时使用；
+- 同一 CA 的 Holder 结果必须缓存，不能为同一 Tweet 重复扣权重；
+- 候选超过上限时直接 `DYNAMIC_CA_MULTIPLE_CANDIDATES`，不批量深查；
+- 缓存刷新任务不得挤占 Quote、Swap 和关键订单对账；
+- 429 后遵守 `reset_at/X-RateLimit-Reset`，不得持续重试延长封禁。
 
-- NFKC 全角/半角一致。
-- 零宽和方向控制字符删除。
-- 中文逗号、英文逗号、空格和换行的短语归一一致。
-- 日文、韩文、组合字符稳定。
-- 拉丁/西里尔易混淆字符不自动合并。
-- 不同 `normalizer_version` 不静默复用旧回测。
-- URL、Profile、引用正文和链接预览不进入 `authored_text`。
-- Quote/Reply 无法分离作者正文时 fail closed。
-- 旧 Activity 保持 `text_scope_status=unknown`，不被自动提升为可信正文。
+## 14. Grok 与 6551 边界
 
-### 16.2 Matcher
+### 14.1 6551
 
-- `$PONS/#PONS` 命中，裸 `PONS` 不命中 Tag 模式。
-- `ANSEM` 不命中 `ANSEMX`。
-- Word 模式不吞掉 `$`/`#` Tag。
-- 完整中文短语允许标点变化，不允许子串 `币有`。
-- Actor 不同不命中。
-- Event Type 未授权不命中。
-- 多别名同 CA 只生成一条 Signal。
-- CA、互动和关键词同时命中同 CA 只生成一条 Signal。
-- 同 Tweet 多 CA 目标全部拒绝。
-- 其他完整 CA 冲突全部拒绝。
-- 重放同一 Provider Event 不重复创建 Signal。
+- 复用现有账号 Watch；
+- 关键词在本地匹配，不上传到 6551；
+- 同一 KOL 只创建一个 Watch；
+- 需要的事件权限通过 Watch Reconciler 管理；
+- 6551 不负责从 Symbol 寻找 CA。
 
-### 16.3 数据库与服务
+### 14.2 Grok
 
-- Migration 从空库 `000 -> 028` 全量通过。
-- 从当前生产 Schema `027 -> 028` 通过。
-- 不回填隐式 Symbol 规则。
-- Actor 事务锁阻止并发创建冲突规则。
-- 白名单归档后规则立即失效，已有 Signal 仍通过 Evidence Snapshot 可解释；不对有历史 Signal 的白名单执行物理删除。
-- 保存、编辑、暂停、删除、重试激活幂等。
-- 前端提交伪造回测通过状态时服务端拒绝。
+允许：
 
-### 16.4 Watch
+- 账号清洗和内容风格分析；
+- 历史 Tweet 意图分类；
+- 异步识别项目账号、创始人、平台和版本关系；
+- 为 Candidate Index 生成待核验别名；
+- 对失败解析生成研究说明。
 
-- 已有 Tweet Watch 增加关键词预计 0 points。
-- 多规则同 Actor 仍只有一个 Watch。
-- Event 权限取并集。
-- Watch 同步失败只阻止新规则，不暂停其他交易。
-- 删除最后一个需求后才删除 XBOT 托管 Watch。
-- Unmanaged Watch 冲突仍要求 Adopt，不擅自删除重建。
+禁止：
 
-### 16.5 Live Policy 与资金门
+- 对每条实时 Tweet 调用 Grok 后才交易；
+- 让 Grok 在多个 CA 中直接选择一个并授权资金；
+- Grok 超时后降级为猜测 CA；
+- 将 Grok 的自然语言结论直接写成 Live Policy。
 
-- Signal/Paper 规则永不进入真实交易。
-- Live 规则必须带 `matched_keyword_rule_ids`。
-- Rule Disabled、Revision 变化、Event 变化均在 Swap 前拒绝。
-- `beginSubmission()` 在同一事务校验，无新增 DB Round Trip。
-- 现有 Relation 和 Source Rule 行为不回归。
-- Engine Disarmed、Emergency Stop、Chain Circuit、预算、重复买入与离场策略继续生效。
+## 15. 账号清洗与回测工具
 
-### 16.6 前端
+### 15.1 输入
 
-- 桌面和移动视口无横向溢出、遮挡和巨型长弹窗。
-- 账号多选、搜索、分类、全选当前筛选结果可用。
-- 三个触发分区视觉和语义清楚。
-- 词条超过 3 个不撑高主页面。
-- 回测失败显示明确阶段、错误码和原因。
-- Logo、Name、Symbol 和 CA 在保存后仍正确显示。
+- 一次输入一个或多个 X Handle；
+- 可选择 Tweet 时间范围和最多样本数；
+- 可选择允许链和最低历史市值/流动性范围；
+- 默认只研究，不创建 Watch、不启用交易。
 
-### 16.7 性能
-
-- 100、500、1000 词条/Actor 基准测试。
-- 100 条连续 WSS Activity 下无事件循环长阻塞。
-- Keyword Cache 刷新与 Matcher 并发时无部分状态。
-- P19 Trace 对比开启前后 `receive_to_signal` P50/P95。
-
-## 17. 分阶段实施
-
-### P20.0：基线冻结与只读审计
-
-1. 核对 GitHub、生产 `/opt/xbot`、本地备份提交号。
-2. 读取实时 Engine、Position、Attempt、Watch 和数据库 Migration 状态。
-3. 统计历史 `ticker_mention`，确认是否有任何实盘行为依赖旧隐式 Symbol。
-4. 导出 Schema 与配置备份，不导出 API Key 到 Git。
-5. 此阶段不改代码、不 Disarm、不部署。
-
-退出条件：明确旧 Symbol 路径的实际依赖和生产基线。
-
-### P20.1：Schema 与领域模块，Feature Flag 关闭
-
-1. 增加 Migration 028。
-2. 实现 Normalizer、Matcher、规则服务和回测服务。
-3. 增加 API 和自动化测试。
-4. 增加全局开关：
+### 15.2 固定分析顺序
 
 ```text
-KEYWORD_SIGNAL_ENABLED=false
-KEYWORD_LIVE_ENABLED=false
+获取账号与近期 Tweet
+  -> 本地剔除 Retweet、广告、诈骗和无资产内容
+  -> 提取 CA / Cashtag / Hashtag / 项目名
+  -> 按历史时点重建 Candidate Index
+  -> 用当时可见证据解析 CA，禁止使用未来信息
+  -> GMGN Kline 计算 P19 延迟后的可成交价格
+  -> 模拟重复买入、滑点、Gas、Price Impact 和离场模板
+  -> 输出逐笔证据与聚合统计
 ```
 
-5. 部署后保持功能关闭，验证现有实盘行为不变。
+### 15.3 输出指标
 
-退出条件：完整测试通过，零规则、零新 Signal、现有交易链路无回归。
+- 原创 Tweet 数、资产相关 Tweet 数、直接意图率；
+- 完整 CA、Cashtag、Hashtag、中文短语各自命中率；
+- CA 唯一解析率、歧义率、Provider 缺失率；
+- 假币/错误版本误选率，目标必须为 0；
+- 5m、15m、1h、6h、24h 收益；
+- 按真实离场模板计算的净收益、胜率、最大回撤；
+- 同一 Token 重复喊单后的边际收益；
+- 推荐等级：不适合、Research、Record、Paper、Live Candidate。
 
-### P20.2：前端与仅记录模式
+Live Candidate 仍需用户显式批准，工具不能自动把账号升级为 Live。
 
-1. 上线关键词配置区和回测预览。
-2. 只允许保存 `rollout_mode=signal`。
-3. 启用 Watch Impact 和 Rule Cache。
-4. 禁用旧隐式 Symbol 新匹配，但保留历史展示。
-5. 观察至少一个完整业务周期的误命中、冲突和延迟。
+## 16. API 与前端
 
-退出条件：所有命中均可解释，零自动交易，P19 延迟不退化。
+### 16.1 API
 
-### P20.3：影子验证
+```text
+POST /api/dynamic-signals/resolve-preview
+GET  /api/dynamic-signals/resolutions
+GET  /api/dynamic-signals/resolutions/:id
+GET  /api/dynamic-signals/candidate-index/status
+GET  /api/dynamic-signals/asset-families/:id
+POST /api/actor-screening/runs
+GET  /api/actor-screening/runs/:id
+PUT  /api/kol/:id/dynamic-policy
+POST /api/kol/:id/dynamic-policy/approve-live
+POST /api/kol/:id/dynamic-policy/pause
+```
 
-1. 允许规则切换 `paper`。
-2. 运行 Live Policy 和风险判断，但不调用真实 Swap。
-3. 对每条 `would_execute` 人工核对 Tweet、目标 CA 和阻止原因。
-4. 通用裸词和零历史样本规则继续禁止实盘。
+### 16.2 前端分区
 
-退出条件：选定规则连续观察无误报，无 Watch/缓存异常，无多目标漏拦截。
+KOL 页面新增两个明确分区：
 
-### P20.4：单规则限时实盘灰度
+1. **账号清洗**：批量输入、运行进度、逐账号统计、误报样本、收益回测和建议等级。
+2. **动态喊单策略**：允许链、允许平台、关键词类型、资金、风险、离场、歧义处理和当前授权状态。
 
-1. 进入维护窗口前确认无 uncertain Attempt、无钱包隔离、持仓均受保护。
-2. 只选一个 Actor、一个关键词规则、一个白名单。
-3. 使用现有最小单笔金额和累计上限，不提高预算。
-4. 显式开启 `KEYWORD_LIVE_ENABLED`，用户批准限时验收后 Arm。
-5. 实时观察 Source -> Signal -> Submit -> Chain Trace。
-6. 任一歧义、其他 CA、Revision、Watch 或缓存异常立即 fail closed。
+Signal 页面显示：
 
-退出条件：真实 Signal 目标正确、只交易一次、最终授权证据完整、持仓保护策略正常。
+- 原始 observed term；
+- 候选数量和被拒绝原因；
+- 最终 Asset Family / Variant / Launchpad；
+- 原盘、重启盘、迁移盘关系；
+- GMGN 快照时间与字段缺失；
+- 资金授权来自哪个 Actor Policy Revision；
+- 未交易时显示明确错误码。
 
-### P20.5：逐 Actor 放量
+用户不得在前端看到“GMGN 认为这是唯一正确 CA”这种误导文案。应显示“基于本次帖子上下文解析为该版本”。
 
-1. 每次只增加已审核 Actor/规则。
-2. 不按“全链所有热门 Symbol”批量开启。
-3. 24 小时复核误报率、冲突率、延迟和 6551 用量。
-4. 达到验收标准后才标记 P20 完成。
+## 17. 测试矩阵
 
-## 18. 部署与回滚
+### 17.1 必备 Fixture
 
-### 18.1 部署原则
+- PONS：Rank/Hot 唯一候选；
+- INDEX：大小写标准化后唯一候选；
+- USELESS：Rank/Hot 缺失但直接 CA 可核验；
+- LIT：普通英文词禁止裸词实盘；
+- 币有原盘：Four.meme + 原 CA；
+- 币有社区重启盘：Flap + 新 CA；
+- 币有纯关键词：两个真实版本，必须 `ambiguous_variant`；
+- metadata 引用旧 CA：建立版本关系，不能自动判假；
+- 假 Token 复制名称/X/网站：没有事件强锚点时不得胜出；
+- Provider 字段缺失：保存 `unknown`，不得当作 0；
+- Holder 纯转入：不得计为有效主动买家；
+- Bundler 较高的 Flap Token：进入平台相关风险，不得自动判假。
+- “I sold $TOKEN”“avoid $TOKEN”“account hacked, CA ...”：Intent Gate 必须硬拒绝；
+- “$A vs $B”“top tokens: $A $B $C”：必须 `multi_asset_ambiguous`；
+- Actor 只 Quote 别人的 `$TOKEN`、自己未表达动作：必须 `quoted_only`；
+- Actor 原文只有一个完整 CA，且无拒绝语义：可得到 `full_ca_solo`，随后仍执行所有 CA 与资金门；
 
-- 后端更新需要重启相关服务，必须遵守 P19 的维护窗口要求。
-- 部署前 Disarm；部署后默认保持 Disarmed。
-- Migration 不自动创建规则、不自动切 Live、不自动 Arm。
-- 先部署兼容 Schema，再部署代码，再部署前端。
-- GitHub 发布提交、服务器代码和生产前端资产必须一致。
-- `.env`、API Key、Root 密码、私钥、钱包凭证和数据库备份不得进入 Git。
+### 17.2 并发与资金安全
 
-### 18.2 快速回滚
+- 同一 Tweet 重复推送只产生一个 Resolution 和一个 Signal；
+- 同一 Actor + CA 并发物化只创建一个 Dynamic Target；
+- Policy 在解析后、下单前被暂停时必须阻止买入；
+- Engine 停止、预算不足、已有持仓、Pending Attempt 均继续生效；
+- 解析超时或 GMGN 429 不得降级为旧 Symbol 猜测；
+- Research/Paper 绝不调用真实 Swap；
+- Migration 和部署脚本不得自动 Arm。
 
-按风险从低到高：
+### 17.3 性能
 
-1. 将具体 Rule 切到 `paused`。
-2. 设置 `KEYWORD_LIVE_ENABLED=false`，保留仅记录能力。
-3. 设置 `KEYWORD_SIGNAL_ENABLED=false`，完全跳过关键词 Matcher。
-4. 回滚应用代码到上一发布提交，新表和字段保留兼容。
-5. 只有确认没有历史 Signal 依赖后，才在后续维护版本中考虑 Drop 新 Schema。
+- 记录 `x_event_received -> content_extracted -> candidates_loaded -> gmgn_verified -> variant_resolved -> policy_authorized -> quote_started -> swap_submitted -> chain_confirmed`；
+- 分别统计缓存命中、直接 CA、唯一 Symbol、新盘等待和歧义路径的 p50/p95/p99；
+- GMGN Cache Warmup 压测不得使交易请求排队或触发 429；
+- 页面读取不得同步等待 GMGN、6551 或 Grok。
 
-任何回滚都不得自动恢复 Engine Armed 状态。
+## 18. 分阶段实施
+
+### P20.0 基线冻结
+
+- 备份当前生产提交到 GitHub；
+- 扫描 API Key、私钥、`.env`、日志和数据库文件；
+- 导出生产 schema 与 Migration 状态；
+- 确认生产交易正常后再进入开发。
+
+### P20.1 只读 Candidate Index 与 Resolver
+
+- 增加 GMGN 只读方法、Adapter 和正确权重；
+- 建 Candidate Index、Asset Family/Variant 和 Resolution 表；
+- 所有 Feature Flag 关闭；
+- 用本文 Fixture 做离线测试。
+- 不修改 Engine、现有 P16/P19 Matcher、Live Policy 或最终资金提交路径，不创建 Dynamic Target。
+
+### P20.2 Research / Record
+
+- 接入 6551 WSS 事件；
+- 动态解析但不进入交易队列；
+- 上线 Intent Gate 并统计逐类误判；
+- 上线账号清洗工具；
+- 收集真实歧义、漏检和 Provider 成本。
+
+### P20.3 Paper
+
+- 账号级 Policy 只允许 Paper；
+- 完成动态 `whitelist_id` 兼容载体、跨白名单持仓去重和第三类授权证据，但真实 Swap Feature Flag 仍保持关闭；
+- 使用真实 P19 延迟、Quote、滑点、Gas 和离场模板；
+- 连续运行至少 7 天并完成逐笔人工核对。
+
+### P20.4 单账号 Live 灰度
+
+- 只选择一个历史样本充分的账号；
+- 只开放 Cashtag/Hashtag 或完整 CA，不先开放裸中文短语；
+- 单笔、每日新 Token 数和每日总额使用最低上限；
+- 用户显式批准后限时运行；
+- 任一错误版本、重复买入或 Provider 降级立即回滚。
+
+### P20.5 扩大范围
+
+- 按账号独立晋级，不按全局模板一次性开放；
+- 中文短语和新盘等待在单独完成样本验证后再灰度；
+- 每次扩大链、平台或关键词类型都使旧 Live Approval 失效并重新批准。
 
 ## 19. 验收标准
 
-### 19.1 功能正确性
+### 19.1 功能
 
-- 指定 Actor 的明确 Tag、完整词和完整短语按规则命中。
-- 其他 Actor、其他事件、子串、通用语义不误触发。
-- 多目标和其他 CA 冲突 100% 阻止。
-- 多别名、多线路同目标 100% 去重。
-- Signal 页面能解释 Actor、词条、模式、目标、规则版本和结果。
+- 未预存白名单的 Tag 可以进入动态解析；
+- 完整 CA 可走最快精确路径；
+- Rank/Hot 缺失时不会伪造“无此 Token”；
+- 原盘和社区重启盘可以同时存在于一个 Asset Family；
+- 币有纯关键词不会自动选原盘或重启盘；
+- Flap/Four.meme 上下文能选择对应版本；
+- 每个失败都有用户可读原因和逐候选证据。
+- 比较、历史、卖出、否定、安全事件和多资产正文即使解析到正确 CA 也不能进入 Live。
 
-### 19.2 资金安全
+### 19.2 安全
 
-- 没有显式 Keyword Rule ID 的 Signal 不可实盘。
-- Signal/Paper Rule 不可实盘。
-- Backtest 未批准、Watch 未就绪、缓存未激活、Revision 变化均不可实盘。
-- 最终资金门继续校验 Engine、Live Policy、Chain Approval、Circuit、预算和钱包状态。
-- 部署、Migration、规则保存和 Watch 同步均不会自动 Arm。
+- 多候选未消歧、Provider 未知、超时和 429 均失败关闭；
+- Grok 不能提供实时资金授权；
+- 自动物化 Target 不能绕过 Actor Dynamic Policy；
+- 最终提交前再次核验 Policy Revision、预算、持仓和 Engine；
+- 最终提交前再次核验 Intent Revision、Dynamic Resolution、Dynamic Target 和 `chain + CA` 一致性；
+- 旧 P16 直接 CA 与生态互动线路语义不变；
+- 不上传任何 API Key、私钥、`.env` 或生产数据。
 
-### 19.3 性能与可靠性
+### 19.3 性能与稳定性
 
-- Keyword 本地匹配 P95 <= 5 ms，1000 词条压力 P95 <= 10 ms。
-- P19 `receive_to_signal` P95 继续 <= 50 ms。
-- 匹配热路径外部 API 调用数为 0。
-- 已有账号新增关键词的 6551 Watch 点数增量为 0。
-- 新规则激活失败不暂停其他白名单或其他触发线路。
-- 服务重启后缓存可从数据库恢复，状态可观测并可重试。
+- 缓存命中的 CA 解析不显著增加 P19 现有链路延迟；
+- 重接口不挤占交易权重；
+- 热更新 Policy 不要求停止其他账号的自动交易；
+- 页面读取不依赖第三方实时返回；
+- 所有新 Worker 有 Lease、Heartbeat、退避、限流和健康状态。
 
-### 19.4 发布退出标准
+## 20. 实施前仍需校准的参数
 
-以下全部满足后，P20 才能标记完成：
+以下参数不能仅凭本轮少量样本直接定值：
 
-1. 后端完整测试、前端构建和 DOM 冒烟通过。
-2. Migration `000 -> 028` 与 `027 -> 028` 均通过。
-3. Signal-only 与 Paper 阶段无错误目标。
-4. 单规则真实验收成功，链上 Receipt 和保护策略完整。
-5. 24 小时观测无新增安全告警。
-6. GitHub、生产服务器和本地备份提交一致。
-7. 用户明确批准从灰度进入正式运行。
+- 各链/平台最低流动性；
+- Event 与新 Token 创建时间窗口；
+- Resolution Confidence 和候选分差；
+- 有效 KOL/Smart Money 的最低数量；
+- Bundler、Wash Trader、Insider 的平台相关阈值；
+- Trenches 后台轮询和事件驱动轮询频率；
+- 各类关键词从 Record/Paper 晋级 Live 的最小样本量；
+- 账号级单笔金额、每日新 Token 数和累计预算。
 
-## 20. 预计改动清单
+这些值必须通过账号清洗工具和至少 7 天 Paper 数据校准。任何阈值调整都要版本化，并使受影响的 Live Approval 失效。
 
-数据库：
+另外，当前公开 GMGN Rank/Hot/Trenches 只是有限候选源，不具备任意 Symbol 全量搜索能力。P20.1 必须把 Provider 抽象和 `candidate_coverage` 指标做好；在新增可靠搜索源或长期索引前，漏检属于可接受的失败关闭，错误猜测 CA 不可接受。
 
-```text
-backend/db/migrations/028_p20_account_scoped_keyword_signals.sql
-```
+## 21. 审核结论
 
-后端重点文件：
-
-```text
-backend/domains/signal/matcher.js
-backend/domains/signal/queries.js
-backend/domains/signal/live-policy.js
-backend/domains/trade/trade-repository.js
-backend/domains/system/routes.js
-backend/domains/x-monitor/6551/watch-reconciler.js
-backend/domains/whitelist/routes.js
-backend/domains/whitelist/service.js
-backend/domains/whitelist/activation-outbox.js
-backend/domains/research/sanitizers.js
-```
-
-后端新增模块与测试：
+P20 v3 的核心不是“为关键词提前绑定一个 CA”，而是：
 
 ```text
-backend/domains/signal/keyword-normalizer.js
-backend/domains/signal/keyword-matcher.js
-backend/domains/whitelist/keyword-rules.js
-backend/domains/whitelist/keyword-backtest.js
-backend/domains/whitelist/keyword-rule-cache.js
-backend/jobs/keyword-shadow-evaluator.js
-backend/tests/keyword-normalizer.test.js
-backend/tests/keyword-matcher.test.js
-backend/tests/keyword-rules.test.js
-backend/tests/keyword-live-policy.test.js
-backend/tests/keyword-watch-reconciler.test.js
-backend/tests/keyword-performance.test.js
+先清洗账号
+  -> 对每次帖子提取确定性线索
+  -> 逐帖确认这是当前、单一资产的买入意图
+  -> 用本地候选缓存和 GMGN 快速核验建立 Asset Family / Variant
+  -> 只在当次事件唯一指向一个可交易版本时继续
+  -> 由账号级 Dynamic Policy 授权金额和离场策略
+  -> 复用 P19 完成交易
 ```
 
-前端重点文件：
+GMGN 能显著加快身份、平台、池子、安全和市场参与核验，但不能单独回答所有“正确 CA”问题。尤其在原盘与社区重启盘同时真实存在时，正确答案必须来自帖子上下文；上下文不足时，不交易本身就是正确结果。
 
-```text
-frontend/src/lib/api.ts
-frontend/src/lib/types.ts
-frontend/src/lib/display-labels.ts
-frontend/src/pages/whitelist/AccountRulesStep.tsx
-frontend/src/pages/whitelist/WhitelistWorkspace.tsx
-frontend/src/pages/SignalsPage.tsx
-frontend/src/index.css
-```
-
-建议把关键词编辑区拆为独立 `KeywordRulesSection.tsx`，避免继续增大当前 `AccountRulesStep.tsx`。
-
-## 21. 审核决策
-
-建议按以下口径批准 P20：
-
-1. 关键词是独立第三条线路，不修改 P16 的 `ca_only` 语义。
-2. 关键词必须绑定 Actor、事件类型、固定链和固定 CA。
-3. 默认原创 Tweet、默认仅记录、默认不自动实盘。
-4. 英文优先 `$SYMBOL/#SYMBOL`，中文优先完整项目短语；裸 Symbol 不是默认方案。
-5. 历史回测、运行时歧义拦截和最终提交前 Rule 复核缺一不可。
-6. GMGN/Grok 只提供配置期建议，不进入实时交易路径。
-7. 新规则按自身状态热激活，不暂停其他已经正常运行的交易。
-8. P20 分 Signal-only、Paper、单规则实盘和逐步放量实施，任何阶段都不自动 Arm。
-
-本文审核通过后，先执行 P20.0 生产只读审计，再决定是否进入 P20.1；不得把整份方案一次性直接部署到正在 Armed 的生产服务。
+最终实施结论：方案允许进入 **P20.0 基线冻结和 P20.1 只读实现**；不允许从当前版本直接跳到 Live。P20.2、P20.3 必须依次通过真实事件和至少 7 天 Paper 验收后，才可另行审核 P20.4 单账号小额 Live。

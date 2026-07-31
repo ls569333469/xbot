@@ -1,0 +1,937 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>XBOT P20 链路与框架预览</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090b0e;
+      --surface: #101318;
+      --surface-2: #151a20;
+      --surface-3: #1a2027;
+      --line: #28313a;
+      --line-strong: #3b4753;
+      --text: #f1f4f7;
+      --secondary: #abb4be;
+      --muted: #77828e;
+      --cyan: #5ec8df;
+      --cyan-soft: rgba(94, 200, 223, 0.10);
+      --green: #58d0a7;
+      --green-soft: rgba(88, 208, 167, 0.10);
+      --amber: #e7b85f;
+      --amber-soft: rgba(231, 184, 95, 0.10);
+      --red: #e8757d;
+      --red-soft: rgba(232, 117, 125, 0.10);
+      --blue: #77a8ee;
+      --blue-soft: rgba(119, 168, 238, 0.10);
+      --radius: 6px;
+      --font: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      letter-spacing: 0;
+    }
+
+    button { font: inherit; letter-spacing: 0; }
+    button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+    svg { display: block; }
+    [hidden] { display: none !important; }
+
+    .icon {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      display: flex;
+      min-height: 58px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 0 28px;
+      border-bottom: 1px solid #1d232a;
+      background: rgba(9, 11, 14, 0.97);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(94, 200, 223, 0.48);
+      border-radius: 5px;
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .brand-copy { min-width: 0; }
+    .brand-copy strong { display: block; font-size: 14px; font-weight: 720; }
+    .brand-copy span { display: block; color: var(--muted); font-size: 11px; }
+
+    .release-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid rgba(88, 208, 167, 0.35);
+      border-radius: 5px;
+      color: var(--green);
+      background: var(--green-soft);
+      white-space: nowrap;
+      font-size: 12px;
+    }
+    .release-state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    main {
+      width: min(1540px, 100%);
+      margin: 0 auto;
+      padding: 24px 28px 48px;
+    }
+
+    .page-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 25px; line-height: 1.25; font-weight: 720; letter-spacing: 0; }
+    .page-head p { max-width: 880px; margin-top: 7px; color: var(--secondary); font-size: 13px; }
+    .scope-note { color: var(--muted); font-family: var(--mono); font-size: 11px; text-align: right; }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+    .summary-item { min-height: 92px; padding: 15px 16px; border-right: 1px solid var(--line); }
+    .summary-item:last-child { border-right: 0; }
+    .summary-label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .summary-value { margin-top: 6px; font-size: 16px; font-weight: 700; }
+    .summary-detail { margin-top: 4px; color: var(--secondary); font-size: 12px; }
+    .summary-item.cyan .summary-value { color: var(--cyan); }
+    .summary-item.green .summary-value { color: var(--green); }
+    .summary-item.amber .summary-value { color: var(--amber); }
+    .summary-item.red .summary-value { color: var(--red); }
+
+    .workspace {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 52px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #0d1014;
+    }
+
+    .tabs {
+      display: inline-grid;
+      grid-template-columns: repeat(4, minmax(132px, 1fr));
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #090b0e;
+    }
+    .tab {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 4px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .tab:hover { color: var(--text); background: var(--surface-2); }
+    .tab.active { color: var(--text); background: #1b222a; box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+    .zoom-controls { display: inline-flex; align-items: center; gap: 5px; }
+    .icon-button {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--secondary);
+      background: var(--surface-2);
+      cursor: pointer;
+    }
+    .icon-button:hover { color: var(--text); border-color: var(--line-strong); }
+    .zoom-value { min-width: 46px; color: var(--muted); text-align: center; font-family: var(--mono); font-size: 11px; }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .view-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 17px 18px 13px;
+    }
+    .view-head h2 { font-size: 16px; font-weight: 680; }
+    .view-head p { max-width: 900px; margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; color: var(--muted); font-size: 11px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .legend i { width: 8px; height: 8px; border-radius: 2px; background: currentColor; }
+    .legend .cyan { color: var(--cyan); }
+    .legend .amber { color: var(--amber); }
+    .legend .green { color: var(--green); }
+    .legend .red { color: var(--red); }
+    .legend .blue { color: var(--blue); }
+
+    .diagram-viewport {
+      min-height: 540px;
+      overflow: auto;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #0b0e12;
+      overscroll-behavior: contain;
+    }
+    .diagram-stage {
+      width: max-content;
+      min-width: 100%;
+      min-height: 540px;
+      padding: 30px 38px 42px;
+      transform-origin: top left;
+    }
+    .mermaid { width: max-content; min-width: 1120px; }
+    .mermaid svg { max-width: none !important; height: auto; }
+
+    .runtime-inspector {
+      display: grid;
+      grid-template-columns: minmax(560px, 1.25fr) minmax(320px, 0.75fr);
+      min-height: 222px;
+    }
+    .step-strip { padding: 16px 18px 18px; border-right: 1px solid var(--line); }
+    .step-strip h3, .detail-panel h3, .contract-panel h3 { font-size: 12px; font-weight: 680; color: var(--secondary); }
+    .step-buttons { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-top: 11px; }
+    .step-button {
+      min-height: 88px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--secondary);
+      background: var(--surface-2);
+      cursor: pointer;
+      text-align: left;
+    }
+    .step-button:hover { border-color: var(--line-strong); color: var(--text); }
+    .step-button.active { border-color: rgba(94, 200, 223, 0.55); color: var(--text); background: var(--cyan-soft); }
+    .step-button b { display: block; color: inherit; font-size: 12px; }
+    .step-button span { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+    .step-button.active span { color: var(--secondary); }
+
+    .detail-panel { padding: 16px 18px 18px; background: #0d1014; }
+    .detail-title { margin-top: 10px; font-size: 16px; font-weight: 680; }
+    .detail-copy { min-height: 42px; margin-top: 5px; color: var(--secondary); font-size: 12px; }
+    .detail-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    .meta-box { min-height: 57px; padding: 9px 10px; border-left: 2px solid var(--line-strong); background: var(--surface-2); }
+    .meta-box strong { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; }
+    .meta-box span { display: block; margin-top: 4px; font-family: var(--mono); font-size: 11px; color: var(--text); overflow-wrap: anywhere; }
+
+    .boundary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(190px, 1fr));
+      gap: 10px;
+      padding: 0 18px 18px;
+      overflow-x: auto;
+    }
+    .boundary-column { min-width: 190px; border-top: 2px solid var(--line-strong); }
+    .boundary-column.external { border-top-color: var(--blue); }
+    .boundary-column.p20 { border-top-color: var(--cyan); }
+    .boundary-column.data { border-top-color: var(--amber); }
+    .boundary-column.p19 { border-top-color: var(--green); }
+    .boundary-column.blocked { border-top-color: var(--red); }
+    .boundary-title { padding: 11px 2px 9px; }
+    .boundary-title b { display: block; font-size: 12px; }
+    .boundary-title span { color: var(--muted); font-size: 10px; }
+    .module-list { display: grid; gap: 6px; }
+    .module-item { min-height: 59px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
+    .module-item strong { display: block; font-family: var(--mono); font-size: 10px; color: var(--secondary); overflow-wrap: anywhere; }
+    .module-item span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+
+    .impact-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .impact-table th, .impact-table td { padding: 11px 12px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .impact-table th { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; background: #0d1014; }
+    .impact-table td:first-child { color: var(--text); font-family: var(--mono); }
+    .impact-table td { color: var(--secondary); }
+    .change-new { color: var(--cyan); }
+    .change-touch { color: var(--amber); }
+    .change-reuse { color: var(--green); }
+
+    .contract-layout { display: grid; grid-template-columns: 1fr; border-top: 1px solid var(--line); }
+    .contract-diagram { min-height: 520px; overflow: auto; border-bottom: 1px solid var(--line); background: #0b0e12; }
+    .contract-diagram .diagram-stage { min-height: 520px; }
+    .contract-panel { padding: 18px; }
+    .gate-list { display: grid; gap: 8px; margin-top: 12px; }
+    .gate-item { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
+    .gate-index { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 4px; color: var(--red); background: var(--red-soft); font-family: var(--mono); font-size: 10px; }
+    .gate-item b { display: block; font-size: 11px; }
+    .gate-item span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+
+    .rollout {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(190px, 1fr));
+      gap: 0;
+      padding: 20px 18px 24px;
+      overflow-x: auto;
+      border-top: 1px solid var(--line);
+    }
+    .rollout-stage { position: relative; min-width: 190px; padding: 0 14px 0 0; }
+    .rollout-stage:not(:last-child)::after { content: ""; position: absolute; top: 14px; right: 0; width: 14px; height: 1px; background: var(--line-strong); }
+    .rollout-marker { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface-3); font-family: var(--mono); font-size: 10px; }
+    .rollout-stage.ready .rollout-marker { color: var(--green); border-color: rgba(88, 208, 167, 0.5); background: var(--green-soft); }
+    .rollout-stage.review .rollout-marker { color: var(--cyan); border-color: rgba(94, 200, 223, 0.5); background: var(--cyan-soft); }
+    .rollout-stage.locked .rollout-marker { color: var(--muted); }
+    .rollout-card { min-height: 183px; margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
+    .rollout-card b { display: block; font-size: 12px; }
+    .rollout-card p { min-height: 53px; margin-top: 5px; color: var(--muted); font-size: 10px; }
+    .rollout-card ul { margin: 10px 0 0; padding: 0; list-style: none; }
+    .rollout-card li { position: relative; margin-top: 5px; padding-left: 10px; color: var(--secondary); font-size: 10px; }
+    .rollout-card li::before { content: ""; position: absolute; left: 0; top: 7px; width: 4px; height: 4px; border-radius: 50%; background: var(--line-strong); }
+    .rollout-status { display: inline-flex; align-items: center; min-height: 22px; margin-top: 11px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 9px; }
+    .ready .rollout-status { color: var(--green); border-color: rgba(88, 208, 167, 0.35); }
+    .review .rollout-status { color: var(--cyan); border-color: rgba(94, 200, 223, 0.35); }
+
+    .decision-bar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 58px;
+      padding: 10px 18px;
+      border-top: 1px solid var(--line);
+      background: #0d1014;
+    }
+    .decision-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 5px; color: var(--green); background: var(--green-soft); }
+    .decision-copy b { display: block; font-size: 12px; }
+    .decision-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .decision-next { color: var(--cyan); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+
+    .error {
+      max-width: 900px;
+      margin: 30px auto;
+      padding: 16px;
+      border: 1px solid var(--red);
+      border-radius: 5px;
+      color: #ffc3c7;
+      background: var(--red-soft);
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 1080px) {
+      .summary-grid { grid-template-columns: 1fr 1fr; }
+      .summary-item:nth-child(2) { border-right: 0; }
+      .summary-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .runtime-inspector { grid-template-columns: 1fr; }
+      .step-strip, .contract-diagram { border-right: 0; border-bottom: 1px solid var(--line); }
+      .tabs { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 720px) {
+      .topbar { padding: 8px 14px; }
+      .release-state { display: none; }
+      main { padding: 18px 14px 34px; }
+      .page-head { grid-template-columns: 1fr; }
+      .scope-note { text-align: left; }
+      h1 { font-size: 21px; }
+      .summary-grid { grid-template-columns: 1fr; }
+      .summary-item { border-right: 0; border-bottom: 1px solid var(--line); }
+      .summary-item:last-child { border-bottom: 0; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .tabs { width: 100%; }
+      .zoom-controls { align-self: flex-end; }
+      .view-head { flex-direction: column; }
+      .legend { justify-content: flex-start; }
+      .diagram-viewport { min-height: 470px; }
+      .diagram-stage { min-height: 470px; padding: 24px; }
+      .step-buttons { grid-template-columns: 1fr 1fr; }
+      .runtime-inspector { min-width: 0; }
+      .decision-bar { grid-template-columns: auto 1fr; }
+      .decision-next { grid-column: 2; white-space: normal; }
+    }
+
+    @media (max-width: 450px) {
+      .tabs { grid-template-columns: 1fr; }
+      .step-buttons { grid-template-columns: 1fr; }
+      .detail-meta { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-boxes" viewBox="0 0 24 24"><path d="M2.97 12.92 6 14.75l3-1.83"/><path d="m3 7.25 3 1.83 3-1.83"/><path d="M6 2v12.75"/><path d="m12.97 17.92 3 1.83 3-1.83"/><path d="m12.97 12.25 3 1.83 3-1.83"/><path d="M15.97 7v12.75"/><path d="M21 12.25 18 14.08l-3-1.83-3 1.83-3-1.83L6 14.08l-3-1.83V7.25l3-1.83 3 1.83 3-1.83 3 1.83L18 5.42l3 1.83Z"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">P20</div>
+      <div class="brand-copy">
+        <strong>XBOT 架构审查</strong>
+        <span>Dynamic Keyword Signal</span>
+      </div>
+    </div>
+    <div class="release-state"><i></i>P20.0 / P20.1 可实施</div>
+  </header>
+
+  <main>
+    <section class="page-head">
+      <div>
+        <h1>P20 链路与框架</h1>
+        <p>高权重账号发帖后，先确认买入意图，再解析唯一 CA；资金授权通过后复用 P19 已验证的交易与离场内核。</p>
+      </div>
+      <div class="scope-note">方案 v3 · 2026-07-31 · Preview only</div>
+    </section>
+
+    <section class="summary-grid" aria-label="方案摘要">
+      <div class="summary-item cyan">
+        <div class="summary-label">P20 新增职责</div>
+        <div class="summary-value">意图 + 动态 CA</div>
+        <div class="summary-detail">不提前为每个 Token 建白名单</div>
+      </div>
+      <div class="summary-item green">
+        <div class="summary-label">继续复用</div>
+        <div class="summary-value">P19 交易内核</div>
+        <div class="summary-detail">风控、Quote、Swap、对账与离场</div>
+      </div>
+      <div class="summary-item amber">
+        <div class="summary-label">外部实时依赖</div>
+        <div class="summary-value">6551 + GMGN</div>
+        <div class="summary-detail">6551 收事件，GMGN 只读核验</div>
+      </div>
+      <div class="summary-item red">
+        <div class="summary-label">默认安全策略</div>
+        <div class="summary-value">歧义即关闭</div>
+        <div class="summary-detail">找不到、多候选、语境不明均不交易</div>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <div class="toolbar">
+        <div class="tabs" role="tablist" aria-label="架构视图">
+          <button class="tab active" role="tab" aria-selected="true" data-view="runtime">
+            <svg class="icon"><use href="#i-activity"/></svg>实时主链路
+          </button>
+          <button class="tab" role="tab" aria-selected="false" data-view="boundaries">
+            <svg class="icon"><use href="#i-boxes"/></svg>责任边界
+          </button>
+          <button class="tab" role="tab" aria-selected="false" data-view="contracts">
+            <svg class="icon"><use href="#i-database"/></svg>数据与授权
+          </button>
+          <button class="tab" role="tab" aria-selected="false" data-view="rollout">
+            <svg class="icon"><use href="#i-flag"/></svg>分阶段发布
+          </button>
+        </div>
+        <div class="zoom-controls" aria-label="图表缩放">
+          <button class="icon-button" type="button" data-zoom="out" title="缩小" aria-label="缩小">
+            <svg class="icon"><use href="#i-minus"/></svg>
+          </button>
+          <span class="zoom-value">100%</span>
+          <button class="icon-button" type="button" data-zoom="in" title="放大" aria-label="放大">
+            <svg class="icon"><use href="#i-plus"/></svg>
+          </button>
+          <button class="icon-button" type="button" data-zoom="fit" title="适合宽度" aria-label="适合宽度">
+            <svg class="icon"><use href="#i-maximize"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <section class="view active" id="view-runtime" role="tabpanel">
+        <div class="view-head">
+          <div>
+            <h2>实时事件到链上交易</h2>
+            <p>P20 只负责把“谁说了什么”解析成可信且被授权的动态标的；最终资金写入仍由 P19 控制。</p>
+          </div>
+          <div class="legend">
+            <span class="blue"><i></i>外部事件</span>
+            <span class="cyan"><i></i>P20 新增</span>
+            <span class="amber"><i></i>资金授权</span>
+            <span class="green"><i></i>P19 复用</span>
+            <span class="red"><i></i>失败关闭</span>
+          </div>
+        </div>
+        <div class="diagram-viewport">
+          <div class="diagram-stage">
+            <pre class="mermaid">
+flowchart TB
+  subgraph EVENT["6551 事件入口"]
+    direction LR
+    A["高权重账号发帖"] --> B["6551 WSS"]
+    B --> C["x_activities\n幂等落库"]
+  end
+
+  subgraph P20["P20 动态解析层"]
+    direction LR
+    C --> D["Content Extractor\n作者正文 / 引用边界"]
+    D --> E{"Intent Gate\n当前单一资产买入意图?"}
+    E -->|否| R["Research / Record\n保存原因 · 不交易"]
+    E -->|是| F["Candidate Index\n读取本地候选"]
+    G["GMGN 只读源\nRank / Hot / Trenches / Info"] --> F
+    F --> H{"CA Resolver\n唯一 chain + CA?"}
+    H -->|否| R
+    H -->|是| I{"Actor Dynamic Policy\n模式 / Revision / 预算"}
+    I -->|拒绝| R
+    I -->|通过| J["Dynamic Target\n物化 whitelist_id 兼容载体"]
+  end
+
+  subgraph P19["P19 已验证交易内核"]
+    direction LR
+    J --> K["trade_signals\n动态解析证据"]
+    K --> L["Risk + Trade Intent\n预算 / 持仓 / 去重"]
+    L --> M{"beginBuySubmission\n最终授权复核"}
+    M -->|拒绝| R2["Final Gate Rejected\n不写入资金"]
+    M -->|通过| N["GMGN Quote / Swap"]
+    N --> O["Receipt / Position"]
+    O --> P["保护策略 / 对账 / 离场"]
+  end
+
+  classDef external fill:#172231,stroke:#77a8ee,color:#edf4ff,stroke-width:1px;
+  classDef p20 fill:#11262c,stroke:#5ec8df,color:#ecfbff,stroke-width:1px;
+  classDef gate fill:#2a2316,stroke:#e7b85f,color:#fff4d7,stroke-width:1px;
+  classDef p19 fill:#142720,stroke:#58d0a7,color:#edfff8,stroke-width:1px;
+  classDef reject fill:#2a171b,stroke:#e8757d,color:#ffecef,stroke-width:1px;
+  class A,B,C,G external;
+  class D,F,H,J p20;
+  class E,I,M gate;
+  class K,L,N,O,P p19;
+  class R,R2 reject;
+            </pre>
+          </div>
+        </div>
+        <div class="runtime-inspector">
+          <div class="step-strip">
+            <h3>关键控制点</h3>
+            <div class="step-buttons">
+              <button class="step-button active" data-step="event"><b>01 事件入口</b><span>一个账号一个 Watch</span></button>
+              <button class="step-button" data-step="intent"><b>02 意图判断</b><span>先判断是不是买入</span></button>
+              <button class="step-button" data-step="resolve"><b>03 CA 解析</b><span>只接受唯一版本</span></button>
+              <button class="step-button" data-step="authorize"><b>04 动态授权</b><span>账号级资金策略</span></button>
+              <button class="step-button" data-step="execute"><b>05 执行闭环</b><span>复用 P19 内核</span></button>
+            </div>
+          </div>
+          <aside class="detail-panel" aria-live="polite">
+            <h3>节点详情</h3>
+            <div class="detail-title" id="detail-title">6551 事件入口</div>
+            <p class="detail-copy" id="detail-copy">监听已配置的高权重账号。关键词在 XBOT 本地匹配，不为每个关键词新增 6551 Watch。</p>
+            <div class="detail-meta">
+              <div class="meta-box"><strong>输入</strong><span id="detail-input">Tweet / Quote / Reply</span></div>
+              <div class="meta-box"><strong>失败结果</strong><span id="detail-fail">幂等去重 / Record</span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-boundaries" role="tabpanel" hidden>
+        <div class="view-head">
+          <div>
+            <h2>模块责任边界</h2>
+            <p>外部服务提供事件与市场事实，P20 提供解析证据，P19 独占资金写入；Grok 不进入实时决策。</p>
+          </div>
+          <div class="legend">
+            <span class="blue"><i></i>外部</span>
+            <span class="cyan"><i></i>新增</span>
+            <span class="amber"><i></i>共享数据</span>
+            <span class="green"><i></i>稳定内核</span>
+            <span class="red"><i></i>禁止进入</span>
+          </div>
+        </div>
+        <div class="boundary-grid">
+          <div class="boundary-column external">
+            <div class="boundary-title"><b>外部 Provider</b><span>提供事实，不提供资金授权</span></div>
+            <div class="module-list">
+              <div class="module-item"><strong>6551 WSS</strong><span>账号发帖与互动事件</span></div>
+              <div class="module-item"><strong>GMGN Market API</strong><span>候选、Token、Security、Pool</span></div>
+              <div class="module-item"><strong>Grok Research</strong><span>异步账号画像与研究备注</span></div>
+            </div>
+          </div>
+          <div class="boundary-column p20">
+            <div class="boundary-title"><b>P20 动态解析域</b><span>新增代码的主要范围</span></div>
+            <div class="module-list">
+              <div class="module-item"><strong>content-extractor.js</strong><span>正文归属与线索提取</span></div>
+              <div class="module-item"><strong>intent-gate.js</strong><span>逐帖买入意图硬门</span></div>
+              <div class="module-item"><strong>candidate-index.js</strong><span>本地候选缓存与覆盖率</span></div>
+              <div class="module-item"><strong>ca-resolver.js</strong><span>事件级版本消歧</span></div>
+              <div class="module-item"><strong>dynamic-target-service.js</strong><span>兼容载体物化</span></div>
+            </div>
+          </div>
+          <div class="boundary-column data">
+            <div class="boundary-title"><b>数据与授权</b><span>全程可回放、可复核</span></div>
+            <div class="module-list">
+              <div class="module-item"><strong>dynamic_ca_resolution_attempts</strong><span>一次事件一次解析记录</span></div>
+              <div class="module-item"><strong>dynamic_asset_variants</strong><span>具体 chain + CA 版本</span></div>
+              <div class="module-item"><strong>x_actor_dynamic_policies</strong><span>账号级资金授权 Revision</span></div>
+              <div class="module-item"><strong>dynamic_targets</strong><span>Policy 与兼容白名单关联</span></div>
+              <div class="module-item"><strong>trade_signals</strong><span>第三类动态授权证据</span></div>
+            </div>
+          </div>
+          <div class="boundary-column p19">
+            <div class="boundary-title"><b>P19 交易内核</b><span>继续复用，不重写</span></div>
+            <div class="module-list">
+              <div class="module-item"><strong>risk-manager</strong><span>预算、持仓、重复买入</span></div>
+              <div class="module-item"><strong>trade-intent</strong><span>钱包 + chain + CA 去重</span></div>
+              <div class="module-item"><strong>beginBuySubmission</strong><span>资金写入前最终复核</span></div>
+              <div class="module-item"><strong>GMGN Quote / Swap</strong><span>报价与真实交易</span></div>
+              <div class="module-item"><strong>position / exit</strong><span>仓位、保护、对账与离场</span></div>
+            </div>
+          </div>
+          <div class="boundary-column blocked">
+            <div class="boundary-title"><b>禁止跨越</b><span>设计上的硬边界</span></div>
+            <div class="module-list">
+              <div class="module-item"><strong>Grok → Live CA</strong><span>自然语言结论不能选 CA</span></div>
+              <div class="module-item"><strong>GMGN → Funds</strong><span>市场数据不能授权资金</span></div>
+              <div class="module-item"><strong>Target → Approval</strong><span>自动物化不等于实盘批准</span></div>
+              <div class="module-item"><strong>Symbol → Guess</strong><span>候选缺失不得猜测地址</span></div>
+              <div class="module-item"><strong>P20 → Arm</strong><span>Migration 与部署不自动启动</span></div>
+            </div>
+          </div>
+        </div>
+        <table class="impact-table" aria-label="代码影响范围">
+          <thead><tr><th>范围</th><th>变化</th><th>实现口径</th><th>风险等级</th></tr></thead>
+          <tbody>
+            <tr><td>dynamic-signal/*</td><td><span class="change-new">新增</span></td><td>Extractor、Intent、Index、Resolver、Target</td><td>中</td></tr>
+            <tr><td>db/migrations</td><td><span class="change-new">新增</span></td><td>动态资产、解析、Policy、Target 与兼容外键</td><td>中</td></tr>
+            <tr><td>live-policy / trade-repository</td><td><span class="change-touch">后期接入</span></td><td>P20.3 才增加第三类授权与最终复核</td><td>高</td></tr>
+            <tr><td>P16 matcher</td><td><span class="change-reuse">保持语义</span></td><td>固定 CA 与生态互动线路不变</td><td>低</td></tr>
+            <tr><td>P19 execution</td><td><span class="change-reuse">复用</span></td><td>Quote、Swap、Receipt、Position、Exit 不重写</td><td>低</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="view" id="view-contracts" role="tabpanel" hidden>
+        <div class="view-head">
+          <div>
+            <h2>数据契约与最终授权</h2>
+            <p>`whitelist_id` 继续作为 P19 兼容主键，Dynamic Resolution、Target 和 Policy Revision 提供新的资金证据。</p>
+          </div>
+          <div class="legend">
+            <span class="cyan"><i></i>解析记录</span>
+            <span class="amber"><i></i>授权记录</span>
+            <span class="green"><i></i>交易记录</span>
+          </div>
+        </div>
+        <div class="contract-layout">
+          <div class="contract-diagram">
+            <div class="diagram-stage">
+              <pre class="mermaid">
+flowchart TB
+  subgraph RESOLUTION["解析证据"]
+    direction LR
+    A["x_activities\nTweet + provider_event_id"] --> B["resolution_attempt\nintent + observed terms"]
+    B --> C["resolution_candidates[]\n逐候选证据与拒绝原因"]
+    C --> D["asset_variant\nchain + CA + launchpad"]
+  end
+
+  subgraph AUTH["授权与兼容"]
+    direction LR
+    P["actor_dynamic_policy\nmode + revision + budget"] --> T["dynamic_target\nactor + variant"]
+    T --> W["ca_whitelist\nmanaged_by_system\n兼容 whitelist_id"]
+  end
+
+  subgraph TRADE["P19 资金链路"]
+    direction LR
+    S["trade_signals\nresolution + target + revisions"] --> I["trade_intent\nwallet + chain + CA"]
+    I --> X{"beginBuySubmission\n事务内重查"}
+    X -->|通过| O["attempt / order / position"]
+    X -->|变化或过期| R["Rejected\n不写入资金"]
+  end
+
+  D --> T
+  B --> S
+  W --> S
+  P --> X
+  T --> X
+
+  classDef resolution fill:#11262c,stroke:#5ec8df,color:#ecfbff;
+  classDef policy fill:#2a2316,stroke:#e7b85f,color:#fff4d7;
+  classDef trade fill:#142720,stroke:#58d0a7,color:#edfff8;
+  classDef reject fill:#2a171b,stroke:#e8757d,color:#ffecef;
+  class A,B,C,D resolution;
+  class P,T,W,X policy;
+  class S,I,O trade;
+  class R reject;
+              </pre>
+            </div>
+          </div>
+          <aside class="contract-panel">
+            <h3>下单前六项硬复核</h3>
+            <div class="gate-list">
+              <div class="gate-item"><div class="gate-index">01</div><div><b>Intent Revision</b><span>仍是允许的当前单资产买入语境</span></div></div>
+              <div class="gate-item"><div class="gate-index">02</div><div><b>Resolution</b><span>仍唯一指向同一个 chain + CA</span></div></div>
+              <div class="gate-item"><div class="gate-index">03</div><div><b>Dynamic Target</b><span>未过期且与兼容 whitelist_id 一致</span></div></div>
+              <div class="gate-item"><div class="gate-index">04</div><div><b>Actor Policy</b><span>仍为 Live，Revision 未变化</span></div></div>
+              <div class="gate-item"><div class="gate-index">05</div><div><b>Position / Budget</b><span>跨 whitelist_id 去重，资金上限仍通过</span></div></div>
+              <div class="gate-item"><div class="gate-index">06</div><div><b>Engine / Chain</b><span>Engine、Readiness、Circuit 与钱包门均开放</span></div></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-rollout" role="tabpanel" hidden>
+        <div class="view-head">
+          <div>
+            <h2>分阶段发布</h2>
+            <p>当前只批准 P20.0 与 P20.1。Research、Paper 和 Live 使用独立退出条件，不允许跨级部署。</p>
+          </div>
+          <div class="legend">
+            <span class="green"><i></i>可执行</span>
+            <span class="cyan"><i></i>下一阶段</span>
+            <span><i></i>锁定</span>
+          </div>
+        </div>
+        <div class="rollout">
+          <div class="rollout-stage ready">
+            <div class="rollout-marker">0</div>
+            <div class="rollout-card">
+              <b>基线冻结</b>
+              <p>确认生产版本和数据边界，建立可回滚起点。</p>
+              <ul><li>GitHub 安全备份</li><li>密钥与生产数据扫描</li><li>Schema / Migration 快照</li></ul>
+              <span class="rollout-status">已批准</span>
+            </div>
+          </div>
+          <div class="rollout-stage review">
+            <div class="rollout-marker">1</div>
+            <div class="rollout-card">
+              <b>只读 Resolver</b>
+              <p>实现候选索引、意图判断和 CA 解析，不触碰资金路径。</p>
+              <ul><li>Feature Flag 关闭</li><li>GMGN 只读调用</li><li>离线 Fixture 回放</li></ul>
+              <span class="rollout-status">准备实施</span>
+            </div>
+          </div>
+          <div class="rollout-stage locked">
+            <div class="rollout-marker">2</div>
+            <div class="rollout-card">
+              <b>Research / Record</b>
+              <p>接入真实 6551 事件，只保存解析结果和失败原因。</p>
+              <ul><li>不进交易队列</li><li>统计误判与漏检</li><li>账号清洗工具</li></ul>
+              <span class="rollout-status">待 P20.1 验收</span>
+            </div>
+          </div>
+          <div class="rollout-stage locked">
+            <div class="rollout-marker">3</div>
+            <div class="rollout-card">
+              <b>Paper</b>
+              <p>接入动态授权和 P19 模拟执行，真实 Swap 仍关闭。</p>
+              <ul><li>至少连续 7 天</li><li>逐笔人工核对</li><li>错误 CA 必须为 0</li></ul>
+              <span class="rollout-status">锁定</span>
+            </div>
+          </div>
+          <div class="rollout-stage locked">
+            <div class="rollout-marker">4</div>
+            <div class="rollout-card">
+              <b>单账号 Live</b>
+              <p>只允许历史样本充分的一个账号，以最低额度限时灰度。</p>
+              <ul><li>用户显式批准</li><li>单账号最低限额</li><li>异常立即回滚</li></ul>
+              <span class="rollout-status">锁定</span>
+            </div>
+          </div>
+        </div>
+        <div class="decision-bar">
+          <div class="decision-icon"><svg class="icon"><use href="#i-check"/></svg></div>
+          <div class="decision-copy"><b>当前实施边界明确</b><span>P20.1 不修改 Engine、P16/P19 Matcher、Live Policy 或最终资金提交路径。</span></div>
+          <div class="decision-next">NEXT: P20.0 → P20.1</div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const details = {
+      event: {
+        title: '6551 事件入口',
+        copy: '监听已配置的高权重账号。关键词在 XBOT 本地匹配，不为每个关键词新增 6551 Watch。',
+        input: 'Tweet / Quote / Reply',
+        fail: '幂等去重 / Record'
+      },
+      intent: {
+        title: '确定性逐帖 Intent Gate',
+        copy: '先排除比较、历史、卖出、否定、安全事件和多资产正文，再判断是否为当前单一资产的明确买入意图。',
+        input: '作者正文 + 引用边界',
+        fail: 'Research / Record'
+      },
+      resolve: {
+        title: 'Dynamic CA Resolver',
+        copy: '结合完整 CA、平台 URL、项目账号、时间与 GMGN 市场事实，解析相对于本次帖子的唯一资产版本。',
+        input: 'Observed Term + Candidate Index',
+        fail: 'Not Found / Ambiguous'
+      },
+      authorize: {
+        title: 'Actor Dynamic Policy',
+        copy: '账号级策略提供允许链、关键词类型、金额、每日上限、重复买入和离场模板；自动 Target 本身没有资金权限。',
+        input: 'Policy Mode + Revision',
+        fail: 'Policy Blocked'
+      },
+      execute: {
+        title: 'P19 执行闭环',
+        copy: '复用现有 Trade Intent、钱包写入通道、GMGN Quote/Swap、Receipt、仓位保护、对账和离场。',
+        input: 'Authorized trade_signal',
+        fail: 'Final Gate Rejected'
+      }
+    };
+
+    let zoom = 1;
+
+    function activeStage() {
+      return document.querySelector('.view.active .diagram-stage');
+    }
+
+    function applyZoom(next) {
+      zoom = Math.min(1.45, Math.max(0.55, next));
+      const stage = activeStage();
+      if (stage) {
+        stage.style.transform = `scale(${zoom})`;
+        stage.style.marginRight = `${Math.max(0, (zoom - 1) * stage.scrollWidth)}px`;
+        stage.style.marginBottom = `${Math.max(0, (zoom - 1) * stage.scrollHeight)}px`;
+      }
+      document.querySelector('.zoom-value').textContent = `${Math.round(zoom * 100)}%`;
+    }
+
+    function fitActiveDiagram() {
+      const stage = activeStage();
+      const viewport = stage?.closest('.diagram-viewport, .contract-diagram');
+      const graph = stage?.querySelector('svg');
+      if (!stage || !viewport || !graph) return applyZoom(1);
+      const available = Math.max(280, viewport.clientWidth - 52);
+      const natural = graph.getBoundingClientRect().width / zoom;
+      applyZoom(Math.min(1, available / Math.max(1, natural)));
+      viewport.scrollTo({ left: 0, top: 0 });
+    }
+
+    document.querySelectorAll('.tab').forEach((tab) => {
+      tab.addEventListener('click', async () => {
+        document.querySelectorAll('.tab').forEach((item) => {
+          item.classList.toggle('active', item === tab);
+          item.setAttribute('aria-selected', item === tab ? 'true' : 'false');
+        });
+        document.querySelectorAll('.view').forEach((view) => {
+          const active = view.id === `view-${tab.dataset.view}`;
+          view.classList.toggle('active', active);
+          view.hidden = !active;
+        });
+        const activeView = document.querySelector('.view.active');
+        await renderViewDiagrams(activeView);
+        zoom = 1;
+        document.querySelectorAll('.diagram-stage').forEach((stage) => {
+          stage.style.transform = '';
+          stage.style.marginRight = '';
+          stage.style.marginBottom = '';
+        });
+        document.querySelector('.zoom-value').textContent = '100%';
+      });
+    });
+
+    document.querySelectorAll('[data-zoom]').forEach((button) => {
+      button.addEventListener('click', () => {
+        if (button.dataset.zoom === 'in') applyZoom(zoom + 0.1);
+        if (button.dataset.zoom === 'out') applyZoom(zoom - 0.1);
+        if (button.dataset.zoom === 'fit') fitActiveDiagram();
+      });
+    });
+
+    document.querySelectorAll('.step-button').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.step-button').forEach((item) => item.classList.toggle('active', item === button));
+        const detail = details[button.dataset.step];
+        document.getElementById('detail-title').textContent = detail.title;
+        document.getElementById('detail-copy').textContent = detail.copy;
+        document.getElementById('detail-input').textContent = detail.input;
+        document.getElementById('detail-fail').textContent = detail.fail;
+      });
+    });
+
+    async function renderViewDiagrams(view) {
+      if (!view) return;
+      const pending = view.querySelector('.mermaid:not([data-processed])');
+      if (!pending) return;
+      await mermaid.run({ nodes: [pending] });
+    }
+
+    async function renderDiagrams() {
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'base',
+          fontFamily: 'Inter, Segoe UI, Microsoft YaHei, sans-serif',
+          flowchart: { curve: 'basis', htmlLabels: true, nodeSpacing: 28, rankSpacing: 44 },
+          themeVariables: {
+            background: '#0b0e12',
+            primaryColor: '#151a20',
+            primaryTextColor: '#f1f4f7',
+            primaryBorderColor: '#3b4753',
+            lineColor: '#5d6976',
+            secondaryColor: '#101318',
+            tertiaryColor: '#0d1014',
+            clusterBkg: '#0f1318',
+            clusterBorder: '#28313a',
+            edgeLabelBackground: '#0b0e12',
+            fontSize: '13px'
+          }
+        });
+        await renderViewDiagrams(document.querySelector('.view.active'));
+      } catch (error) {
+        document.querySelectorAll('.diagram-viewport, .contract-diagram').forEach((container) => {
+          container.innerHTML = `<div class="error">图表渲染失败：${String(error.message || error)}</div>`;
+        });
+      }
+    }
+
+    renderDiagrams();
+  </script>
+</body>
+</html>

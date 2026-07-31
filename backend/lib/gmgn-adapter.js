@@ -22,6 +22,38 @@ function booleanOrNull(value) {
   return null;
 }
 
+function firstValue(source, paths) {
+  for (const path of paths) {
+    let current = source;
+    for (const part of path.split('.')) current = current?.[part];
+    if (current !== undefined && current !== null && current !== '') return current;
+  }
+  return null;
+}
+
+function textOrNull(value) {
+  const normalized = String(value ?? '').normalize('NFKC').trim();
+  return normalized || null;
+}
+
+function xHandleOrNull(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const withoutUrl = raw
+    .replace(/^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i, '')
+    .split(/[/?#]/)[0]
+    .replace(/^@+/, '')
+    .toLowerCase();
+  return /^[a-z0-9_]{1,15}$/.test(withoutUrl) ? withoutUrl : null;
+}
+
+function fieldAvailability(fields) {
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [
+    key,
+    value === undefined || value === null || value === '' ? 'unknown' : 'known'
+  ]));
+}
+
 function normalizeUserInfo(data) {
   const wallets = Array.isArray(data?.wallets) ? data.wallets : [];
   return {
@@ -74,14 +106,50 @@ function normalizeTokenInfo(data) {
     error.code = 'GMGN_SCHEMA_INVALID';
     throw error;
   }
+  const links = data?.link || data?.links || {};
+  const marketCapUsd = numberOrNull(data?.market_cap ?? data?.usd_market_cap);
+  const holderCount = numberOrNull(data?.holder_count);
+  const launchpad = textOrNull(data?.launchpad ?? data?.launchpad_platform);
+  const officialXHandle = xHandleOrNull(firstValue({ data, links }, [
+    'data.twitter_username', 'data.twitter', 'data.x_handle',
+    'links.twitter_username', 'links.twitter', 'links.x'
+  ]));
+  const websiteUrl = textOrNull(firstValue({ data, links }, [
+    'data.website', 'data.website_url', 'links.website', 'links.homepage'
+  ]));
+  const renownedWallets = numberOrNull(
+    data?.wallet_tags_stat?.renowned_wallets ?? data?.renowned_count
+  );
+  const smartWallets = numberOrNull(
+    data?.wallet_tags_stat?.smart_wallets ?? data?.smart_degen_count
+  );
   return {
     raw: data,
     address: String(data.address || data.token_address || ''),
+    name: textOrNull(data.name || data.token_name),
     symbol: String(data.symbol || ''),
     decimals,
     priceUsd: numberOrNull(data?.price?.price ?? data?.price_usd ?? data?.price),
     liquidityUsd: numberOrNull(data?.liquidity ?? data?.liquidity_usd),
-    rugRatio: numberOrNull(data?.rug_ratio ?? data?.stat?.rug_ratio)
+    marketCapUsd,
+    holderCount,
+    rugRatio: numberOrNull(data?.rug_ratio ?? data?.stat?.rug_ratio),
+    launchpad,
+    exchange: textOrNull(data?.exchange),
+    officialXHandle,
+    websiteUrl,
+    creationTimestamp: numberOrNull(data?.creation_timestamp ?? data?.created_timestamp),
+    renownedWallets,
+    smartWallets,
+    fieldAvailability: fieldAvailability({
+      market_cap: marketCapUsd,
+      liquidity: data?.liquidity ?? data?.liquidity_usd,
+      holder_count: holderCount,
+      launchpad,
+      official_x_handle: officialXHandle,
+      renowned_wallets: renownedWallets,
+      smart_wallets: smartWallets
+    })
   };
 }
 
@@ -93,6 +161,8 @@ function normalizeSecurity(data, chainId) {
     buyTax: numberOrNull(data?.buy_tax),
     sellTax: numberOrNull(data?.sell_tax),
     rugRatio: numberOrNull(data?.rug_ratio),
+    isSellable: booleanOrNull(data?.is_sellable ?? data?.can_sell ?? data?.sellable),
+    isBlacklisted: booleanOrNull(data?.is_blacklisted ?? data?.blacklisted),
     renouncedMint: booleanOrNull(data?.renounced_mint),
     renouncedFreeze: booleanOrNull(data?.renounced_freeze_account),
     top10HolderRate: numberOrNull(data?.top_10_holder_rate)
@@ -102,8 +172,130 @@ function normalizeSecurity(data, chainId) {
 function normalizePool(data) {
   return {
     raw: data,
+    address: textOrNull(data?.address ?? data?.pool_address ?? data?.pool?.address),
+    exchange: textOrNull(data?.exchange ?? data?.dex ?? data?.pool?.exchange),
     liquidityUsd: numberOrNull(data?.liquidity ?? data?.liquidity_usd ?? data?.pool?.liquidity)
   };
+}
+
+function marketRows(data) {
+  if (Array.isArray(data)) {
+    if (data.some((item) => Array.isArray(item?.tokens))) {
+      return data.flatMap((block) => (block.tokens || []).map((token) => ({
+        token,
+        defaults: { chain: block.chain, interval: block.interval, sourceVersion: block.version }
+      })));
+    }
+    return data.map((token) => ({ token, defaults: {} }));
+  }
+  if (Array.isArray(data?.rank)) return data.rank.map((token) => ({ token, defaults: {} }));
+  if (Array.isArray(data?.list)) return data.list.map((token) => ({ token, defaults: {} }));
+  if (Array.isArray(data?.tokens)) return data.tokens.map((token) => ({ token, defaults: {} }));
+  const categories = [
+    ['new_creation', 'new_creation'],
+    ['pump', 'near_completion'],
+    ['completed', 'completed']
+  ];
+  return categories.flatMap(([key, lifecycle]) => (
+    (Array.isArray(data?.[key]) ? data[key] : []).map((token) => ({ token, defaults: { lifecycle } }))
+  ));
+}
+
+function normalizeMarketToken(data, defaults = {}) {
+  const chainId = textOrNull(data?.chain ?? defaults.chain)?.toLowerCase();
+  const address = textOrNull(data?.address ?? data?.token_address);
+  required(chainId, 'market_token.chain');
+  required(address, 'market_token.address');
+  const normalizedAddress = chainId === 'sol' ? address : address.toLowerCase();
+  const symbol = textOrNull(data?.symbol ?? data?.token_symbol);
+  const name = textOrNull(data?.name ?? data?.token_name);
+  const launchpad = textOrNull(data?.launchpad_platform ?? data?.launchpad);
+  const liquidityUsd = numberOrNull(data?.liquidity ?? data?.liquidity_usd);
+  const marketCapUsd = numberOrNull(data?.market_cap ?? data?.usd_market_cap);
+  const holderCount = numberOrNull(data?.holder_count);
+  const renownedWallets = numberOrNull(
+    data?.wallet_tags_stat?.renowned_wallets ?? data?.renowned_count
+  );
+  const smartWallets = numberOrNull(
+    data?.wallet_tags_stat?.smart_wallets ?? data?.smart_degen_count
+  );
+  const officialXHandle = xHandleOrNull(data?.twitter_username ?? data?.twitter);
+  return {
+    raw: data,
+    chainId,
+    contractAddress: normalizedAddress,
+    name,
+    symbol: symbol ? symbol.toUpperCase() : '',
+    logoUrl: textOrNull(data?.logo ?? data?.logo_url),
+    launchpad,
+    exchange: textOrNull(data?.exchange),
+    officialXHandle,
+    xHandles: officialXHandle ? [officialXHandle] : [],
+    websiteUrl: textOrNull(data?.website),
+    priceUsd: numberOrNull(data?.price),
+    marketCapUsd,
+    liquidityUsd,
+    holderCount,
+    renownedWallets,
+    smartWallets,
+    creationTimestamp: numberOrNull(data?.creation_timestamp ?? data?.created_timestamp),
+    lifecycle: defaults.lifecycle || null,
+    sourceVersion: defaults.sourceVersion || null,
+    providerStatus: defaults.providerStatus || 'unknown',
+    tradableStatus: defaults.tradableStatus || 'unknown',
+    fieldAvailability: fieldAvailability({
+      name,
+      symbol,
+      launchpad,
+      market_cap: marketCapUsd,
+      liquidity: liquidityUsd,
+      holder_count: holderCount,
+      renowned_wallets: renownedWallets,
+      smart_wallets: smartWallets
+    })
+  };
+}
+
+function normalizeMarketCollection(data, defaults = {}) {
+  const rows = marketRows(data);
+  const candidates = [];
+  let rejectedCount = 0;
+  for (const row of rows) {
+    try {
+      candidates.push(normalizeMarketToken(row.token, { ...defaults, ...row.defaults }));
+    } catch {
+      rejectedCount += 1;
+    }
+  }
+  return { candidates, returnedCount: rows.length, rejectedCount };
+}
+
+function normalizeHolder(data) {
+  const buyVolumeUsd = numberOrNull(data?.buy_volume_cur);
+  const sellRatio = numberOrNull(data?.sell_amount_percentage);
+  const balance = numberOrNull(data?.amount_cur ?? data?.balance);
+  const transferIn = booleanOrNull(data?.transfer_in);
+  return {
+    raw: data,
+    address: textOrNull(data?.address),
+    amountPercentage: numberOrNull(data?.amount_percentage),
+    balance,
+    buyVolumeUsd,
+    sellVolumeUsd: numberOrNull(data?.sell_volume_cur),
+    sellRatio,
+    transferIn,
+    walletTags: Array.isArray(data?.tags) ? data.tags.map(String) : [],
+    twitterUsername: xHandleOrNull(data?.twitter_username),
+    activeBuyer: buyVolumeUsd !== null && buyVolumeUsd > 0
+      && transferIn !== true
+      && (sellRatio === null || sellRatio < 1)
+      && (balance === null || balance > 0)
+  };
+}
+
+function normalizeHolderCollection(data) {
+  const rows = Array.isArray(data?.list) ? data.list : Array.isArray(data) ? data : [];
+  return rows.map(normalizeHolder);
 }
 
 function normalizeQuote(data) {
@@ -259,6 +451,12 @@ function normalizeStrategy(data) {
 
 module.exports = {
   booleanOrNull,
+  fieldAvailability,
+  firstValue,
+  normalizeHolder,
+  normalizeHolderCollection,
+  normalizeMarketCollection,
+  normalizeMarketToken,
   normalizeOrder,
   normalizeOrderStatus,
   normalizePool,
@@ -272,5 +470,6 @@ module.exports = {
   numberOrNull,
   selectWallet,
   walletNativeBalance,
-  walletNativePriceUsd
+  walletNativePriceUsd,
+  xHandleOrNull
 };

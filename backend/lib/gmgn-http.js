@@ -239,6 +239,26 @@ function getTokenPoolInfo(chain, address, options = {}) {
   return request('GET', '/v1/token/pool_info', { chain, address }, null, options);
 }
 
+function getMarketRank(chain, interval, extra = {}, options = {}) {
+  return request('GET', '/v1/market/rank', { chain, interval, ...extra }, null, options);
+}
+
+function getMarketHotSearches(params, options = {}) {
+  return request('POST', '/v1/market/hot_searches', {}, { params }, options);
+}
+
+function getMarketTrenches(chain, body, options = {}) {
+  return request('POST', '/v1/trenches', { chain }, body, options);
+}
+
+function getTokenTopHolders(chain, address, extra = {}, options = {}) {
+  return request('GET', '/v1/market/token_top_holders', {
+    chain,
+    address,
+    ...extra
+  }, null, options);
+}
+
 function getWalletTokenBalance(chain, walletAddress, tokenAddress, options = {}) {
   return request('GET', '/v1/user/wallet_token_balance', {
     chain,
@@ -356,6 +376,10 @@ module.exports = {
   getTokenInfo,
   getTokenSecurity,
   getTokenPoolInfo,
+  getMarketRank,
+  getMarketHotSearches,
+  getMarketTrenches,
+  getTokenTopHolders,
   getWalletTokenBalance,
   getWalletActivity,
   quoteOrder,

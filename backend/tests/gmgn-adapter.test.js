@@ -53,3 +53,34 @@ test('wallet adapter derives native balance and USD price without hardcoded pric
   assert.equal(adapter.walletNativeBalance(wallet, 'SOL'), 0.5);
   assert.equal(adapter.walletNativePriceUsd(wallet, 'SOL'), 150);
 });
+
+test('market adapter preserves unknown fields and normalizes nested hot-search blocks', () => {
+  const result = adapter.normalizeMarketCollection([{
+    chain: 'bsc',
+    interval: '24h',
+    tokens: [{
+      address: '0x39dbed3a2bd333467115de45665cc57f813c4571',
+      symbol: 'pons',
+      liquidity: '0',
+      wallet_tags_stat: {}
+    }]
+  }]);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].symbol, 'PONS');
+  assert.equal(result.candidates[0].liquidityUsd, 0);
+  assert.equal(result.candidates[0].renownedWallets, null);
+  assert.equal(result.candidates[0].fieldAvailability.liquidity, 'known');
+  assert.equal(result.candidates[0].fieldAvailability.renowned_wallets, 'unknown');
+});
+
+test('holder adapter does not count pure transfers or fully exited wallets as active buyers', () => {
+  assert.equal(adapter.normalizeHolder({
+    buy_volume_cur: '100', balance: '10', transfer_in: true
+  }).activeBuyer, false);
+  assert.equal(adapter.normalizeHolder({
+    buy_volume_cur: '100', balance: '0', sell_amount_percentage: '1'
+  }).activeBuyer, false);
+  assert.equal(adapter.normalizeHolder({
+    buy_volume_cur: '100', balance: '10', transfer_in: false
+  }).activeBuyer, true);
+});
