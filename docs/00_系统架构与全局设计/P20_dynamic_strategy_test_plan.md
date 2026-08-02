@@ -1,6 +1,6 @@
 # P20 动态策略测试与运行时升级方案
 
-版本：v1.5。范围：Node 20 基线验收、P20 动态策略测试、Node 24 运行时升级回归、GitHub 隐私检查和受控服务器上传。必须先完成 Node 20 基线与 P20 测试，再单独升级 Node 24；两阶段都通过后才允许上传服务器。不启用动态实盘，不执行真实 Swap。
+版本：v1.6。范围：Node 20 基线验收、P20 动态策略测试、Node 24 运行时升级回归、GitHub 隐私检查和受控服务器上传。必须先完成 Node 20 基线与 P20 测试，再单独升级 Node 24；两阶段都通过后才允许上传服务器。不启用动态实盘，不执行真实 Swap。
 
 ## 1. 测试目标
 
@@ -262,4 +262,42 @@ P20_LIVE_ENABLED=false
 
 对应 Node 20 基线回归结果（2026-08-02）：完整后端单元测试 `338/338`、定向 P20/GMGN 测试 `31/31`、前端 lint/build、后端语法检查和 `git diff --check` 均通过；独立测试库集成测试 `36/36` 通过，Schema audit 输出 `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`。期间发现旧测试库已登记 `029` 但缺少动态上线窗口租约字段和 Paper/动态信号唯一索引，已补充幂等迁移 `030`、`031` 并验证通过。
 
-Node 24 阶段回归结果（2026-08-02）：后端和前端 `npm ci` 均通过；后端全量单测 `338/338`、P20/GMGN 定向测试 `39/39`、数据库集成测试 `36/36`、Schema audit `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`、前端 lint/build、运行时校验、lockfile 完整性检查和 `git diff --check` 均通过。Node 24 本地阶段已完成，但尚未上传服务器、提交 GitHub 或开启 P20 Live。
+Node 24 阶段回归结果（2026-08-02）：后端和前端 `npm ci` 均通过；后端全量单测 `338/338`、P20/GMGN 定向测试 `39/39`、数据库集成测试 `36/36`、Schema audit `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`、前端 lint/build、运行时校验、lockfile 完整性检查和 `git diff --check` 均通过。Node 24 初始基线已提交 GitHub；生产服务器尚未升级或开启 P20 Live。
+
+## 13. Node 24 本地运行时实测记录（2026-08-02）
+
+本轮使用独立数据库 `xbot_p20_runtime_test`，始终保持 `TRADING_MODE=signal`、`LIVE_TRADING_ENABLED=false`、`EMERGENCY_STOP=true`、`X_6551_WSS_ENABLED=false`、`X_6551_WATCH_APPLY_ENABLED=false`。GMGN Key 在测试进程中为空；Paper 行情使用进程内只读夹具，`gmgnHttp.swap()` 被计数并强制要求零调用。生产服务器、生产数据库和真实交易状态均未修改。
+
+### 实测中发现并修复
+
+1. Worker 定时器已启动但全部 Feature Flag 关闭时，前端错误显示“动态任务运行中”。现已按 Feature Flag 和 Worker 状态区分“未启用、待命、处理中、已停止”。
+2. 非契约路径 `/api/actor-screening/runs` 会被 `/:id` 捕获并把 `NaN` 传给 PostgreSQL，产生 500。现已对账号清洗 ID 和 limit 做正整数校验，错误路径返回 400，不再污染后端错误日志。
+3. 动态上线窗口 SQL 使用 PostgreSQL 关键字 `window` 作为更新别名，Record 启动后每秒产生语法错误和未处理 Promise rejection。现已改为非保留别名，定时任务增加顶层错误捕获，并新增真实 PostgreSQL 空队列轮询集成测试。
+
+### Record 烟雾测试
+
+执行 `npm run test:p20:record-smoke`。脚本带有以下硬门：数据库名必须包含 `test` 且不能等于生产库；`TRADING_MODE` 和全部 Live 开关必须关闭；只允许 Dynamic Resolution + Record，Paper 必须关闭。
+
+结果：缓存候选被解析为唯一 CA，Job 和 Resolution 均完成；`signalCount=0`、`targetCount=0`，没有创建交易 Signal、动态目标、仓位或 Swap。前端正确显示测试账号、Record 策略和解析审计记录。
+
+### Paper 烟雾测试
+
+执行 `npm run test:p20:paper-smoke`。脚本使用受控 Token 价格和 BSC 钱包原生币价格夹具，同时覆盖 `gmgnHttp.swap()` 计数器。
+
+结果：成功创建唯一 Resolution、Dynamic Target、Paper Signal、7 天 Paper Session、Evaluation 和 `execution_mode=paper` 的模拟仓位；单笔金额、入场快照和离场策略快照一致；`swapCallCount=0`。前端正确显示 Paper 策略和“7 天模拟运行中”。
+
+### 故障与 Live 安全门
+
+- 重复事件、候选歧义、Provider 地址错配、超时、Worker 租约、策略 revision 失效、Session 幂等和上线窗口接管测试全部通过。
+- 把 Paper 策略保存为目标 Live 配置后，revision 从 1 变为 2；旧 Paper Session 不再计入当前 revision 验收。
+- Live 授权接口返回 `DYNAMIC_PAPER_ACCEPTANCE_REQUIRED`，HTTP 400；`approval_id` 和 `approval_expires_at` 均为空，前端授权按钮保持禁用。
+- 本轮只验证拒绝路径，没有开启 `P20_LIVE_ENABLED`，没有执行真实 Swap。
+
+### 最终回归
+
+- 后端全量单元测试：`341/341`。
+- 独立测试库集成测试：`37/37`。
+- 前端：lint、TypeScript 和 Vite build 通过。
+- Schema audit：`SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`。
+- 新增烟雾脚本、动态上线窗口和前端运行状态文件的 Node/TypeScript 语法检查通过，`git diff --check` 通过。
+- 测试结束后必须恢复全部 P20 Feature Flag 为 `false`；服务器部署和 P20 生产启用仍需单独批准。

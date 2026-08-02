@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { resolveHistorical, runActor } = require('../domains/actor-screening/backtest');
-const { retryFailedRun } = require('../domains/actor-screening/service');
+const { getRun, listRuns, retryFailedRun } = require('../domains/actor-screening/service');
 
 function candidate(address, symbol) {
   return {
@@ -94,4 +94,24 @@ test('screening retry does not reopen a cancelled run', async () => {
     }
   };
   assert.equal(await retryFailedRun(13, executor), false);
+});
+
+test('screening lookup rejects an invalid run id before querying PostgreSQL', async () => {
+  const executor = { query: async () => assert.fail('query must not run for an invalid id') };
+  await assert.rejects(
+    getRun('runs', executor),
+    (error) => error.code === 'ACTOR_SCREENING_ID_INVALID'
+  );
+});
+
+test('screening list falls back to the default limit for invalid input', async () => {
+  let params;
+  const executor = {
+    async query(_sql, values) {
+      params = values;
+      return { rows: [] };
+    }
+  };
+  await listRuns('invalid', executor);
+  assert.deepEqual(params, [50]);
 });

@@ -62,11 +62,11 @@ class DynamicLaunchWindowWorker {
               AND expires_at > NOW()
             ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
           ), claimed AS (
-            UPDATE dynamic_launch_windows window SET status = 'processing',
+            UPDATE dynamic_launch_windows AS launch_window SET status = 'processing',
               attempt_count = attempt_count + 1, worker_id = $1,
               locked_at = NOW(), lease_expires_at = NOW() + ($2 * INTERVAL '1 second'),
               updated_at = NOW()
-            FROM candidate WHERE window.id = candidate.id RETURNING window.*
+            FROM candidate WHERE launch_window.id = candidate.id RETURNING launch_window.*
           ) SELECT claimed.*, job.mode AS job_mode
             FROM claimed JOIN dynamic_signal_jobs job ON job.id = claimed.dynamic_job_id`,
         [this.workerId, LEASE_SECONDS]
@@ -159,7 +159,17 @@ class DynamicLaunchWindowWorker {
       }
     } finally { this.active = false; }
   }
-  start(options = {}) { if (this.timer) return; this.running = true; const interval = Math.max(500, Number(options.intervalMs || 1000)); void this.runOnce(); this.timer = setInterval(() => void this.runOnce(), interval); this.timer.unref?.(); }
+  start(options = {}) {
+    if (this.timer) return;
+    this.running = true;
+    const interval = Math.max(500, Number(options.intervalMs || 1000));
+    const execute = () => void this.runOnce().catch((error) => {
+      this.logger.error('dynamic-launch-window', `Worker iteration failed: ${error.message}`);
+    });
+    execute();
+    this.timer = setInterval(execute, interval);
+    this.timer.unref?.();
+  }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = null; this.running = false; }
   getStatus() { return { running: this.running, active: this.active }; }
 }

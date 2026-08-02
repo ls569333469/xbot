@@ -12,6 +12,7 @@ const { DynamicSignalWorker } = require('../domains/dynamic-signal/event-worker'
 const { DynamicLaunchWindowWorker } = require('../jobs/dynamic-launch-window');
 const { DynamicPaperSessionWorker } = require('../domains/dynamic-signal/paper-worker');
 const { ensureSession } = require('../domains/dynamic-signal/paper-worker');
+const { approve: approveDynamicLive } = require('../domains/dynamic-signal/dynamic-authorization');
 const {
   boundedGmgnCandidateTtlMs,
   upsertCandidate
@@ -38,6 +39,25 @@ test('P20 runtime stages stay dependency ordered and live remains opt-in', () =>
     P20_PAPER_ENABLED: true, P20_LIVE_ENABLED: false
   }), 'paper');
   assert.throws(() => validateP20Runtime({ P20_LIVE_ENABLED: 'true' }), { code: 'P20_LIVE_REQUIRES_PAPER' });
+});
+
+test('dynamic Live approval rejects a policy without same-revision seven-day Paper acceptance', async () => {
+  const calls = [];
+  const executor = {
+    async query(sql) {
+      calls.push(sql);
+      if (sql.startsWith('SELECT * FROM x_actor_dynamic_policies')) {
+        return { rows: [{ id: 8, mode: 'live', enabled: true, revision: 3, context_hash: 'ctx-3' }] };
+      }
+      if (sql.includes('FROM dynamic_paper_sessions')) return { rows: [] };
+      assert.fail('approval persistence must not run without Paper acceptance');
+    }
+  };
+  await assert.rejects(
+    approveDynamicLive(8, { confirmation: 'APPROVE P20 DYNAMIC LIVE' }, executor),
+    (error) => error.code === 'DYNAMIC_PAPER_ACCEPTANCE_REQUIRED'
+  );
+  assert.equal(calls.length, 2);
 });
 
 test('dynamic policy revision hash changes with safety-critical limits', () => {
@@ -311,6 +331,8 @@ test('P20 launch window can reclaim an abandoned processing lease', async () => 
   });
   assert.deepEqual(await worker.runOnce(), { status: 'idle' });
   assert.equal(queries.length, 2);
+  assert.match(queries[0].sql, /UPDATE dynamic_launch_windows AS launch_window/);
+  assert.doesNotMatch(queries[0].sql, /UPDATE dynamic_launch_windows window/);
 });
 
 test('P20 launch window writes keep the worker lease and job transition owner guarded', async () => {

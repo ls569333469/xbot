@@ -5,9 +5,13 @@ const { actorScreeningWorker } = require('./worker');
 const router = express.Router();
 router.get('/', async (req, res) => res.json({ ok: true, data: await service.listRuns(req.query.limit) }));
 router.get('/:id', async (req, res) => {
-  const run = await service.getRun(req.params.id);
-  if (!run) return res.status(404).json({ ok: false, error: 'Screening run not found', code: 'NOT_FOUND' });
-  return res.json({ ok: true, data: run });
+  try {
+    const run = await service.getRun(req.params.id);
+    if (!run) return res.status(404).json({ ok: false, error: 'Screening run not found', code: 'NOT_FOUND' });
+    return res.json({ ok: true, data: run });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message, code: error.code || 'BAD_REQUEST' });
+  }
 });
 router.post('/', async (req, res) => {
   try { return res.json({ ok: true, data: await service.createRun(req.body) }); }

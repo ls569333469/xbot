@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useToast } from '../components/ui/ToastContext';
 import { api } from '../lib/api';
+import { dynamicPaperDisplay, dynamicResolutionDisplay } from '../lib/p20-runtime';
 import type { DynamicPolicy, DynamicSignalStatus, WhitelistEntry } from '../lib/types';
 import { strategySummary } from './whitelist/strategy-presets';
 
@@ -111,6 +112,8 @@ export default function StrategyCenterPage() {
       ...(selectedFixed.relations || []).map((item) => item.actor_handle),
     ]).size
     : 0;
+  const resolutionRuntime = dynamicResolutionDisplay(runtime);
+  const paperRuntime = dynamicPaperDisplay(runtime);
 
   const continueNew = () => {
     if (newType === 'fixed') {
@@ -137,7 +140,7 @@ export default function StrategyCenterPage() {
       <section className="strategy-center-shell">
         <header className="strategy-center-header">
           <div><span className="strategy-center-eyebrow">统一策略入口</span><h1>策略中心</h1><p>这里只查看策略状态；固定策略和动态策略进入各自工作区编辑。</p></div>
-          <div className="strategy-center-header-actions"><span className="strategy-center-status"><i />{runtime?.worker?.running ? '动态任务运行中' : '动态任务已停止'}</span><button type="button" className="p16-icon-button" title="刷新策略中心" aria-label="刷新策略中心" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button></div>
+          <div className="strategy-center-header-actions"><span className="strategy-center-status"><i />{resolutionRuntime.label}</span><button type="button" className="p16-icon-button" title="刷新策略中心" aria-label="刷新策略中心" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button></div>
         </header>
 
         <nav className="strategy-center-tabs" aria-label="策略类型">
@@ -169,7 +172,7 @@ export default function StrategyCenterPage() {
 
         {tab === 'dynamic' && <section className="strategy-center-view">
           <div className="strategy-center-view-head"><div><h2>动态喊单策略</h2><p>账号发帖后才解析 CA，动态解析结果不会修改固定 CA / 项目策略。</p></div><Link className="btn btn-primary" to="/strategies/dynamic"><Layers3 size={16} />进入动态策略工作区</Link></div>
-          <div className="strategy-center-runtime"><span>解析任务：{runtime?.worker?.running ? '运行中' : '已停止'}</span><span>模拟任务：{runtime?.paperWorker?.running ? '运行中' : '已停止'}</span><span>动态策略：{policies.length} 条</span><span>实盘授权：{liveCount} 条</span></div>
+          <div className="strategy-center-runtime"><span>解析任务：{resolutionRuntime.shortLabel}</span><span>模拟任务：{paperRuntime.shortLabel}</span><span>动态策略：{policies.length} 条</span><span>实盘授权：{liveCount} 条</span></div>
           {loading ? <div className="p16-empty-line">加载动态策略中...</div> : <div className="strategy-center-split">
             <div className="strategy-center-list">
               <div className="strategy-center-list-head"><strong>账号策略列表</strong><span>{policies.length} 条</span></div>
