@@ -305,6 +305,126 @@ export interface KolAccount {
   updated_at?: string;
 }
 
+export interface DynamicPolicy {
+  id: string;
+  kol_id: string;
+  x_handle: string;
+  display_name?: string;
+  mode: 'record' | 'paper' | 'live' | 'paused';
+  enabled: boolean;
+  allowed_chain_ids: ChainId[];
+  allowed_event_types: Array<'tweet' | 'quote' | 'reply'>;
+  allowed_term_types: Array<'ca' | 'cashtag' | 'hashtag' | 'approved_name'>;
+  approved_aliases: Array<string | { name: string; normalized?: string }>;
+  budget_per_trade: number;
+  daily_budget: number;
+  daily_new_token_limit: number;
+  per_token_buy_limit: number;
+  slippage: number;
+  exit_strategy: ExitStrategy;
+  resolver_options: Record<string, unknown>;
+  revision: number;
+  context_hash: string;
+  approval_id?: string | null;
+  approval_expires_at?: string | null;
+}
+
+export interface ActorScreeningResult {
+  id: string;
+  x_handle: string;
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed';
+  sample_size: number;
+  direct_intent_rate?: number | null;
+  ca_resolution_rate?: number | null;
+  ambiguity_rate?: number | null;
+  provider_coverage_rate?: number | null;
+  historical_candidate_coverage_rate?: number | null;
+  executable_win_rate?: number | null;
+  false_positive_rate?: number | null;
+  recommendation: 'approve_for_record' | 'watch' | 'reject' | 'insufficient_data';
+  error_code?: string | null;
+}
+
+export interface ActorScreeningRun {
+  id: string;
+  input_handles: string[];
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
+  created_at: string;
+  results?: ActorScreeningResult[];
+  result_count?: number;
+  completed_count?: number;
+}
+
+export type DynamicResolutionStatus = 'pending' | 'resolved' | 'rejected' | 'ambiguous' | 'not_found' | 'provider_failed';
+export type DynamicCandidateStatus = 'unknown' | 'tradable' | 'untradable';
+
+export interface DynamicResolutionCandidate {
+  id: string;
+  variant_id?: string | null;
+  chain_id: ChainId;
+  contract_address: string;
+  score?: number | null;
+  strong_anchor_codes: string[];
+  support_reason_codes: string[];
+  rejection_reason_codes: string[];
+  provider_status: 'unknown' | 'verified' | 'error';
+  tradable_status: DynamicCandidateStatus;
+  field_availability: Record<string, boolean>;
+  provider_snapshot: Record<string, unknown>;
+  selected: boolean;
+}
+
+export interface DynamicResolution {
+  id: string;
+  actor_policy_id?: string | null;
+  actor_policy_revision?: number | null;
+  actor_handle?: string | null;
+  x_handle?: string | null;
+  processing_mode?: 'record' | 'paper' | 'live';
+  status: DynamicResolutionStatus;
+  intent_class: string;
+  intent_reason_codes: string[];
+  observed_terms: unknown[];
+  author_owned_terms: unknown[];
+  quoted_terms: unknown[];
+  allowed_chain_ids: ChainId[];
+  chain_id?: ChainId | null;
+  contract_address?: string | null;
+  name?: string | null;
+  symbol?: string | null;
+  launchpad?: string | null;
+  exchange?: string | null;
+  resolution_confidence: 'verified' | 'high' | 'medium' | 'low' | 'unknown';
+  resolution_reason_codes: string[];
+  failure_code?: string | null;
+  candidate_coverage: Record<string, unknown>;
+  provider_snapshot: Record<string, unknown>;
+  timing_json: Record<string, unknown>;
+  candidates: DynamicResolutionCandidate[];
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface DynamicSignalStatus {
+  features: Record<string, boolean>;
+  worker: { running: boolean; active: boolean; workerId?: string };
+  paperWorker: { running: boolean; active: boolean };
+  jobs: Array<{ status: string; count: number; oldest?: string | null }>;
+}
+
+export interface DynamicPaperSession {
+  id: string;
+  actor_policy_id: string;
+  policy_revision: number;
+  x_handle?: string;
+  status: 'running' | 'completed' | 'cancelled' | 'failed';
+  started_at: string;
+  ends_at: string;
+  completed_at?: string | null;
+  summary: Record<string, unknown>;
+  evaluations: Array<Record<string, unknown>>;
+}
+
 export interface XActivity {
   id: string;
   kol_id: number;

@@ -467,9 +467,25 @@ module.exports = {
   normalizeTokenInfo,
   normalizeUserInfo,
   normalizeWalletTokenBalance,
+  normalizeKline,
   numberOrNull,
   selectWallet,
   walletNativeBalance,
   walletNativePriceUsd,
   xHandleOrNull
 };
+
+function normalizeKline(value) {
+  const rows = Array.isArray(value) ? value : Array.isArray(value?.list)
+    ? value.list : Array.isArray(value?.data) ? value.data : [];
+  return rows.map((row) => {
+    const values = Array.isArray(row) ? row : null;
+    const get = (key, index) => values ? values[index] : row?.[key];
+    return {
+      timestamp: Number(get('timestamp', 0) ?? get('time', 0)),
+      open: Number(get('open', 1)), high: Number(get('high', 2)),
+      low: Number(get('low', 3)), close: Number(get('close', 4)),
+      volume: Number(get('volume', 5)), raw: row
+    };
+  }).filter((row) => Number.isFinite(row.timestamp) && Number.isFinite(row.close));
+}

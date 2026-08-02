@@ -142,7 +142,7 @@ export default function Layout() {
 
   const navItems = [
     { path: '/', label: '总览', icon: LayoutDashboard },
-    { path: '/whitelist', label: '白名单', icon: List },
+    { path: '/strategies', label: '策略中心', icon: List },
     { path: '/kol', label: 'KOL', icon: Users },
     { path: '/signals', label: '信号', icon: Activity },
     { path: '/positions', label: '持仓', icon: TrendingUp },
@@ -152,7 +152,10 @@ export default function Layout() {
 
   const getPageTitle = () => {
     const current = navItems.find(item => item.path === location.pathname);
-    return current ? current.label : 'xbot';
+    if (current) return current.label;
+    if (location.pathname === '/whitelist' || location.pathname === '/strategies/fixed') return '固定 CA / 项目策略';
+    if (location.pathname === '/strategies/dynamic') return '动态喊单策略';
+    return 'xbot';
   };
 
   if (authState !== 'authenticated') {

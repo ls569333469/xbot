@@ -2,7 +2,7 @@
 
 These files record the configuration deployed to `107.172.78.150` for release `p18.3-production-20260728`.
 
-The production JavaScript runtime is pinned to Node `20.20.x` and npm `10.8.x`. Both package manifests run `deploy/check-node-runtime.js` before dependency installation so a different npm major cannot silently rewrite the lockfiles.
+The production JavaScript runtime is pinned to Node `24.11.x` and npm `11.6.x`. Both package manifests run `deploy/check-node-runtime.js` before dependency installation so a different npm major cannot silently rewrite the lockfiles.
 
 P18.3 keeps the authenticated frontend gate and adds compact whitelist list responses, on-demand detail loading, and Nginx compression for large JSON responses.
 

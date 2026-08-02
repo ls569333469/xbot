@@ -18,6 +18,7 @@ const ENDPOINT_WEIGHTS = new Map([
   ['POST /v1/market/hot_searches', 3],
   ['POST /v1/trenches', 3],
   ['GET /v1/market/token_top_holders', 5],
+  ['GET /v1/market/token_kline', 2],
   ['POST /v1/trade/swap', 5],
   ['POST /v1/trade/multi_swap', 5],
   ['GET /v1/trade/quote', 2],

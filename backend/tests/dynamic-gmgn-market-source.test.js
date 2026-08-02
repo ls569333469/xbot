@@ -82,3 +82,18 @@ test('candidate verification distinguishes unknown provider fields from zero', a
   assert.equal(result.renownedWallets, null);
   assert.equal(result.fieldAvailability.renowned_wallets, 'unknown');
 });
+
+test('candidate verification rejects a provider response for a different CA', async () => {
+  const http = {
+    getTokenInfo: async () => ({
+      address: '0x49dbed3a2bd333467115de45665cc57f813c4571', decimals: 18,
+      symbol: 'OTHER'
+    }),
+    getTokenSecurity: async () => ({}),
+    getTokenPoolInfo: async () => ({ liquidity: 1000 })
+  };
+  await assert.rejects(
+    verifyCandidate({ chainId: 'robinhood', contractAddress: CA }, { http }),
+    { code: 'GMGN_ADDRESS_MISMATCH' }
+  );
+});

@@ -9,6 +9,15 @@ function tokenPriceUsd(rawTokenInfo) {
   return gmgnAdapter.normalizeTokenInfo(rawTokenInfo).priceUsd;
 }
 
+function exitThresholds(position = {}) {
+  return {
+    takeProfit: position.tp_pct === null || position.tp_pct === undefined
+      ? null : Number(position.tp_pct),
+    stopLoss: position.sl_pct === null || position.sl_pct === undefined
+      ? null : Number(position.sl_pct)
+  };
+}
+
 async function run(deps) {
   logger.info('jobs', 'Running price-monitor job');
   const { wsBroadcast } = deps || {};
@@ -89,13 +98,12 @@ async function run(deps) {
         }
 
         // 4. 检查是否命中 TP（止盈） 或 SL（止损）
-        const tpThreshold = Number(pos.tp_pct || 100);
-        const slThreshold = Number(pos.sl_pct || 20);
+        const { takeProfit: tpThreshold, stopLoss: slThreshold } = exitThresholds(pos);
 
-        if (pos.execution_mode === 'paper' && pnlPct >= tpThreshold) {
+        if (pos.execution_mode === 'paper' && Number.isFinite(tpThreshold) && pnlPct >= tpThreshold) {
           logger.trade('price-monitor', `代币 ${pos.symbol} 达到止盈线 (+${pnlPct}% >= +${tpThreshold}%)，触发自动平仓`);
           await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'tp_hit', wsBroadcast);
-        } else if (pos.execution_mode === 'paper' && pnlPct <= -slThreshold) {
+        } else if (pos.execution_mode === 'paper' && Number.isFinite(slThreshold) && pnlPct <= -slThreshold) {
           logger.trade('price-monitor', `代币 ${pos.symbol} 跌破止损线 (${pnlPct}% <= -${slThreshold}%)，触发自动平仓`);
           await paperEngine.closeSimulatedPosition(pos.id, currentPriceUsd, 'sl_hit', wsBroadcast);
         } else {
@@ -134,4 +142,4 @@ async function run(deps) {
   }
 }
 
-module.exports = { run, tokenPriceUsd };
+module.exports = { exitThresholds, run, tokenPriceUsd };

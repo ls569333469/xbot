@@ -47,6 +47,12 @@ async function loadActivationContext(whitelistId, executor = db) {
                 SELECT rule.actor_id
                 FROM x_signal_source_rules AS rule
                 WHERE rule.whitelist_id = whitelist.id AND rule.enabled = true
+                UNION
+                SELECT policy.kol_id
+                FROM x_actor_dynamic_policies AS policy
+                WHERE whitelist.source = 'dynamic_keyword'
+                  AND whitelist.actor_policy_id = policy.id
+                  AND policy.enabled = true AND policy.mode <> 'paused'
               ) AS trigger
               JOIN x_kol_accounts AS actor ON actor.id = trigger.actor_id AND actor.enabled = true
             ), '{}'::text[]) AS actor_handles

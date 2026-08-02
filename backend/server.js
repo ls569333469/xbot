@@ -28,6 +28,11 @@ const providerRateRecorder = require('./lib/provider-rate-recorder');
 const { serviceHeartbeat } = require('./lib/service-heartbeat');
 const { researchQueue } = require('./domains/research/queue');
 const { kolProfileEnrichmentWorker } = require('./jobs/kol-profile-enrichment');
+const { dynamicSignalWorker } = require('./domains/dynamic-signal/event-worker');
+const { dynamicPaperSessionWorker } = require('./domains/dynamic-signal/paper-worker');
+const { actorScreeningWorker } = require('./domains/actor-screening/worker');
+const { candidateCacheWarmup } = require('./jobs/gmgn-candidate-cache-warmup');
+const { dynamicLaunchWindowWorker } = require('./jobs/dynamic-launch-window');
 const processRole = getProcessRole();
 const capabilities = roleCapabilities(processRole);
 
@@ -85,6 +90,8 @@ app.use('/api/config', require('./domains/config/routes'));
 app.use('/api/system', require('./domains/system/routes'));
 app.use('/api/kol', require('./domains/kol/routes'));
 app.use('/api/trade', require('./domains/trade/routes'));
+app.use('/api/dynamic-signal', require('./domains/dynamic-signal/routes'));
+app.use('/api/actor-screening', require('./domains/actor-screening/routes'));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, status: 'ok', process_role: processRole });
@@ -159,6 +166,11 @@ async function gracefulShutdown(signal) {
   }
   if (capabilities.execution) {
     kolProfileEnrichmentWorker.stop();
+    dynamicSignalWorker.stop();
+    dynamicPaperSessionWorker.stop();
+    actorScreeningWorker.stop();
+    candidateCacheWarmup.stop();
+    dynamicLaunchWindowWorker.stop();
     researchQueue.stop();
     reconciler.stop();
     tradeRetryOrchestrator.stop();
@@ -183,6 +195,7 @@ process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
 
 async function startServer() {
+  require('./lib/p20-features').validateP20Runtime();
   const checkEnv = require('./scripts/check-env');
   await checkEnv();
 
@@ -212,6 +225,11 @@ async function startServer() {
     readinessMonitor.start();
     researchQueue.start({ intervalMs: 1000 });
     kolProfileEnrichmentWorker.start({ intervalMs: 5000 });
+    dynamicSignalWorker.start({ wsBroadcast, intervalMs: 500 });
+    dynamicPaperSessionWorker.start({ intervalMs: 60_000 });
+    actorScreeningWorker.start({ intervalMs: 2000 });
+    candidateCacheWarmup.start({ intervalMs: 60_000 });
+    dynamicLaunchWindowWorker.start({ intervalMs: 1000 });
   }
 
   if (capabilities.api) {

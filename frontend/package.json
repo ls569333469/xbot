@@ -3,10 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "packageManager": "npm@10.8.2",
+  "packageManager": "npm@11.6.2",
   "engines": {
-    "node": "20.20.x",
-    "npm": "10.8.x"
+    "node": "24.11.x",
+    "npm": "11.6.x"
   },
   "scripts": {
     "preinstall": "node ../deploy/check-node-runtime.js",

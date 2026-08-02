@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "description": "xbot backend",
   "main": "server.js",
-  "packageManager": "npm@10.8.2",
+  "packageManager": "npm@11.6.2",
   "engines": {
-    "node": "20.20.x",
-    "npm": "10.8.x"
+    "node": "24.11.x",
+    "npm": "11.6.x"
   },
   "scripts": {
     "preinstall": "node ../deploy/check-node-runtime.js",
@@ -16,13 +16,14 @@
     "start:supervised": "node scripts/supervisor.js",
     "start:execution": "node server.js --role=execution",
     "start:ingestion": "node server.js --role=ingestion",
-    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test": "node --test --test-concurrency=1",
     "test:integration": "node scripts/run-integration-tests.js",
     "test:migration:p12": "node scripts/rehearse-p12-migration.js",
     "test:migration:p13": "node scripts/rehearse-p12-migration.js",
     "test:migration:p16": "node scripts/rehearse-p16-migration.js",
     "test:db:manage": "node scripts/manage-test-database.js",
     "audit:schema:test": "node scripts/audit-db-schema.js",
+    "audit:schema:production": "node scripts/audit-db-schema.js --production-readonly",
     "audit:solana-tx": "node scripts/audit-solana-transactions.js"
   },
   "devDependencies": {

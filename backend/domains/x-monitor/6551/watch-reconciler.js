@@ -67,22 +67,30 @@ async function loadDesiredWatches(executor = db) {
        JOIN x_kol_accounts AS actor ON actor.id = relation.kol_id
        JOIN ca_whitelist AS whitelist ON whitelist.id = relation.whitelist_id
        CROSS JOIN LATERAL unnest(relation.event_types) AS event_type
-       WHERE relation.enabled = true
-         AND actor.enabled = true
-         AND whitelist.status = 'active'
-         AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+        WHERE relation.enabled = true
+          AND actor.enabled = true
+          AND whitelist.status = 'active'
+          AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
        UNION ALL
        SELECT actor.x_handle, event_type
        FROM x_signal_source_rules AS rule
        JOIN x_kol_accounts AS actor ON actor.id = rule.actor_id
        JOIN ca_whitelist AS whitelist ON whitelist.id = rule.whitelist_id
        CROSS JOIN LATERAL unnest(rule.event_types) AS event_type
-       WHERE rule.enabled = true
-         AND actor.enabled = true
-         AND rule.source_kind = 'ecosystem'
-         AND whitelist.status = 'active'
-         AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
-       UNION ALL
+        WHERE rule.enabled = true
+          AND actor.enabled = true
+          AND rule.source_kind = 'ecosystem'
+          AND whitelist.status = 'active'
+          AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+        UNION ALL
+        SELECT actor.x_handle, event_type
+        FROM x_actor_dynamic_policies AS policy
+        JOIN x_kol_accounts AS actor ON actor.id = policy.kol_id
+        CROSS JOIN LATERAL unnest(policy.allowed_event_types) AS event_type
+        WHERE policy.enabled = true
+          AND policy.mode <> 'paused'
+          AND actor.enabled = true
+      UNION ALL
        SELECT actor.x_handle, event_type
        FROM project_launch_sources AS source
        JOIN x_kol_accounts AS actor ON actor.id = source.actor_id

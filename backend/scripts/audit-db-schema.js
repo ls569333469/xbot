@@ -6,10 +6,12 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true
 const database = String(process.env.DB_NAME || '').trim();
 const testDatabase = String(process.env.XBOT_TEST_DB_NAME || '').trim();
 const productionDatabase = String(process.env.XBOT_PRODUCTION_DB_NAME || '').trim();
+const productionReadOnly = process.argv.includes('--production-readonly');
+const dedicatedTest = Boolean(database && testDatabase && database === testDatabase
+  && /test/i.test(database) && (!productionDatabase || database !== productionDatabase));
 
-if (!database || !testDatabase || database !== testDatabase || !/test/i.test(database)
-    || (productionDatabase && database === productionDatabase)) {
-  throw new Error('Schema audit requires DB_NAME and XBOT_TEST_DB_NAME to name the same dedicated test database');
+if (!database || (!dedicatedTest && !productionReadOnly)) {
+  throw new Error('Schema audit requires a dedicated test database or --production-readonly');
 }
 
 const client = new Client({
@@ -32,18 +34,42 @@ async function requireColumns(table, expected) {
   if (missing.length > 0) throw new Error(`${table} is missing columns: ${missing.join(', ')}`);
 }
 
+async function requireIndexes(expected) {
+  const result = await client.query(
+    `SELECT indexname FROM pg_indexes
+     WHERE schemaname = 'public' AND indexname = ANY($1::text[])`,
+    [expected]
+  );
+  const found = new Set(result.rows.map((row) => row.indexname));
+  const missing = expected.filter((index) => !found.has(index));
+  if (missing.length > 0) throw new Error(`Schema is missing indexes: ${missing.join(', ')}`);
+}
+
 async function main() {
   await client.connect();
   const migration = await client.query(
-    "SELECT name FROM schema_migrations WHERE name = '027_p19_low_latency_execution.sql'"
+    `SELECT name FROM schema_migrations
+     WHERE name = ANY($1::text[])`,
+    [['027_p19_low_latency_execution.sql', '028_p20_readonly_dynamic_resolution.sql',
+      '029_p20_runtime_dynamic_signal_pipeline.sql',
+      '030_p20_runtime_launch_window_lease_columns.sql',
+      '031_p20_runtime_schema_index_repair.sql']]
   );
-  if (migration.rows.length !== 1) throw new Error('Migration 027 is not applied');
+  const migrations = new Set(migration.rows.map((row) => row.name));
+  if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
+  if (!migrations.has('028_p20_readonly_dynamic_resolution.sql')) throw new Error('Migration 028 is not applied');
+  if (!migrations.has('029_p20_runtime_dynamic_signal_pipeline.sql')) throw new Error('Migration 029 is not applied');
+  if (!migrations.has('030_p20_runtime_launch_window_lease_columns.sql')) throw new Error('Migration 030 is not applied');
+  if (!migrations.has('031_p20_runtime_schema_index_repair.sql')) throw new Error('Migration 031 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',
     'activation_error_code', 'activation_error_detail', 'activation_checked_at', 'activated_at'
   ]);
-  await requireColumns('trade_signals', ['activation_wait_version']);
+  await requireColumns('trade_signals', [
+    'activation_wait_version', 'matched_dynamic_resolution_id', 'dynamic_target_id',
+    'actor_policy_id', 'actor_policy_revision', 'dynamic_policy_context_hash'
+  ]);
   await requireColumns('x_provider_events', [
     'trace_id', 'timing_json', 'swap_submitted_at', 'receive_to_submitted_ms'
   ]);
@@ -64,6 +90,34 @@ async function main() {
   await requireColumns('whitelist_activation_outbox', [
     'whitelist_id', 'desired_version', 'status', 'attempt_count', 'locked_at'
   ]);
+  await requireColumns('x_actor_dynamic_policies', [
+    'kol_id', 'mode', 'enabled', 'allowed_chain_ids', 'allowed_event_types',
+    'allowed_term_types', 'revision', 'context_hash'
+  ]);
+  await requireColumns('dynamic_signal_jobs', [
+    'x_activity_id', 'actor_policy_id', 'policy_revision', 'mode', 'status',
+    'attempt_count', 'resolution_attempt_id', 'failure_code', 'last_error'
+  ]);
+  await requireColumns('dynamic_launch_windows', [
+    'dynamic_job_id', 'status', 'attempt_count', 'worker_id', 'locked_at',
+    'lease_expires_at', 'next_attempt_at', 'expires_at'
+  ]);
+  await requireColumns('dynamic_targets', [
+    'actor_policy_id', 'actor_policy_revision', 'resolution_attempt_id', 'variant_id',
+    'whitelist_id', 'chain_id', 'contract_address', 'mode', 'status', 'context_hash'
+  ]);
+  await requireColumns('dynamic_paper_sessions', [
+    'actor_policy_id', 'policy_revision', 'status', 'started_at', 'ends_at', 'completed_at'
+  ]);
+  await requireColumns('dynamic_paper_evaluations', [
+    'paper_session_id', 'dynamic_target_id', 'signal_id', 'position_id', 'status', 'failure_code'
+  ]);
+  await requireIndexes([
+    'uq_dynamic_resolution_job',
+    'uq_dynamic_paper_session_running',
+    'uq_whitelist_dynamic_actor_ca_chain_active',
+    'uq_trade_signal_dynamic_resolution'
+  ]);
 
   const invalidActivation = await client.query(
     `SELECT COUNT(*)::int AS count FROM ca_whitelist
@@ -72,7 +126,7 @@ async function main() {
   );
   if (invalidActivation.rows[0].count !== 0) throw new Error('Invalid whitelist activation rows found');
 
-  process.stdout.write(`SCHEMA_AUDIT_OK=${database}\n`);
+  process.stdout.write(`SCHEMA_AUDIT_OK=${database};MODE=${productionReadOnly ? 'production-readonly' : 'test'}\n`);
 }
 
 main()

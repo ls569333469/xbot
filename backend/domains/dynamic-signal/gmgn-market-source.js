@@ -12,6 +12,23 @@ const HOLDER_TAGS = new Set([
   'bundler', 'transfer_in', 'dex_bot', 'bluechip_owner'
 ]);
 
+async function fetchKline(input = {}, dependencies = {}) {
+  const chain = requireChain(input.chain).id;
+  const address = validateTokenAddress(chain, input.address);
+  const resolution = String(input.resolution || '1m');
+  const from = Number(input.from);
+  const to = Number(input.to);
+  if (!/^\d+[smhd]$/.test(resolution) || !Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
+    const error = new Error('GMGN kline window is invalid');
+    error.code = 'GMGN_MARKET_ARGUMENT_INVALID';
+    throw error;
+  }
+  const http = dependencies.http || gmgnHttp;
+  const data = await http.getTokenKline(chain, address, resolution, from, to, input.requestOptions || {});
+  const rows = gmgnAdapter.normalizeKline(data);
+  return { source: 'gmgn_token_kline', rows, coverage: { returned_count: rows.length, complete: rows.length > 0 } };
+}
+
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value ?? fallback);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
@@ -188,6 +205,11 @@ async function verifyCandidate(candidate, options = {}) {
     error.code = 'GMGN_SCHEMA_INVALID';
     throw error;
   }
+  if (normalizedProviderAddress !== address) {
+    const error = new Error('GMGN token info address does not match the requested candidate');
+    error.code = 'GMGN_ADDRESS_MISMATCH';
+    throw error;
+  }
 
   let tradableStatus = 'unknown';
   if (security.value?.isHoneypot === true || security.value?.isSellable === false
@@ -240,6 +262,7 @@ module.exports = {
   TRENCH_TYPES,
   buildTrenchesBody,
   fetchHotSearches,
+  fetchKline,
   fetchRank,
   fetchTopHolders,
   fetchTrenches,

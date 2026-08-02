@@ -68,3 +68,29 @@ test('resolver maps provider timeouts to a fail-closed timeout code', async () =
   assert.equal(result.failureCode, RESOLUTION_CODES.PROVIDER_TIMEOUT);
   assert.equal(result.selectedCandidate, null);
 });
+
+test('resolver never uses a term type disabled by the actor policy', async () => {
+  let calls = 0;
+  const directCa = await resolveDynamicSignal({
+    text: CA,
+    allowedChains: ['robinhood'],
+    allowedTermTypes: ['cashtag']
+  }, {
+    candidateIndex: new CandidateIndex(),
+    verifyCandidate: async () => { calls += 1; return {}; }
+  });
+  assert.equal(directCa.status, 'not_found');
+  assert.equal(directCa.selectedCandidate, null);
+
+  const symbol = await resolveDynamicSignal({
+    text: 'Buy $PONS',
+    allowedChains: ['robinhood'],
+    allowedTermTypes: ['ca']
+  }, {
+    candidateIndex: new CandidateIndex([{ chain: 'robinhood', address: CA, symbol: 'PONS' }]),
+    verifyCandidate: async () => { calls += 1; return {}; }
+  });
+  assert.equal(symbol.status, 'not_found');
+  assert.equal(symbol.selectedCandidate, null);
+  assert.equal(calls, 0);
+});

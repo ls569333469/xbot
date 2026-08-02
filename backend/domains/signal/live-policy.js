@@ -1,5 +1,6 @@
 const db = require('../../lib/db');
 const { getExecutionChains } = require('../../lib/chain-config');
+const dynamicAuthorization = require('../dynamic-signal/dynamic-authorization');
 
 const EVENT_TYPES = new Set(['tweet', 'retweet', 'quote', 'reply', 'follow']);
 const VERIFIED_6551_EVENT_TYPES = Object.freeze([...EVENT_TYPES]);
@@ -136,6 +137,21 @@ async function triggerAllowsSignal(signal, executor = db) {
 
 async function evaluate(signal, options = {}) {
   const executor = options.executor || db;
+  if (signal.actor_policy_id && signal.dynamic_target_id) {
+    const dynamic = await dynamicAuthorization.evaluateSignal(signal, executor, {
+      flags: options.flags,
+      skipUsage: Boolean(options.skipDynamicUsage)
+    });
+    const chain = String(signal.chain_id || '').toLowerCase();
+    const readinessResult = await executor.query(
+      'SELECT * FROM chain_live_readiness WHERE chain = $1', [chain]
+    );
+    const readiness = readinessResult.rows[0] || null;
+    const blockers = [...dynamic.blockers];
+    if (!readiness?.implemented) blockers.push('CHAIN_NOT_IMPLEMENTED');
+    if (!readiness?.contract_tested) blockers.push('CHAIN_CONTRACT_NOT_TESTED');
+    return { allowed: blockers.length === 0, blockers, policy: dynamic.policy, readiness, dynamic };
+  }
   const policy = await getPolicy(executor);
   const blockers = [];
   const provider = String(signal.provider || '').toLowerCase();

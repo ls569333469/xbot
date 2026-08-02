@@ -89,6 +89,14 @@ async function getSignalForExecution(signalId, executor = db) {
             signal.kol_handle,
             signal.matched_relation_ids,
             signal.matched_source_rule_ids,
+            signal.matched_dynamic_resolution_id,
+            signal.dynamic_target_id,
+            signal.actor_policy_id,
+            signal.actor_policy_revision,
+            signal.dynamic_policy_context_hash,
+            signal.dynamic_intent_class,
+            signal.dynamic_intent_reason_codes,
+            signal.dynamic_intent_rule_revision,
             signal.trace_id,
             activity.provider,
             activity.activity_type,
@@ -291,6 +299,17 @@ async function createBuyAttempt(prepared) {
         duplicate: intentResult.duplicate
       };
     }
+    if (signal.actor_policy_id && signal.dynamic_target_id) {
+      const dynamicAuthorization = require('../dynamic-signal/dynamic-authorization');
+      await dynamicAuthorization.reserveUsage({
+        ...signal,
+        chain_id: signal.chain_id,
+        contract_address: signal.contract_address,
+        signal_created_at: signal.signal_created_at,
+        source_created_at: signal.source_created_at,
+        activity_type: signal.activity_type
+      }, client);
+    }
     const activeBuyAttempts = await client.query(
       `SELECT COUNT(*)::int AS count
        FROM trade_attempts
@@ -441,7 +460,11 @@ async function beginBuySubmission(attemptId, options = {}) {
     await client.query('BEGIN');
     const contextResult = await client.query(
       `SELECT attempt.*, signal.matched_relation_ids, signal.matched_source_rule_ids,
-              signal.activation_wait_version, activity.activity_type,
+              signal.matched_dynamic_resolution_id, signal.dynamic_target_id,
+              signal.actor_policy_id, signal.actor_policy_revision,
+              signal.dynamic_policy_context_hash,
+              signal.activation_wait_version, signal.created_at AS signal_created_at,
+              activity.activity_type, activity.source_created_at,
               whitelist.status AS whitelist_status,
               whitelist.live_activation_state, whitelist.activation_version
        FROM trade_attempts AS attempt
@@ -575,7 +598,22 @@ async function beginBuySubmission(attemptId, options = {}) {
       error.code = productionAuthorization.errorCode;
       throw error;
     }
-    if (!authorization.trigger_allowed) {
+    if (context.actor_policy_id && context.dynamic_target_id) {
+      const dynamicAuthorization = require('../dynamic-signal/dynamic-authorization');
+      const dynamicResult = await dynamicAuthorization.evaluateSignal({
+        ...context,
+        chain_id: context.chain,
+        contract_address: context.output_token || context.contract_address,
+        signal_created_at: context.signal_created_at,
+        source_created_at: context.source_created_at
+      }, client, { skipUsage: true });
+      if (!dynamicResult.allowed) {
+        const error = new Error(`Dynamic live authorization changed: ${dynamicResult.blockers.join(', ')}`);
+        error.code = dynamicResult.blockers[0];
+        throw error;
+      }
+    }
+    if (!authorization.trigger_allowed && !(context.actor_policy_id && context.dynamic_target_id)) {
       const error = new Error('Signal trigger authorization changed before submission');
       error.code = 'LIVE_TRIGGER_EVENT_NOT_ALLOWED';
       throw error;
@@ -957,6 +995,8 @@ async function releaseRejectedAttempt(attemptId, error) {
        WHERE id = $1`,
       [attemptResult.rows[0].signal_id, error.code || 'TRADE_REJECTED']
     );
+    await require('../dynamic-signal/dynamic-authorization')
+      .releaseUsage(attemptResult.rows[0].signal_id, client);
     await addAttemptEvent(client, attemptId, 'submitting', 'rejected', {
       reason: error.message,
       errorCode: error.code
@@ -1288,6 +1328,8 @@ async function finalizeAdditionalBuyFill(client, row, position, normalizedOrder,
      WHERE id = $2`,
     [inputDisplay, row.whitelist_id]
   );
+  await require('../dynamic-signal/dynamic-authorization')
+    .commitUsage(row.signal_id, inputDisplay, client);
   await client.query(
     `INSERT INTO trade_reconciliation_incidents(
        intent_id, attempt_id, incident_type, severity, details_json
@@ -1604,6 +1646,8 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
        reject_reason = NULL, updated_at = NOW() WHERE id = $1`,
       [row.signal_id]
     );
+    await require('../dynamic-signal/dynamic-authorization')
+      .commitUsage(row.signal_id, inputDisplay, client);
     await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'confirmed', {
       providerRequestId: normalizedOrder.providerOrderId,
       summary: {

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XBOT P20 统一运营布局预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d10;
+      --surface: #11161b;
+      --surface-2: #171d23;
+      --surface-3: #1d252d;
+      --line: #29333c;
+      --line-strong: #43515d;
+      --text: #eef2f5;
+      --text-2: #b6c0c8;
+      --muted: #7e8a95;
+      --cyan: #67c8dc;
+      --green: #61d0a5;
+      --amber: #e7bb68;
+      --red: #ec7b82;
+      --blue: #83aef0;
+      --radius: 6px;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-width: 320px; min-height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+    body { font-size: 13px; line-height: 1.45; letter-spacing: 0; }
+    button, input, select, textarea { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+
+    .app { min-height: 100vh; display: grid; grid-template-columns: 216px minmax(0, 1fr); }
+    .sidebar { display: flex; flex-direction: column; min-height: 100vh; border-right: 1px solid var(--line); background: #0d1115; }
+    .brand { display: flex; align-items: center; gap: 10px; height: 62px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+    .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid rgba(103, 200, 220, .45); border-radius: 5px; color: var(--cyan); background: rgba(103, 200, 220, .1); font-family: var(--mono); font-weight: 800; font-size: 11px; }
+    .brand strong { display: block; font-size: 14px; }
+    .brand small { display: block; color: var(--muted); font-size: 10px; }
+    .nav { display: grid; gap: 3px; padding: 16px 10px; }
+    .nav button { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 1px solid transparent; border-radius: 5px; color: var(--text-2); background: transparent; text-align: left; }
+    .nav button:hover { color: var(--text); background: var(--surface-2); }
+    .nav button.active { border-color: var(--line-strong); color: var(--text); background: var(--surface-3); }
+    .nav .mark { width: 18px; color: var(--muted); font-family: var(--mono); font-size: 10px; text-align: center; }
+    .nav button.active .mark { color: var(--cyan); }
+    .sidebar-note { margin: auto 16px 16px; padding: 11px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .sidebar-note strong { display: block; margin-bottom: 5px; color: var(--text-2); font-size: 11px; }
+
+    .content { min-width: 0; }
+    .topbar { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; padding: 0 26px; border-bottom: 1px solid var(--line); background: #0d1115; }
+    .topbar h1 { margin: 0; font-size: 18px; font-weight: 700; }
+    .topbar p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+    .top-actions { display: flex; align-items: center; gap: 9px; }
+    .state { display: inline-flex; align-items: center; gap: 7px; min-height: 29px; padding: 0 10px; border: 1px solid rgba(97, 208, 165, .35); border-radius: 5px; color: var(--green); background: rgba(97, 208, 165, .08); white-space: nowrap; font-size: 11px; }
+    .state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .icon-button, .button { min-height: 32px; border: 1px solid var(--line); border-radius: 5px; color: var(--text-2); background: var(--surface-2); }
+    .icon-button { width: 32px; padding: 0; }
+    .icon-button:hover, .button:hover { border-color: var(--line-strong); color: var(--text); }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; }
+    .button.primary { border-color: rgba(103, 200, 220, .5); color: var(--cyan); background: rgba(103, 200, 220, .1); }
+    .button.danger { color: var(--red); }
+
+    main { width: min(1480px, 100%); margin: 0 auto; padding: 22px 26px 44px; }
+    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+    .kpi { min-height: 84px; padding: 13px 15px; border-right: 1px solid var(--line); }
+    .kpi:last-child { border-right: 0; }
+    .kpi label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .kpi strong { display: block; margin-top: 7px; font-size: 17px; }
+    .kpi span { display: block; margin-top: 3px; color: var(--text-2); font-size: 11px; }
+    .cyan { color: var(--cyan); } .green { color: var(--green); } .amber { color: var(--amber); } .red { color: var(--red); } .blue { color: var(--blue); }
+
+    .workspace { margin-top: 17px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+    .workspace-bar { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 54px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: #0e1317; }
+    .tabs { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: #0a0d10; }
+    .tab { min-height: 32px; padding: 0 13px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; }
+    .tab:hover { color: var(--text); background: var(--surface-2); }
+    .tab.active { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
+    .view { display: none; }
+    .view.active { display: block; }
+    .view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 17px 18px 12px; }
+    .view-head h2 { margin: 0; font-size: 15px; }
+    .view-head p { max-width: 860px; margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .view-tools { display: flex; align-items: center; gap: 8px; }
+    .select, .input, .textarea { min-height: 32px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface-2); }
+    .select, .input { padding: 0 9px; }
+    .textarea { width: 100%; min-height: 86px; padding: 9px; resize: vertical; }
+
+    .strategy-layout { display: grid; grid-template-columns: minmax(540px, 1.15fr) minmax(380px, .85fr); border-top: 1px solid var(--line); }
+    .strategy-list { min-width: 0; border-right: 1px solid var(--line); }
+    .section-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 0 17px; border-bottom: 1px solid var(--line); color: var(--text-2); }
+    .section-caption small { color: var(--muted); font-size: 10px; }
+    .strategy-row { display: grid; grid-template-columns: minmax(150px, 1.2fr) 92px 112px 92px 74px; gap: 10px; align-items: center; width: 100%; min-height: 74px; padding: 10px 17px; border: 0; border-bottom: 1px solid var(--line); color: var(--text); background: transparent; text-align: left; }
+    .strategy-row:hover { background: var(--surface-2); }
+    .strategy-row.selected { background: rgba(103, 200, 220, .08); box-shadow: inset 3px 0 0 var(--cyan); }
+    .strategy-row strong { display: block; font-size: 12px; }
+    .strategy-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .mono { font-family: var(--mono); }
+    .pill { display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); background: var(--surface-2); font-size: 10px; white-space: nowrap; }
+    .pill.green { border-color: rgba(97, 208, 165, .35); color: var(--green); background: rgba(97, 208, 165, .08); }
+    .pill.amber { border-color: rgba(231, 187, 104, .35); color: var(--amber); background: rgba(231, 187, 104, .08); }
+    .pill.red { border-color: rgba(236, 123, 130, .35); color: var(--red); background: rgba(236, 123, 130, .08); }
+    .chain-list { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chain-list .pill { min-height: 19px; padding: 0 5px; font-size: 9px; }
+    .drawer { min-width: 0; background: #0e1317; }
+    .drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; min-height: 78px; padding: 17px 18px 12px; border-bottom: 1px solid var(--line); }
+    .drawer-head h3 { margin: 0; font-size: 16px; }
+    .drawer-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .drawer-content { padding: 15px 18px 18px; }
+    .drawer-tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--line); }
+    .drawer-tab { min-height: 32px; padding: 0 0 8px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 11px; }
+    .drawer-tab.active { border-bottom-color: var(--cyan); color: var(--text); }
+    .drawer-panel { padding-top: 14px; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+    .field { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+    .field.full { grid-column: 1 / -1; }
+    .check-grid { display: flex; flex-wrap: wrap; gap: 7px; }
+    .check { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); background: var(--surface-2); font-size: 10px; }
+    .check input { accent-color: var(--cyan); }
+    .drawer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 17px; padding-top: 13px; border-top: 1px solid var(--line); }
+    .drawer-footer small { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+    .table-wrap { overflow-x: auto; border-top: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+    th { color: var(--muted); background: #0e1317; font-size: 10px; font-weight: 600; }
+    td { color: var(--text-2); }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.selected { background: rgba(103, 200, 220, .07); }
+    .address { max-width: 190px; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-family: var(--mono); }
+    .resolution-detail { display: grid; grid-template-columns: minmax(0, 1fr) 310px; border-top: 1px solid var(--line); }
+    .detail-main { padding: 16px 18px 20px; }
+    .detail-side { padding: 16px; border-left: 1px solid var(--line); background: #0e1317; }
+    .detail-main h3, .detail-side h3 { margin: 0; font-size: 12px; color: var(--text-2); }
+    .detail-main .lead { margin-top: 8px; color: var(--text); font-size: 14px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+    .meta { min-height: 51px; padding: 8px 9px; border-left: 2px solid var(--line-strong); background: var(--surface-2); }
+    .meta label { display: block; color: var(--muted); font-size: 9px; }
+    .meta span { display: block; margin-top: 4px; color: var(--text); font-family: var(--mono); font-size: 10px; overflow-wrap: anywhere; }
+    .reason-list { display: grid; gap: 6px; margin-top: 11px; }
+    .reason { display: flex; justify-content: space-between; gap: 10px; padding: 8px 9px; border: 1px solid var(--line); color: var(--text-2); background: var(--surface-2); font-size: 10px; }
+    .reason b { color: var(--amber); font-family: var(--mono); font-size: 9px; }
+
+    .screen-layout { display: grid; grid-template-columns: minmax(300px, .75fr) minmax(580px, 1.25fr); border-top: 1px solid var(--line); }
+    .screen-form { padding: 17px; border-right: 1px solid var(--line); }
+    .screen-form h3, .screen-results h3 { margin: 0; font-size: 13px; }
+    .screen-form p { margin: 5px 0 14px; color: var(--muted); font-size: 11px; }
+    .screen-form .field + .field { margin-top: 11px; }
+    .screen-form .button { margin-top: 13px; }
+    .screen-results { min-width: 0; padding-bottom: 20px; }
+    .screen-results-head { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 17px; border-bottom: 1px solid var(--line); }
+    .screen-result { display: grid; grid-template-columns: minmax(130px, 1fr) repeat(3, 82px) 126px; gap: 10px; align-items: center; min-height: 62px; padding: 9px 17px; border-bottom: 1px solid var(--line); }
+    .screen-result strong { font-size: 11px; }
+    .screen-result small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+    .metric { color: var(--text-2); font-family: var(--mono); font-size: 10px; }
+    .metric label { display: block; margin-bottom: 3px; color: var(--muted); font-family: inherit; font-size: 9px; }
+
+    .api-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(330px, .8fr); border-top: 1px solid var(--line); }
+    .api-list { padding-bottom: 12px; }
+    .api-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 108px; gap: 12px; align-items: center; min-height: 49px; padding: 8px 17px; border-bottom: 1px solid var(--line); }
+    .method { color: var(--cyan); font-family: var(--mono); font-size: 10px; font-weight: 700; }
+    .method.get { color: var(--green); } .method.post { color: var(--amber); } .method.put { color: var(--blue); } .method.delete { color: var(--red); }
+    .api-path { color: var(--text); font-family: var(--mono); font-size: 10px; overflow-wrap: anywhere; }
+    .api-note { color: var(--muted); font-size: 10px; }
+    .api-side { padding: 17px; border-left: 1px solid var(--line); background: #0e1317; }
+    .api-side h3 { margin: 0; font-size: 13px; }
+    .api-side p { margin: 5px 0 13px; color: var(--muted); font-size: 11px; }
+    .contract { display: grid; gap: 7px; }
+    .contract div { padding: 9px 10px; border: 1px solid var(--line); background: var(--surface-2); }
+    .contract strong { display: block; color: var(--text-2); font-family: var(--mono); font-size: 10px; }
+    .contract span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .deprecated { margin-top: 15px; padding: 10px; border-left: 2px solid var(--red); color: var(--text-2); background: rgba(236, 123, 130, .06); font-size: 10px; }
+    .deprecated code { display: block; margin-top: 6px; color: var(--red); font-family: var(--mono); font-size: 9px; }
+    .toast { position: fixed; right: 20px; bottom: 20px; z-index: 50; max-width: 330px; padding: 10px 12px; border: 1px solid rgba(103, 200, 220, .4); border-radius: 5px; color: var(--text); background: #182127; box-shadow: 0 8px 24px rgba(0, 0, 0, .28); }
+
+    @media (max-width: 1100px) { .app { grid-template-columns: 70px minmax(0, 1fr); } .brand { justify-content: center; padding: 0; } .brand-copy, .nav button span:not(.mark), .sidebar-note { display: none; } .nav button { justify-content: center; padding: 0; } .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .kpi:nth-child(3) { border-right: 0; } .kpi:nth-child(n + 4) { border-top: 1px solid var(--line); } .strategy-layout, .screen-layout, .api-layout { grid-template-columns: 1fr; } .strategy-list, .screen-form { border-right: 0; border-bottom: 1px solid var(--line); } .drawer, .api-side { border-left: 0; } }
+    @media (max-width: 760px) { .topbar { align-items: flex-start; flex-direction: column; padding: 14px 16px; } .top-actions { width: 100%; justify-content: space-between; } main { padding: 16px 12px 30px; } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpi:nth-child(3) { border-right: 1px solid var(--line); } .kpi:nth-child(n + 3) { border-top: 1px solid var(--line); } .workspace-bar, .view-head { align-items: flex-start; flex-direction: column; } .tabs { width: 100%; overflow-x: auto; } .tab { flex: 1 0 auto; } .strategy-layout { overflow-x: auto; } .strategy-list, .drawer { min-width: 680px; } .screen-layout { overflow-x: auto; } .screen-form, .screen-results { min-width: 560px; } .resolution-detail { grid-template-columns: 1fr; } .detail-side { border-top: 1px solid var(--line); border-left: 0; } .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .api-row { grid-template-columns: 67px minmax(0, 1fr); } .api-note { grid-column: 2; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">XB</div><div class="brand-copy"><strong>XBOT</strong><small>运营控制台</small></div></div>
+      <nav class="nav" aria-label="主导航">
+        <button type="button"><span class="mark">DB</span><span>总览</span></button>
+        <button type="button"><span class="mark">WL</span><span>白名单</span></button>
+        <button type="button" class="active"><span class="mark">K</span><span>KOL 与动态策略</span></button>
+        <button type="button"><span class="mark">SG</span><span>信号日志</span></button>
+        <button type="button"><span class="mark">PS</span><span>持仓</span></button>
+        <button type="button"><span class="mark">ST</span><span>设置</span></button>
+      </nav>
+      <div class="sidebar-note"><strong>P20 页面边界</strong>账号策略、解析审计、账号清洗统一放在 KOL 工作区。交易执行仍由 P19 链路负责。</div>
+    </aside>
+
+    <div class="content">
+      <header class="topbar">
+        <div><h1>KOL 与动态策略</h1><p>按账号管理关键词触发，所有变更保留 Revision</p></div>
+        <div class="top-actions"><span class="state"><i></i>P20 开关已关闭</span><button class="icon-button" type="button" id="refresh" title="刷新数据">&#8635;</button></div>
+      </header>
+
+      <main>
+        <section class="kpis" aria-label="P20 状态摘要">
+          <div class="kpi"><label>Dynamic Worker</label><strong class="green">运行中</strong><span>队列空闲，500ms 轮询</span></div>
+          <div class="kpi"><label>Paper Worker</label><strong class="green">运行中</strong><span>到期收尾每 60 秒</span></div>
+          <div class="kpi"><label>Paper 验收</label><strong class="amber">2 / 7 天</strong><span>@theunipcs 当前 Revision 4</span></div>
+          <div class="kpi"><label>Live Approval</label><strong class="red">未授权</strong><span>需要 7 天 Paper + 明确确认</span></div>
+          <div class="kpi"><label>解析状态</label><strong class="cyan">18 条</strong><span>12 resolved / 4 rejected / 2 ambiguous</span></div>
+        </section>
+
+        <section class="workspace">
+          <div class="workspace-bar">
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-view="strategies" role="tab">账号策略</button>
+              <button class="tab" data-view="resolutions" role="tab">解析审计</button>
+              <button class="tab" data-view="screening" role="tab">账号清洗</button>
+              <button class="tab" data-view="api" role="tab">API 契约</button>
+            </div>
+            <span class="pill">当前页面只读预览</span>
+          </div>
+
+          <section class="view active" id="view-strategies">
+            <div class="view-head"><div><h2>账号级 Dynamic Policy</h2><p>一个 KOL 一条策略，链、词条、资金、离场和解析选项都进入同一个 Revision。</p></div><div class="view-tools"><select class="select"><option>全部状态</option><option>Record</option><option>Paper</option><option>Live</option><option>暂停</option></select><button class="button primary" type="button" id="new-policy">＋ 新建策略</button></div></div>
+            <div class="strategy-layout">
+              <div class="strategy-list">
+                <div class="section-caption"><span>已配置账号</span><small>选择账号后在右侧编辑</small></div>
+                <button class="strategy-row selected" type="button" data-policy="vlad"><span><strong>@vladtenev</strong><small>Robinhood 生态 · Revision 4</small></span><span class="pill amber">Paper</span><span class="chain-list"><i class="pill">ROBIN</i><i class="pill">ETH</i></span><span class="mono">2.00 / 日</span><span class="pill green">运行</span></button>
+                <button class="strategy-row" type="button" data-policy="unipcs"><span><strong>@theunipcs</strong><small>跨链 · Revision 2</small></span><span class="pill">Record</span><span class="chain-list"><i class="pill">SOL</i><i class="pill">BSC</i><i class="pill">BASE</i></span><span class="mono">仅记录</span><span class="pill green">运行</span></button>
+                <button class="strategy-row" type="button" data-policy="pons"><span><strong>@ponsdotfamily</strong><small>项目账号 · Revision 1</small></span><span class="pill red">暂停</span><span class="chain-list"><i class="pill">ROBIN</i></span><span class="mono">--</span><span class="pill">暂停</span></button>
+                <button class="strategy-row" type="button" data-policy="cz"><span><strong>@cz_binance</strong><small>待建立 Paper · Revision 1</small></span><span class="pill">Record</span><span class="chain-list"><i class="pill">BSC</i><i class="pill">SOL</i></span><span class="mono">仅记录</span><span class="pill amber">待验收</span></button>
+              </div>
+              <aside class="drawer" aria-label="策略详情">
+                <div class="drawer-head"><div><h3 id="policy-title">@vladtenev</h3><p id="policy-subtitle">Paper · Robinhood / ETH · 最后更新 2 分钟前</p></div><span class="pill amber" id="policy-mode">Paper</span></div>
+                <div class="drawer-content">
+                  <div class="drawer-tabs"><button class="drawer-tab active" type="button">触发规则</button><button class="drawer-tab" type="button">资金与风控</button><button class="drawer-tab" type="button">离场策略</button><button class="drawer-tab" type="button">解析与授权</button></div>
+                  <div class="drawer-panel">
+                    <div class="field-grid">
+                      <label class="field"><span>运行阶段</span><select class="select" id="mode"><option>Record</option><option selected>Paper</option><option>Live</option><option>暂停</option></select></label>
+                      <label class="field"><span>允许事件</span><select class="select"><option>原创帖 + Quote</option><option>仅原创帖</option><option>原创帖 + 回复</option></select></label>
+                      <div class="field full"><span>允许链</span><div class="check-grid"><label class="check"><input type="checkbox" checked> Robinhood</label><label class="check"><input type="checkbox" checked> ETH</label><label class="check"><input type="checkbox"> BSC</label><label class="check"><input type="checkbox"> SOL</label></div></div>
+                      <div class="field full"><span>词条类型</span><div class="check-grid"><label class="check"><input type="checkbox" checked> 完整 CA</label><label class="check"><input type="checkbox" checked> $Cashtag</label><label class="check"><input type="checkbox" checked> #Hashtag</label><label class="check"><input type="checkbox"> 批准名称</label></div></div>
+                      <label class="field"><span>单笔金额</span><input class="input" value="0.20 ETH"></label>
+                      <label class="field"><span>每日额度</span><input class="input" value="2.00 ETH"></label>
+                    </div>
+                    <div class="drawer-footer"><small>Revision 4 · context 4e91...c2a8</small><button class="button primary" type="button" id="save-policy">保存策略</button></div>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-resolutions">
+            <div class="view-head"><div><h2>Dynamic Resolution 审计</h2><p>查看每条帖子如何从词条、候选 CA、GMGN 证据收敛到一个版本。没有唯一结果就保持拒绝或歧义。</p></div><div class="view-tools"><select class="select"><option>全部结果</option><option>已解析</option><option>已拒绝</option><option>歧义</option></select><button class="button" type="button">&#8635; 刷新</button></div></div>
+            <div class="table-wrap"><table><thead><tr><th>时间</th><th>账号</th><th>命中词条</th><th>候选</th><th>最终 CA</th><th>状态</th><th>原因</th></tr></thead><tbody id="resolution-rows"><tr class="selected" data-resolution="pons"><td class="mono">08:49:44</td><td>@ponsdotfamily</td><td>$PONS</td><td>1</td><td class="address">0x39db...c4571</td><td><span class="pill green">resolved</span></td><td>AUTHOR_FULL_CA</td></tr><tr data-resolution="biyou"><td class="mono">08:45:12</td><td>@theunipcs</td><td>#币有</td><td>2</td><td class="address">--</td><td><span class="pill amber">ambiguous</span></td><td>AMBIGUOUS_VARIANT</td></tr><tr data-resolution="fake"><td class="mono">08:42:06</td><td>@cz_binance</td><td>$TOKEN</td><td>0</td><td class="address">--</td><td><span class="pill red">rejected</span></td><td>PROVIDER_UNKNOWN</td></tr></tbody></table></div>
+            <div class="resolution-detail"><div class="detail-main"><h3>当前解析详情</h3><div class="lead" id="resolution-title">$PONS → Robinhood Chain / PONS</div><div class="meta-grid"><div class="meta"><label>Intent</label><span>buy_direct</span></div><div class="meta"><label>Confidence</label><span class="green">verified</span></div><div class="meta"><label>Provider</label><span>GMGN + 6551</span></div><div class="meta"><label>Mode</label><span>paper</span></div></div><h3 style="margin-top:17px">候选证据</h3><div class="reason-list" id="candidate-evidence"><div class="reason"><span>完整 CA 与作者内容直接一致</span><b>AUTHOR_FULL_CA</b></div><div class="reason"><span>GMGN Token Info / Pool 可读</span><b>PROVIDER_VERIFIED</b></div><div class="reason"><span>流动性与可交易状态满足策略要求</span><b>TRADABLE</b></div></div></div><aside class="detail-side"><h3>链路时间</h3><div class="reason-list"><div class="reason"><span>帖子接收 → 内容提取</span><b>82ms</b></div><div class="reason"><span>候选缓存 → GMGN 核验</span><b>214ms</b></div><div class="reason"><span>解析完成 → 策略授权</span><b>37ms</b></div><div class="reason"><span>当前结果</span><b class="green">继续 Paper</b></div></div></aside></div>
+          </section>
+
+          <section class="view" id="view-screening">
+            <div class="view-head"><div><h2>账号清洗与历史回测</h2><p>输入 1 到 50 个 X 账号，工具只研究和统计，不创建 Watch、不自动升级交易。</p></div><span class="pill blue">6551 → GMGN Kline</span></div>
+            <div class="screen-layout"><div class="screen-form"><h3>创建清洗任务</h3><p>任务会按账号逐个执行，结果可稍后在此查看。历史时间范围属于研究参数，不进入实时策略。</p><label class="field"><span>X 账号</span><textarea class="textarea" id="screen-input" placeholder="@account1&#10;@account2&#10;@account3"></textarea></label><div class="field"><span>样本时间</span><select class="select"><option>最近 30 天</option><option>最近 90 天</option><option>自定义时间</option></select></div><div class="field"><span>研究链范围</span><div class="check-grid"><label class="check"><input type="checkbox" checked> 全部支持链</label><label class="check"><input type="checkbox"> 仅 BSC</label></div></div><button class="button primary" type="button" id="start-screening">开始清洗</button></div><div class="screen-results"><div class="screen-results-head"><h3>最近任务结果</h3><span class="pill" id="screen-status">最近完成 · 4 个账号</span></div><div class="screen-result"><span><strong>@theunipcs</strong><small>样本 38 帖 · 建议 Record</small></span><span class="metric"><label>直接意图</label>28.9%</span><span class="metric"><label>CA 解析</label>92.1%</span><span class="metric"><label>可执行胜率</label>63.6%</span><span class="pill green">approve_for_record</span></div><div class="screen-result"><span><strong>@vladtenev</strong><small>样本 24 帖 · 建议 Paper</small></span><span class="metric"><label>直接意图</label>41.7%</span><span class="metric"><label>CA 解析</label>87.5%</span><span class="metric"><label>可执行胜率</label>70.0%</span><span class="pill amber">watch</span></div><div class="screen-result"><span><strong>@cz_binance</strong><small>样本 18 帖 · 数据不足</small></span><span class="metric"><label>直接意图</label>16.7%</span><span class="metric"><label>CA 解析</label>50.0%</span><span class="metric"><label>可执行胜率</label>--</span><span class="pill">insufficient_data</span></div></div></div>
+          </section>
+
+          <section class="view" id="view-api">
+            <div class="view-head"><div><h2>Canonical API 契约</h2><p>页面只调用这一套资源路径；P20 不重复实现买入、Quote、Swap 或离场接口，交易继续复用 P19。</p></div><span class="pill green">当前实现</span></div>
+            <div class="api-layout"><div class="api-list"><div class="api-row"><b class="method get">GET</b><span class="api-path">/api/dynamic-signal/status</span><span class="api-note">Worker / Feature flags</span></div><div class="api-row"><b class="method get">GET</b><span class="api-path">/api/dynamic-signal/policies</span><span class="api-note">策略列表</span></div><div class="api-row"><b class="method put">PUT</b><span class="api-path">/api/dynamic-signal/policies/:kolId</span><span class="api-note">创建或更新策略</span></div><div class="api-row"><b class="method post">POST</b><span class="api-path">/api/dynamic-signal/policies/:id/approve-live</span><span class="api-note">显式授权</span></div><div class="api-row"><b class="method post">POST</b><span class="api-path">/api/dynamic-signal/policies/:id/revoke-live</span><span class="api-note">撤销授权</span></div><div class="api-row"><b class="method get">GET</b><span class="api-path">/api/dynamic-signal/resolutions[/:id]</span><span class="api-note">列表 / 详情</span></div><div class="api-row"><b class="method get">GET</b><span class="api-path">/api/dynamic-signal/paper-sessions</span><span class="api-note">Paper 验收</span></div><div class="api-row"><b class="method get">GET</b><span class="api-path">/api/actor-screening[/:id]</span><span class="api-note">清洗任务 / 详情</span></div><div class="api-row"><b class="method post">POST</b><span class="api-path">/api/actor-screening</span><span class="api-note">创建清洗任务</span></div><div class="api-row"><b class="method post">POST</b><span class="api-path">/api/actor-screening/:id/retry</span><span class="api-note">重试失败账号</span></div></div><aside class="api-side"><h3>统一响应</h3><p>所有新 P20 API 使用同一 envelope，错误包含稳定 code，页面不解析自由文本判断状态。</p><div class="contract"><div><strong>{ ok: true, data }</strong><span>成功结果</span></div><div><strong>{ ok: false, error, code }</strong><span>可处理错误</span></div><div><strong>GET / list · POST / create · PUT / update</strong><span>资源操作统一语义</span></div></div><div class="deprecated">旧文档路径不再新增兼容别名。迁移时只改调用方，并在发布前做路由清单检查。<code>/api/dynamic-signals/*</code><code>/api/kol/:id/dynamic-policy/*</code><code>/api/actor-screening/runs/*</code></div></aside></div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+  <script>
+    const tabs = [...document.querySelectorAll('.tab')];
+    const views = [...document.querySelectorAll('.view')];
+    const toast = (message) => { const node = document.getElementById('toast'); node.textContent = message; node.hidden = false; window.clearTimeout(window.__toastTimer); window.__toastTimer = window.setTimeout(() => { node.hidden = true; }, 2400); };
+    tabs.forEach((tab) => tab.addEventListener('click', () => { tabs.forEach((item) => item.classList.toggle('active', item === tab)); views.forEach((view) => view.classList.toggle('active', view.id === `view-${tab.dataset.view}`)); }));
+    const policyCopy = {
+      vlad: ['@vladtenev', 'Paper · Robinhood / ETH · 最后更新 2 分钟前', 'Paper'],
+      unipcs: ['@theunipcs', 'Record · SOL / BSC / BASE · 最后更新 9 分钟前', 'Record'],
+      pons: ['@ponsdotfamily', '暂停 · Robinhood · 最后更新 1 小时前', '暂停'],
+      cz: ['@cz_binance', 'Record · BSC / SOL · 最后更新 1 天前', 'Record']
+    };
+    document.querySelectorAll('.strategy-row').forEach((row) => row.addEventListener('click', () => { document.querySelectorAll('.strategy-row').forEach((item) => item.classList.toggle('selected', item === row)); const copy = policyCopy[row.dataset.policy]; document.getElementById('policy-title').textContent = copy[0]; document.getElementById('policy-subtitle').textContent = copy[1]; document.getElementById('policy-mode').textContent = copy[2]; }));
+    document.querySelectorAll('.drawer-tab').forEach((tab) => tab.addEventListener('click', () => { document.querySelectorAll('.drawer-tab').forEach((item) => item.classList.toggle('active', item === tab)); toast(`已切换到“${tab.textContent}”分区`); }));
+    document.getElementById('save-policy').addEventListener('click', () => toast('预览：策略将通过 PUT /api/dynamic-signal/policies/:kolId 保存，并生成新 Revision'));
+    document.getElementById('new-policy').addEventListener('click', () => toast('预览：从已核验的 KOL 列表选择账号后创建唯一策略'));
+    document.getElementById('refresh').addEventListener('click', () => toast('预览：并行读取 status、policies、paper-sessions 和 screening'));
+    const evidence = { pons: ['完整 CA 与作者内容直接一致', 'GMGN Token Info / Pool 可读', '流动性与可交易状态满足策略要求'], biyou: ['原盘与 Flap 重启盘均为真实候选', '帖子未提供平台或 CA 强锚点', '保持 ambiguous，不进入交易'], fake: ['候选 Provider 字段未知', '无法确认可交易性', '失败关闭，不猜测 Symbol 对应 CA'] };
+    document.querySelectorAll('#resolution-rows tr').forEach((row) => row.addEventListener('click', () => { document.querySelectorAll('#resolution-rows tr').forEach((item) => item.classList.toggle('selected', item === row)); const key = row.dataset.resolution; document.getElementById('resolution-title').textContent = key === 'pons' ? '$PONS → Robinhood Chain / PONS' : key === 'biyou' ? '#币有 → 候选未消歧' : '$TOKEN → 未形成可交易候选'; document.getElementById('candidate-evidence').innerHTML = evidence[key].map((item) => `<div class="reason"><span>${item}</span><b>${key === 'pons' ? 'EVIDENCE' : 'BLOCKED'}</b></div>`).join(''); }));
+    document.getElementById('start-screening').addEventListener('click', () => { const input = document.getElementById('screen-input'); const count = input.value.split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean).length; if (!count) return toast('请先输入至少一个 X 账号'); document.getElementById('screen-status').textContent = `已创建任务 · ${count} 个账号 · pending`; toast('预览：任务已提交 POST /api/actor-screening，后台按账号逐个执行'); });
+  </script>
+</body>
+</html>

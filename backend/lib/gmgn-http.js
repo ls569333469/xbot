@@ -259,6 +259,12 @@ function getTokenTopHolders(chain, address, extra = {}, options = {}) {
   }, null, options);
 }
 
+function getTokenKline(chain, address, resolution, from, to, options = {}) {
+  return request('GET', '/v1/market/token_kline', {
+    chain, address, resolution, from, to
+  }, null, options);
+}
+
 function getWalletTokenBalance(chain, walletAddress, tokenAddress, options = {}) {
   return request('GET', '/v1/user/wallet_token_balance', {
     chain,
@@ -380,6 +386,7 @@ module.exports = {
   getMarketHotSearches,
   getMarketTrenches,
   getTokenTopHolders,
+  getTokenKline,
   getWalletTokenBalance,
   getWalletActivity,
   quoteOrder,

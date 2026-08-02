@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XBOT 策略中心预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090c0f;
+      --surface: #11161b;
+      --surface-2: #171e24;
+      --surface-3: #202a32;
+      --line: #29343d;
+      --line-strong: #455560;
+      --text: #edf2f5;
+      --text-2: #b8c2ca;
+      --muted: #7d8993;
+      --cyan: #68c8dc;
+      --green: #62d0a3;
+      --amber: #e6bb6c;
+      --red: #e97880;
+      --blue: #83aef0;
+      --radius: 6px;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-width: 320px; min-height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+    body { font-size: 13px; line-height: 1.45; letter-spacing: 0; }
+    button, input, select, textarea { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+
+    .app { min-height: 100vh; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+    .sidebar { display: flex; flex-direction: column; min-height: 100vh; border-right: 1px solid var(--line); background: #0d1115; }
+    .brand { display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+    .brand-mark { width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid rgba(104, 200, 220, .5); border-radius: 5px; color: var(--cyan); background: rgba(104, 200, 220, .1); font-family: var(--mono); font-size: 11px; font-weight: 800; }
+    .brand strong { display: block; font-size: 14px; }
+    .brand small { display: block; color: var(--muted); font-size: 10px; }
+    .nav { display: grid; gap: 3px; padding: 16px 10px; }
+    .nav button { display: flex; align-items: center; gap: 10px; min-height: 37px; padding: 0 10px; border: 1px solid transparent; border-radius: 5px; color: var(--text-2); background: transparent; text-align: left; }
+    .nav button:hover { color: var(--text); background: var(--surface-2); }
+    .nav button.active { border-color: var(--line-strong); color: var(--text); background: var(--surface-3); }
+    .nav .icon { width: 20px; color: var(--muted); font-family: var(--mono); font-size: 10px; text-align: center; }
+    .nav button.active .icon { color: var(--cyan); }
+    .sidebar-foot { margin: auto 16px 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+    .sidebar-foot strong { display: block; margin-bottom: 4px; color: var(--text-2); font-size: 11px; }
+
+    .content { min-width: 0; }
+    .topbar { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 18px; padding: 0 27px; border-bottom: 1px solid var(--line); background: #0d1115; }
+    .topbar h1 { margin: 0; font-size: 18px; }
+    .topbar p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .status { display: inline-flex; align-items: center; gap: 7px; min-height: 29px; padding: 0 10px; border: 1px solid rgba(98, 208, 163, .35); border-radius: 5px; color: var(--green); background: rgba(98, 208, 163, .08); font-size: 11px; white-space: nowrap; }
+    .status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .icon-button, .button, .select, .input { min-height: 33px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface-2); }
+    .icon-button { width: 32px; padding: 0; color: var(--text-2); }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; color: var(--text-2); }
+    .button:hover, .icon-button:hover { border-color: var(--line-strong); color: var(--text); }
+    .button.primary { border-color: rgba(104, 200, 220, .5); color: var(--cyan); background: rgba(104, 200, 220, .1); }
+    .button.subtle { background: transparent; }
+    .select, .input { padding: 0 9px; }
+
+    main { width: min(1450px, 100%); margin: 0 auto; padding: 22px 27px 46px; }
+    .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+    .summary-item { min-height: 82px; padding: 13px 15px; border-right: 1px solid var(--line); }
+    .summary-item:last-child { border-right: 0; }
+    .summary label { display: block; color: var(--muted); font-size: 10px; }
+    .summary strong { display: block; margin-top: 6px; font-size: 17px; }
+    .summary span { display: block; margin-top: 3px; color: var(--text-2); font-size: 10px; }
+    .cyan { color: var(--cyan); } .green { color: var(--green); } .amber { color: var(--amber); } .red { color: var(--red); } .blue { color: var(--blue); }
+
+    .workspace { margin-top: 17px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+    .workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; min-height: 56px; padding: 9px 13px; border-bottom: 1px solid var(--line); background: #0e1317; }
+    .tabs { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: #090c0f; }
+    .tab { min-height: 33px; padding: 0 15px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; }
+    .tab:hover { color: var(--text); background: var(--surface-2); }
+    .tab.active { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
+    .view { display: none; }
+    .view.active { display: block; }
+    .view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 17px 18px 13px; }
+    .view-head h2 { margin: 0; font-size: 15px; }
+    .view-head p { max-width: 850px; margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .view-actions { display: flex; align-items: center; gap: 8px; }
+
+    .strategy-layout { display: grid; grid-template-columns: minmax(280px, .42fr) minmax(610px, 1fr); border-top: 1px solid var(--line); }
+    .strategy-list { min-width: 0; border-right: 1px solid var(--line); }
+    .list-head { display: flex; align-items: center; justify-content: space-between; min-height: 45px; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--text-2); }
+    .list-head small { color: var(--muted); font-size: 10px; }
+    .strategy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 80px; padding: 11px 16px; border: 0; border-bottom: 1px solid var(--line); color: var(--text); background: transparent; text-align: left; }
+    .strategy-row:hover { background: var(--surface-2); }
+    .strategy-row.selected { background: rgba(104, 200, 220, .08); box-shadow: inset 3px 0 0 var(--cyan); }
+    .strategy-row strong { display: block; font-size: 12px; }
+    .strategy-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .strategy-meta { display: grid; justify-items: end; gap: 5px; }
+    .pill { display: inline-flex; align-items: center; min-height: 21px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); background: var(--surface-2); font-size: 10px; white-space: nowrap; }
+    .pill.green { border-color: rgba(98, 208, 163, .35); color: var(--green); background: rgba(98, 208, 163, .08); }
+    .pill.amber { border-color: rgba(230, 187, 108, .35); color: var(--amber); background: rgba(230, 187, 108, .08); }
+    .pill.red { border-color: rgba(233, 120, 128, .35); color: var(--red); background: rgba(233, 120, 128, .08); }
+    .pill.blue { border-color: rgba(131, 174, 240, .35); color: var(--blue); background: rgba(131, 174, 240, .08); }
+    .editor { min-width: 0; background: #0f1418; }
+    .editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; min-height: 83px; padding: 17px 18px 13px; border-bottom: 1px solid var(--line); }
+    .editor-head h3 { margin: 0; font-size: 16px; }
+    .editor-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .editor-body { padding: 15px 18px 18px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--text-2); font-size: 12px; }
+    .section-title small { color: var(--muted); font-size: 10px; }
+    .section-block + .section-block { margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--line); }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+    .field { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+    .field.full { grid-column: 1 / -1; }
+    .check-list { display: flex; flex-wrap: wrap; gap: 7px; }
+    .check { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text-2); background: var(--surface-2); font-size: 10px; }
+    .check input { accent-color: var(--cyan); }
+    .conflict { display: flex; gap: 8px; margin-top: 13px; padding: 9px 10px; border-left: 2px solid var(--amber); color: var(--text-2); background: rgba(230, 187, 108, .07); font-size: 10px; }
+    .editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 17px; padding-top: 13px; border-top: 1px solid var(--line); }
+    .editor-foot small { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+    .new-layout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0 18px 20px; }
+    .new-card { min-height: 190px; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); text-align: left; }
+    .new-card:hover { border-color: var(--line-strong); background: var(--surface-3); }
+    .new-card.selected { border-color: rgba(104, 200, 220, .55); box-shadow: inset 3px 0 0 var(--cyan); }
+    .new-card .symbol { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--cyan); background: rgba(104, 200, 220, .08); font-family: var(--mono); font-weight: 700; }
+    .new-card h3 { margin: 14px 0 5px; font-size: 13px; }
+    .new-card p { min-height: 50px; margin: 0; color: var(--muted); font-size: 10px; }
+    .new-card small { color: var(--text-2); font-size: 10px; }
+    .new-card.disabled { opacity: .58; cursor: not-allowed; }
+    .new-card.disabled:hover { border-color: var(--line); background: var(--surface-2); }
+    .new-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 0 18px 18px; }
+
+    .catalog { border-top: 1px solid var(--line); }
+    .catalog table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .catalog th, .catalog td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    .catalog th { color: var(--muted); background: #0e1317; font-size: 10px; font-weight: 600; }
+    .catalog td { color: var(--text-2); }
+    .catalog td:first-child { color: var(--text); font-family: var(--mono); }
+    .catalog-note { padding: 12px 18px 17px; color: var(--muted); font-size: 10px; }
+    .toast { position: fixed; right: 20px; bottom: 20px; z-index: 30; max-width: 360px; padding: 10px 12px; border: 1px solid rgba(104, 200, 220, .4); border-radius: 5px; color: var(--text); background: #182229; box-shadow: 0 8px 24px rgba(0, 0, 0, .3); }
+
+    @media (max-width: 1100px) { .app { grid-template-columns: 70px minmax(0, 1fr); } .brand { justify-content: center; padding: 0; } .brand-copy, .nav button span:not(.icon), .sidebar-foot { display: none; } .nav button { justify-content: center; padding: 0; } .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } .summary-item:nth-child(3) { border-right: 0; } .summary-item:nth-child(n + 4) { border-top: 1px solid var(--line); } .strategy-layout { grid-template-columns: 1fr; } .strategy-list { border-right: 0; border-bottom: 1px solid var(--line); } .new-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 720px) { .topbar { align-items: flex-start; flex-direction: column; padding: 14px 16px; } .top-actions { width: 100%; justify-content: space-between; } main { padding: 15px 11px 30px; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary-item:nth-child(3) { border-right: 1px solid var(--line); } .summary-item:nth-child(n + 3) { border-top: 1px solid var(--line); } .workspace-head, .view-head { align-items: flex-start; flex-direction: column; } .tabs { width: 100%; overflow-x: auto; } .tab { flex: 1 0 auto; } .strategy-layout, .new-layout, .catalog { overflow-x: auto; } .strategy-list, .editor { min-width: 670px; } .new-layout { grid-template-columns: repeat(3, 230px); } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">XB</div><div class="brand-copy"><strong>XBOT</strong><small>运营控制台</small></div></div>
+      <nav class="nav" aria-label="主导航">
+        <button type="button"><span class="icon">DB</span><span>总览</span></button>
+        <button type="button" class="active"><span class="icon">ST</span><span>策略中心</span></button>
+        <button type="button"><span class="icon">K</span><span>KOL 账号</span></button>
+        <button type="button"><span class="icon">SG</span><span>信号记录</span></button>
+        <button type="button"><span class="icon">PS</span><span>持仓</span></button>
+        <button type="button"><span class="icon">SY</span><span>设置</span></button>
+      </nav>
+      <div class="sidebar-foot"><strong>策略统一入口</strong>固定目标、动态账号和后续扩展策略都从策略中心创建。</div>
+    </aside>
+
+    <div class="content">
+      <header class="topbar"><div><h1>策略中心</h1><p>统一管理固定 CA、项目关系和动态账号策略</p></div><div class="top-actions"><span class="status"><i></i>P20 记录阶段</span><button class="icon-button" id="refresh" type="button" title="刷新">&#8635;</button></div></header>
+      <main>
+        <section class="summary"><div class="summary-item"><label>全部策略</label><strong>9</strong><span>固定 5 · 动态 4</span></div><div class="summary-item"><label>固定目标</label><strong class="cyan">5</strong><span>3 个固定 CA · 2 个项目</span></div><div class="summary-item"><label>动态账号</label><strong class="blue">4</strong><span>记录 2 · 模拟 2</span></div><div class="summary-item"><label>模拟验收</label><strong class="amber">2 / 7 天</strong><span>@theunipcs 版本 4</span></div><div class="summary-item"><label>实盘授权</label><strong class="red">0</strong><span>未开启动态实盘</span></div></section>
+
+        <section class="workspace">
+          <div class="workspace-head"><div class="tabs" role="tablist"><button class="tab active" data-view="fixed" type="button">固定 CA / 项目策略</button><button class="tab" data-view="dynamic" type="button">动态喊单策略</button><button class="tab" data-view="new" type="button">新增策略</button></div><span class="pill blue">一个统一入口</span></div>
+
+          <section class="view active" id="view-fixed">
+            <div class="view-head"><div><h2>固定 CA / 项目策略</h2><p>管理已经明确的 CA、未发币项目账号和生态互动。这里替代原来的“白名单”名称。</p></div><div class="view-actions"><select class="select"><option>全部状态</option><option>运行中</option><option>同步中</option><option>暂停</option></select><button class="button primary" id="new-fixed" type="button">＋ 新增固定策略</button></div></div>
+            <div class="strategy-layout"><div class="strategy-list"><div class="list-head"><span>固定目标列表</span><small>5 条策略</small></div><button class="strategy-row selected" data-strategy="pons" type="button"><span><strong>PONS · 固定 CA</strong><small>Robinhood · @ponsdotfamily</small></span><span class="strategy-meta"><i class="pill green">运行中</i><i class="pill">固定目标</i></span></button><button class="strategy-row" data-strategy="wood" type="button"><span><strong>WOOD · 项目策略</strong><small>BSC · 4 个项目账号</small></span><span class="strategy-meta"><i class="pill amber">同步中</i><i class="pill">项目关系</i></span></button><button class="strategy-row" data-strategy="tendies" type="button"><span><strong>TENDIES · 生态互动</strong><small>Robinhood · 生态账号 × 项目账号</small></span><span class="strategy-meta"><i class="pill green">运行中</i><i class="pill">互动关系</i></span></button></div><div class="editor"><div class="editor-head"><div><h3 id="fixed-title">PONS · 固定 CA 策略</h3><p id="fixed-subtitle">Robinhood · 0x39db...c4571 · 版本 3</p></div><span class="pill green">运行中</span></div><div class="editor-body"><div class="section-block"><div class="section-title"><span>触发配置</span><small>固定目标类型</small></div><div class="field-grid"><label class="field"><span>策略类型</span><select class="select"><option selected>固定 CA</option><option>未发币项目</option><option>生态互动</option></select></label><label class="field"><span>交易链</span><select class="select"><option selected>Robinhood 链</option><option>BSC</option><option>Solana</option></select></label><label class="field full"><span>目标 CA</span><input class="input" value="0x39db3a2bd333467115de45665cc57f813c4571"></label><div class="field full"><span>触发账号</span><div class="check-list"><label class="check"><input type="checkbox" checked> @ponsdotfamily</label><label class="check"><input type="checkbox"> @MEADGod</label></div></div></div></div><div class="section-block"><div class="section-title"><span>资金与离场</span><small>与动态策略统一字段</small></div><div class="field-grid"><label class="field"><span>单笔金额</span><input class="input" value="0.20 ETH"></label><label class="field"><span>每日额度</span><input class="input" value="2.00 ETH"></label><label class="field full"><span>离场模板</span><select class="select"><option>翻倍出本 + 分段止盈</option><option>固定止盈止损</option><option>自定义策略</option></select></label></div></div><div class="editor-foot"><small>版本 3 · 固定目标策略不需要动态解析</small><button class="button primary" id="save-fixed" type="button">保存固定策略</button></div></div></div></div>
+          </section>
+
+          <section class="view" id="view-dynamic">
+            <div class="view-head"><div><h2>动态喊单策略</h2><p>账号发帖后才解析 CA，适用于之前没有固定保存过的动态代币。动态策略不会修改固定目标策略。</p></div><div class="view-actions"><select class="select"><option>全部状态</option><option>模拟</option><option>记录</option><option>暂停</option></select><button class="button primary" id="new-dynamic" type="button">＋ 新增动态策略</button></div></div>
+            <div class="strategy-layout"><div class="strategy-list"><div class="list-head"><span>动态账号列表</span><small>4 条策略</small></div><button class="strategy-row selected" data-dynamic="vlad" type="button"><span><strong>@vladtenev</strong><small>Robinhood / ETH · 代币符号 + CA</small></span><span class="strategy-meta"><i class="pill amber">模拟</i><i class="pill green">运行中</i></span></button><button class="strategy-row" data-dynamic="unipcs" type="button"><span><strong>@theunipcs</strong><small>SOL / BSC / Base · 全部词条</small></span><span class="strategy-meta"><i class="pill amber">模拟</i><i class="pill green">运行中</i></span></button><button class="strategy-row" data-dynamic="cz" type="button"><span><strong>@cz_binance</strong><small>BSC / SOL · 继续观察</small></span><span class="strategy-meta"><i class="pill">记录</i><i class="pill amber">待验收</i></span></button></div><div class="editor"><div class="editor-head"><div><h3 id="dynamic-title">@vladtenev · 动态喊单策略</h3><p id="dynamic-subtitle">模拟 · Robinhood / ETH · 版本 4</p></div><span class="pill amber">模拟</span></div><div class="editor-body"><div class="section-block"><div class="section-title"><span>动态触发配置</span><small>账号发帖后解析</small></div><div class="field-grid"><label class="field"><span>运行阶段</span><select class="select"><option>记录：只记录</option><option selected>模拟：模拟交易</option><option>实盘：实盘交易</option><option>暂停</option></select></label><label class="field"><span>允许内容</span><select class="select"><option selected>原创帖 + 引用帖</option><option>仅原创帖</option></select></label><div class="field full"><span>允许链</span><div class="check-list"><label class="check"><input type="checkbox" checked> Robinhood</label><label class="check"><input type="checkbox" checked> Ethereum</label><label class="check"><input type="checkbox"> BSC</label><label class="check"><input type="checkbox"> SOL</label></div></div><div class="field full"><span>匹配方式</span><div class="check-list"><label class="check"><input type="checkbox" checked> 完整 CA</label><label class="check"><input type="checkbox" checked> $代币符号</label><label class="check"><input type="checkbox" checked> #话题标签</label><label class="check"><input type="checkbox"> 项目名称</label></div></div></div><div class="conflict"><strong>重叠保护</strong><span>如果本次帖子同时命中固定 CA 策略和动态策略，系统合并为一次交易；固定 CA 策略负责执行，动态解析只保留证据。</span></div></div><div class="section-block"><div class="section-title"><span>共用执行设置</span><small>与固定策略使用同一标准</small></div><div class="field-grid"><label class="field"><span>单笔金额</span><input class="input" value="0.20 ETH"></label><label class="field"><span>每日额度</span><input class="input" value="2.00 ETH"></label><label class="field full"><span>离场模板</span><select class="select"><option>翻倍出本 + 分段止盈</option><option>固定止盈止损</option><option>自定义策略</option></select></label></div></div><div class="editor-foot"><small>版本 4 · 模拟阶段已运行 2 / 7 天</small><button class="button primary" id="save-dynamic" type="button">保存动态策略</button></div></div></div></div>
+          </section>
+
+          <section class="view" id="view-new">
+            <div class="view-head"><div><h2>新增策略</h2><p>以后增加新触发逻辑时，从这里选择策略类型，不需要新建一级页面。</p></div><span class="pill blue">统一创建入口</span></div>
+            <div class="new-layout"><button class="new-card selected" data-new-type="fixed" type="button"><span class="symbol">CA</span><h3>固定 CA / 项目策略</h3><p>已知 CA、项目账号、生态互动和未发币项目监控。</p><small>当前可用 · 进入配置</small></button><button class="new-card" data-new-type="dynamic" type="button"><span class="symbol">X</span><h3>动态喊单策略</h3><p>账号发帖后匹配 CA、代币符号或话题标签，再经过解析和 模拟验收。</p><small>当前可用 · 进入配置</small></button><button class="new-card disabled" data-new-type="future" type="button"><span class="symbol">+</span><h3>后续扩展策略</h3><p>为未来的链上事件、钱包行为或其他数据源预留统一入口。</p><small>暂未实现 · 需要单独评审</small></button></div><div class="new-footer"><button class="button subtle" id="cancel-new" type="button">取消</button><button class="button primary" id="continue-new" type="button">继续配置</button></div><div class="catalog"><table><thead><tr><th>策略类型</th><th>触发来源</th><th>目标确定方式</th><th>执行链路</th><th>状态</th></tr></thead><tbody><tr><td>固定目标（fixed_target）</td><td>固定 CA / 项目关系</td><td>配置时确定或项目发 CA 时确定</td><td>P19 固定策略链路</td><td><span class="pill green">已实现</span></td></tr><tr><td>动态账号（dynamic_account）</td><td>X 账号发帖</td><td>逐帖解析 + GMGN 核验</td><td>P20 授权后复用 P19</td><td><span class="pill amber">模拟验收中</span></td></tr><tr><td>后续扩展（future_extension）</td><td>待定义</td><td>待定义</td><td>必须单独评审</td><td><span class="pill">未实现</span></td></tr></tbody></table><div class="catalog-note">策略类型创建后不建议直接互相转换。需要改变策略语义时，使用“复制为新策略”，保留原策略版本 和历史记录。</div></div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+  <script>
+    const toast = (text) => { const node = document.getElementById('toast'); node.textContent = text; node.hidden = false; clearTimeout(window.__toast); window.__toast = setTimeout(() => { node.hidden = true; }, 2400); };
+    const tabs = [...document.querySelectorAll('.tab')];
+    const views = [...document.querySelectorAll('.view')];
+    tabs.forEach((tab) => tab.addEventListener('click', () => { tabs.forEach((item) => item.classList.toggle('active', item === tab)); views.forEach((view) => view.classList.toggle('active', view.id === `view-${tab.dataset.view}`)); }));
+    const fixedCopy = { pons: ['PONS · 固定 CA 策略', 'Robinhood · 0x39db...c4571 · 版本 3'], wood: ['WOOD · 项目策略', 'BSC · 4 个项目账号 · 版本 2'], tendies: ['TENDIES · 生态互动', 'Robinhood · 生态账号 × 项目账号 · 版本 5'] };
+    document.querySelectorAll('[data-strategy]').forEach((row) => row.addEventListener('click', () => { document.querySelectorAll('[data-strategy]').forEach((item) => item.classList.toggle('selected', item === row)); const copy = fixedCopy[row.dataset.strategy]; document.getElementById('fixed-title').textContent = copy[0]; document.getElementById('fixed-subtitle').textContent = copy[1]; }));
+    const dynamicCopy = { vlad: ['@vladtenev · 动态喊单策略', '模拟 · Robinhood / ETH · 版本 4'], unipcs: ['@theunipcs · 动态喊单策略', '模拟 · SOL / BSC / Base · 版本 2'], cz: ['@cz_binance · 动态喊单策略', '记录 · BSC / SOL · 版本 1'] };
+    document.querySelectorAll('[data-dynamic]').forEach((row) => row.addEventListener('click', () => { document.querySelectorAll('[data-dynamic]').forEach((item) => item.classList.toggle('selected', item === row)); const copy = dynamicCopy[row.dataset.dynamic]; document.getElementById('dynamic-title').textContent = copy[0]; document.getElementById('dynamic-subtitle').textContent = copy[1]; }));
+    document.querySelectorAll('[data-new-type]').forEach((card) => card.addEventListener('click', () => { if (card.classList.contains('disabled')) return toast('该策略类型暂未实现，需要单独评审'); document.querySelectorAll('[data-new-type]').forEach((item) => item.classList.toggle('selected', item === card)); }));
+    document.getElementById('continue-new').addEventListener('click', () => { const selected = document.querySelector('.new-card.selected'); toast(`预览：进入${selected?.querySelector('h3')?.textContent || '策略'}配置`); });
+    document.getElementById('cancel-new').addEventListener('click', () => { document.querySelector('[data-view="fixed"]').click(); });
+    document.getElementById('new-fixed').addEventListener('click', () => { document.querySelector('[data-view="new"]').click(); document.querySelector('[data-new-type="fixed"]').click(); });
+    document.getElementById('new-dynamic').addEventListener('click', () => { document.querySelector('[data-view="new"]').click(); document.querySelector('[data-new-type="dynamic"]').click(); });
+    document.getElementById('save-fixed').addEventListener('click', () => toast('预览：固定策略已保存，生成新版本'));
+    document.getElementById('save-dynamic').addEventListener('click', () => toast('预览：动态策略已保存，修改后需要重新完成模拟验收'));
+    document.getElementById('refresh').addEventListener('click', () => toast('预览：刷新策略列表、授权状态和任务状态'));
+  </script>
+</body>
+</html>

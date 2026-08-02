@@ -66,6 +66,21 @@ test('desired Watch union includes active pre-launch project and ecosystem accou
   assert.equal(desired[1].flags.newTweetBol, true);
 });
 
+test('desired Watch union includes enabled dynamic policy accounts', async () => {
+  const executor = {
+    async query(sql) {
+      assert.match(sql, /x_actor_dynamic_policies/);
+      return { rows: [{ x_handle: 'dynamic_actor', event_types: ['tweet', 'reply'] }] };
+    }
+  };
+  const desired = await loadDesiredWatches(executor);
+  assert.deepEqual(desired, [{
+    username: 'dynamic_actor',
+    roles: ['kol'],
+    flags: roleFlags('kol', { eventTypes: ['tweet', 'reply'], observeUnfollow: false })
+  }]);
+});
+
 test('Watch plan protects unknown remote accounts and blocks unmanaged flag changes', () => {
   const desiredFlags = roleFlags('kol');
   const remoteFlags = roleFlags('kol', { eventTypes: ['tweet'] });

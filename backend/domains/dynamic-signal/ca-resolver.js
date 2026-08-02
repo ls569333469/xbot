@@ -12,6 +12,20 @@ const RESOLVER_REVISION = 'p20.1-resolver-v1';
 const DEFAULT_MAX_CANDIDATES = 25;
 const DEFAULT_VERIFY_CONCURRENCY = 4;
 
+function filterResolutionTerms(extraction, allowedTermTypes) {
+  if (!Array.isArray(allowedTermTypes)) return extraction;
+  const allowed = new Set(allowedTermTypes.map((value) => String(value || '').toLowerCase()));
+  const authorOwnedTerms = (extraction.authorOwnedTerms || [])
+    .filter((term) => allowed.has(String(term.type || '').toLowerCase()));
+  return {
+    ...extraction,
+    authorOwnedTerms,
+    assetTerms: authorOwnedTerms.filter((term) => (
+      ['ca', 'cashtag', 'hashtag', 'approved_name'].includes(term.type)
+    ))
+  };
+}
+
 function transientCandidates(extraction, allowedChains) {
   const chains = [...new Set((allowedChains || []).map(normalizeChain).filter(Boolean))];
   const evmChains = chains.filter((chain) => chain !== 'sol');
@@ -96,12 +110,16 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
 
   const allowedChains = [...new Set((input.allowedChains || input.allowed_chain_ids || [])
     .map(normalizeChain).filter(Boolean))];
+  const resolutionExtraction = filterResolutionTerms(
+    extraction,
+    input.allowedTermTypes ?? input.allowed_term_types
+  );
   const indexResult = dependencies.candidateIndex
-    ? dependencies.candidateIndex.lookupTerms(extraction.authorOwnedTerms, { allowedChains })
+    ? dependencies.candidateIndex.lookupTerms(resolutionExtraction.authorOwnedTerms, { allowedChains })
     : { candidates: [], coverage: {} };
   const candidates = mergeCandidates([
     ...(indexResult.candidates || []),
-    ...transientCandidates(extraction, allowedChains)
+    ...transientCandidates(resolutionExtraction, allowedChains)
   ]);
   const maxCandidates = Math.max(1, Number(input.maxCandidates || DEFAULT_MAX_CANDIDATES));
   if (candidates.length === 0) {
@@ -152,7 +170,7 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
     }
   );
   const policy = applyResolutionPolicy(verified, {
-    extraction,
+    extraction: resolutionExtraction,
     allowedChains,
     minLiquidityUsd: input.minLiquidityUsd,
     marketDominanceMinRatio: input.marketDominanceMinRatio
@@ -183,6 +201,7 @@ module.exports = {
   mapConcurrent,
   mergeCandidates,
   providerFailureCode,
+  filterResolutionTerms,
   resolveDynamicSignal,
   transientCandidates
 };
