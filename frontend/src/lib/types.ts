@@ -316,6 +316,7 @@ export interface DynamicPolicy {
   allowed_event_types: Array<'tweet' | 'quote' | 'reply'>;
   allowed_term_types: Array<'ca' | 'cashtag' | 'hashtag' | 'approved_name'>;
   approved_aliases: Array<string | { name: string; normalized?: string }>;
+  chain_budgets: Record<ChainId, DynamicChainBudget>;
   budget_per_trade: number;
   daily_budget: number;
   daily_new_token_limit: number;
@@ -327,6 +328,11 @@ export interface DynamicPolicy {
   context_hash: string;
   approval_id?: string | null;
   approval_expires_at?: string | null;
+}
+
+export interface DynamicChainBudget {
+  budget_per_trade: number;
+  daily_budget: number;
 }
 
 export interface ActorScreeningResult {

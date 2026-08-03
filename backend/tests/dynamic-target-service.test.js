@@ -12,6 +12,7 @@ test('dynamic Live target waits for the existing activation outbox instead of se
         return { rows: [{
           id: 9, enabled: true, revision: 3, context_hash: 'policy-hash',
           budget_per_trade: '0.01', daily_budget: '0.1', slippage: 10,
+          chain_budgets: { bsc: { budget_per_trade: '0.01', daily_budget: '0.1' } },
           per_token_buy_limit: 1, exit_strategy: clonePreset('principal_no_stop')
         }] };
       }

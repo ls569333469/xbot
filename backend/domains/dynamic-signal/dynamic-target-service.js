@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const db = require('../../lib/db');
+const { chainBudgetFor } = require('./policy-service');
 const { legacyPercentages } = require('../trade/exit-strategy-compiler');
 const { enqueueWhitelistActivation } = require('../whitelist/activation-outbox');
 
@@ -15,8 +16,16 @@ async function materialize(job, attempt, selected, executor = db) {
     error.code = 'DYNAMIC_POLICY_CHANGED';
     throw error;
   }
+  const chainBudget = chainBudgetFor(policy, selected.chainId);
+  if (!chainBudget) {
+    const error = new Error(`Dynamic chain budget is not configured: ${selected.chainId}`);
+    error.code = 'DYNAMIC_CHAIN_BUDGET_NOT_CONFIGURED';
+    throw error;
+  }
   const config = {
-    budget_per_trade: Number(policy.budget_per_trade), daily_budget: Number(policy.daily_budget),
+    chain_id: selected.chainId,
+    budget_per_trade: chainBudget.budget_per_trade,
+    daily_budget: chainBudget.daily_budget,
     slippage: Number(policy.slippage), exit_strategy: policy.exit_strategy,
     policy_revision: Number(policy.revision), policy_context_hash: policy.context_hash
   };
@@ -55,7 +64,7 @@ async function materialize(job, attempt, selected, executor = db) {
        activation_context_hash = EXCLUDED.activation_context_hash, updated_at = NOW()
      RETURNING *`,
     [selected.contractAddress, selected.chainId, selected.symbol || null, selected.name || selected.symbol || null,
-      policy.budget_per_trade, policy.daily_budget, legacy.auto_tp_pct, legacy.auto_sl_pct,
+       chainBudget.budget_per_trade, chainBudget.daily_budget, legacy.auto_tp_pct, legacy.auto_sl_pct,
       policy.slippage, policy.per_token_buy_limit > 1, policy.per_token_buy_limit, target.id, policy.id,
       policy.revision, policy.exit_strategy, 'syncing',
       crypto.createHash('sha256').update(policy.context_hash).digest('hex')]

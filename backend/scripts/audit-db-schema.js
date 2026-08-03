@@ -53,7 +53,8 @@ async function main() {
     [['027_p19_low_latency_execution.sql', '028_p20_readonly_dynamic_resolution.sql',
       '029_p20_runtime_dynamic_signal_pipeline.sql',
       '030_p20_runtime_launch_window_lease_columns.sql',
-      '031_p20_runtime_schema_index_repair.sql']]
+      '031_p20_runtime_schema_index_repair.sql',
+      '032_p20_dynamic_chain_budget_matrix.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -61,6 +62,7 @@ async function main() {
   if (!migrations.has('029_p20_runtime_dynamic_signal_pipeline.sql')) throw new Error('Migration 029 is not applied');
   if (!migrations.has('030_p20_runtime_launch_window_lease_columns.sql')) throw new Error('Migration 030 is not applied');
   if (!migrations.has('031_p20_runtime_schema_index_repair.sql')) throw new Error('Migration 031 is not applied');
+  if (!migrations.has('032_p20_dynamic_chain_budget_matrix.sql')) throw new Error('Migration 032 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',
@@ -92,7 +94,11 @@ async function main() {
   ]);
   await requireColumns('x_actor_dynamic_policies', [
     'kol_id', 'mode', 'enabled', 'allowed_chain_ids', 'allowed_event_types',
-    'allowed_term_types', 'revision', 'context_hash'
+    'allowed_term_types', 'chain_budgets', 'revision', 'context_hash'
+  ]);
+  await requireColumns('dynamic_policy_usage_daily_by_chain', [
+    'actor_policy_id', 'usage_date', 'chain_id', 'spent_native', 'reserved_native',
+    'new_token_count', 'signal_count'
   ]);
   await requireColumns('dynamic_signal_jobs', [
     'x_activity_id', 'actor_policy_id', 'policy_revision', 'mode', 'status',

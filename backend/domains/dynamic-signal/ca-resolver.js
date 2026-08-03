@@ -157,7 +157,15 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
         return candidate;
       }
       try {
-        return mergeCandidates([candidate, await verifier(candidate, input.verificationOptions || {})])[0];
+        const verifiedCandidate = normalizeCandidate(
+          await verifier(candidate, input.verificationOptions || {})
+        );
+        if (!verifiedCandidate) {
+          const error = new Error('Provider returned an invalid dynamic candidate');
+          error.code = 'GMGN_SCHEMA_INVALID';
+          throw error;
+        }
+        return verifiedCandidate;
       } catch (error) {
         if (!firstProviderFailure) firstProviderFailure = error;
         return {

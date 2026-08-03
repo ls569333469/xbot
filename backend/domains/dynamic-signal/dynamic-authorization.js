@@ -1,5 +1,6 @@
 const db = require('../../lib/db');
 const { p20FeatureState } = require('../../lib/p20-features');
+const { chainBudgetFor } = require('./policy-service');
 
 async function evaluateSignal(signal, executor = db, options = {}) {
   const blockers = [];
@@ -30,6 +31,8 @@ async function evaluateSignal(signal, executor = db, options = {}) {
   if (row && (row.target_status !== 'active' || row.target_chain !== signal.chain_id
       || row.target_ca !== signal.contract_address
       || row.target_context_hash !== row.context_hash)) blockers.push('DYNAMIC_TARGET_CHANGED');
+  const chainBudget = row ? chainBudgetFor(row, signal.chain_id) : null;
+  if (row && !chainBudget) blockers.push('DYNAMIC_CHAIN_BUDGET_NOT_CONFIGURED');
   if (row && !row.allowed_event_types.includes(String(signal.activity_type || '').toLowerCase())) {
     blockers.push('DYNAMIC_EVENT_NOT_ALLOWED');
   }
@@ -37,7 +40,7 @@ async function evaluateSignal(signal, executor = db, options = {}) {
   const ageMs = Date.now() - new Date(signal.source_created_at || signal.signal_created_at).getTime();
   const maxAgeMs = Math.max(1, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300)) * 1000;
   if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > maxAgeMs) blockers.push('SIGNAL_EXPIRED');
-  if (row && !options.skipUsage) {
+  if (row && !options.skipUsage && chainBudget) {
     const usageResult = await executor.query(
       `SELECT COALESCE(usage.spent_native, 0) AS spent_native,
               COALESCE(usage.reserved_native, 0) AS reserved_native,
@@ -56,8 +59,9 @@ async function evaluateSignal(signal, executor = db, options = {}) {
                  AND event.chain_id = $2 AND event.contract_address = $3
                  AND event.status <> 'released') AS existing_token_events
        FROM (SELECT 1) seed
-       LEFT JOIN dynamic_policy_usage_daily usage
-         ON usage.actor_policy_id = $1 AND usage.usage_date = CURRENT_DATE`,
+       LEFT JOIN dynamic_policy_usage_daily_by_chain usage
+         ON usage.actor_policy_id = $1 AND usage.usage_date = CURRENT_DATE
+        AND usage.chain_id = $2`,
       [row.id, signal.chain_id, signal.contract_address]
     );
     const usage = usageResult.rows[0];
@@ -67,8 +71,10 @@ async function evaluateSignal(signal, executor = db, options = {}) {
         && Number(usage.new_token_count) >= Number(row.daily_new_token_limit)) {
       blockers.push('DYNAMIC_DAILY_TOKEN_LIMIT');
     }
-    if (Number(usage.spent_native) + Number(usage.reserved_native) + Number(row.budget_per_trade)
-        > Number(row.daily_budget)) blockers.push('DYNAMIC_DAILY_BUDGET_EXCEEDED');
+    if (chainBudget && Number(usage.spent_native) + Number(usage.reserved_native)
+        + chainBudget.budget_per_trade > chainBudget.daily_budget) {
+      blockers.push('DYNAMIC_DAILY_BUDGET_EXCEEDED');
+    }
   }
   return { allowed: blockers.length === 0, blockers, policy: row || null };
 }
@@ -91,19 +97,22 @@ async function reserveUsage(signal, executor = db) {
      )
      ON CONFLICT (signal_id) DO NOTHING RETURNING *`,
     [Number(signal.actor_policy_id), Number(signal.signal_id || signal.id),
-      signal.chain_id, signal.contract_address, Number(evaluation.policy.budget_per_trade)]
+       signal.chain_id, signal.contract_address,
+       Number(chainBudgetFor(evaluation.policy, signal.chain_id).budget_per_trade)]
   );
   if (event.rows.length === 0) return evaluation;
   await executor.query(
-    `INSERT INTO dynamic_policy_usage_daily
-      (actor_policy_id, usage_date, reserved_native, new_token_count, signal_count)
-     VALUES ($1,CURRENT_DATE,$2,$3,1)
-     ON CONFLICT (actor_policy_id, usage_date) DO UPDATE SET
-       reserved_native = dynamic_policy_usage_daily.reserved_native + EXCLUDED.reserved_native,
-       new_token_count = dynamic_policy_usage_daily.new_token_count + 1,
-       signal_count = dynamic_policy_usage_daily.signal_count + 1,
+    `INSERT INTO dynamic_policy_usage_daily_by_chain
+      (actor_policy_id, usage_date, chain_id, reserved_native, new_token_count, signal_count)
+     VALUES ($1,CURRENT_DATE,$2,$3,$4,1)
+     ON CONFLICT (actor_policy_id, usage_date, chain_id) DO UPDATE SET
+       reserved_native = dynamic_policy_usage_daily_by_chain.reserved_native + EXCLUDED.reserved_native,
+       new_token_count = dynamic_policy_usage_daily_by_chain.new_token_count + EXCLUDED.new_token_count,
+       signal_count = dynamic_policy_usage_daily_by_chain.signal_count + EXCLUDED.signal_count,
        updated_at = NOW()`,
-    [Number(signal.actor_policy_id), Number(evaluation.policy.budget_per_trade), event.rows[0].counts_new_token ? 1 : 0]
+    [Number(signal.actor_policy_id), signal.chain_id,
+      Number(chainBudgetFor(evaluation.policy, signal.chain_id).budget_per_trade),
+      event.rows[0].counts_new_token ? 1 : 0]
   );
   return evaluation;
 }
@@ -120,13 +129,14 @@ async function settleUsage(signalId, status, actualAmount, executor = db) {
   const amount = status === 'committed' && Number.isFinite(Number(actualAmount))
     ? Number(actualAmount) : Number(event.amount_native);
   await executor.query(
-    `UPDATE dynamic_policy_usage_daily SET
+    `UPDATE dynamic_policy_usage_daily_by_chain SET
        reserved_native = GREATEST(0, reserved_native - $3),
        spent_native = spent_native + CASE WHEN $2 = 'committed' THEN $4 ELSE 0 END,
        new_token_count = GREATEST(0, new_token_count - CASE WHEN $2 = 'released' AND $6 THEN 1 ELSE 0 END),
        updated_at = NOW()
-     WHERE actor_policy_id = $1 AND usage_date = $5`,
-    [event.actor_policy_id, status, event.amount_native, amount, event.usage_date, event.counts_new_token]
+      WHERE actor_policy_id = $1 AND usage_date = $5 AND chain_id = $7`,
+    [event.actor_policy_id, status, event.amount_native, amount, event.usage_date,
+      event.counts_new_token, event.chain_id]
   );
   return true;
 }

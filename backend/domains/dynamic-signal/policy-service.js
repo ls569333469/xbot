@@ -33,6 +33,59 @@ function uniqueAllowed(values, allowed, field, required = false) {
   return output;
 }
 
+function invalidPolicyField(field) {
+  const error = new Error(`Invalid dynamic policy field: ${field}`);
+  error.code = 'DYNAMIC_POLICY_INVALID';
+  return error;
+}
+
+function normalizeBudgetValue(value, field) {
+  const number = Number(value ?? 0);
+  if (!Number.isFinite(number) || number < 0) throw invalidPolicyField(field);
+  return number;
+}
+
+function normalizeChainBudgets(inputValue, current, allowedChainIds, legacyDefaults) {
+  const hasExplicitMatrix = inputValue !== undefined;
+  const legacyOverride = current?.inputHasLegacyOverride;
+  const source = hasExplicitMatrix
+    ? inputValue
+    : (legacyOverride ? null : current?.chain_budgets);
+  if (source !== undefined && source !== null
+      && (typeof source !== 'object' || Array.isArray(source))) {
+    throw invalidPolicyField('chain_budgets');
+  }
+  const sourceKeys = Object.keys(source || {});
+  if (sourceKeys.some((chain) => !CHAINS.has(chain))) throw invalidPolicyField('chain_budgets');
+  const result = {};
+  for (const chain of allowedChainIds) {
+    const raw = source?.[chain];
+    if (hasExplicitMatrix && !raw) throw invalidPolicyField(`chain_budgets.${chain}`);
+    const budget = raw || {
+      budget_per_trade: legacyDefaults.budgetPerTrade,
+      daily_budget: legacyDefaults.dailyBudget
+    };
+    result[chain] = {
+      budget_per_trade: normalizeBudgetValue(budget.budget_per_trade, `chain_budgets.${chain}.budget_per_trade`),
+      daily_budget: normalizeBudgetValue(budget.daily_budget, `chain_budgets.${chain}.daily_budget`)
+    };
+  }
+  return result;
+}
+
+function chainBudgetFor(policy, chainId) {
+  const chain = String(chainId || '').trim().toLowerCase();
+  const budget = policy?.chain_budgets?.[chain];
+  if (budget && Number.isFinite(Number(budget.budget_per_trade))
+      && Number.isFinite(Number(budget.daily_budget))) {
+    return {
+      budget_per_trade: Number(budget.budget_per_trade),
+      daily_budget: Number(budget.daily_budget)
+    };
+  }
+  return null;
+}
+
 function normalizeDynamicExitStrategy(value) {
   const emptyObject = value && typeof value === 'object'
     && !Array.isArray(value) && !value.legs;
@@ -73,15 +126,37 @@ function normalizePolicyInput(input = {}, current = {}) {
     error.code = 'DYNAMIC_POLICY_INVALID';
     throw error;
   }
+  const budgetPerTrade = normalizeBudgetValue(
+    input.budget_per_trade ?? current.budget_per_trade ?? 0, 'budget_per_trade'
+  );
+  const dailyBudget = normalizeBudgetValue(
+    input.daily_budget ?? current.daily_budget ?? 0, 'daily_budget'
+  );
+  const allowed_chain_ids = uniqueAllowed(
+    input.allowed_chain_ids ?? current.allowed_chain_ids,
+    CHAINS,
+    'allowed_chain_ids',
+    true
+  );
+  const chain_budgets = normalizeChainBudgets(input.chain_budgets, {
+    ...current,
+    inputHasLegacyOverride: input.budget_per_trade !== undefined || input.daily_budget !== undefined
+  }, allowed_chain_ids, { budgetPerTrade, dailyBudget });
+  const budgetValues = Object.values(chain_budgets);
+  const legacyBudgetPerTrade = budgetValues.length
+    ? Math.max(...budgetValues.map((item) => item.budget_per_trade)) : budgetPerTrade;
+  const legacyDailyBudget = budgetValues.length
+    ? Math.max(...budgetValues.map((item) => item.daily_budget)) : dailyBudget;
   const config = {
     mode,
     enabled: input.enabled === undefined ? current.enabled !== false : Boolean(input.enabled),
-    allowed_chain_ids: uniqueAllowed(input.allowed_chain_ids ?? current.allowed_chain_ids, CHAINS, 'allowed_chain_ids', true),
+    allowed_chain_ids,
     allowed_event_types: uniqueAllowed(input.allowed_event_types ?? current.allowed_event_types ?? ['tweet'], EVENTS, 'allowed_event_types', true),
     allowed_term_types: uniqueAllowed(input.allowed_term_types ?? current.allowed_term_types ?? ['ca', 'cashtag', 'hashtag'], TERMS, 'allowed_term_types', true),
     approved_aliases: normalizeApprovedAliases(input.approved_aliases ?? current.approved_aliases),
-    budget_per_trade: Number(input.budget_per_trade ?? current.budget_per_trade ?? 0),
-    daily_budget: Number(input.daily_budget ?? current.daily_budget ?? 0),
+    chain_budgets,
+    budget_per_trade: legacyBudgetPerTrade,
+    daily_budget: legacyDailyBudget,
     daily_new_token_limit: Number(input.daily_new_token_limit ?? current.daily_new_token_limit ?? 0),
     per_token_buy_limit: Number(input.per_token_buy_limit ?? current.per_token_buy_limit ?? 1),
     slippage: Number(input.slippage ?? current.slippage ?? 10),
@@ -98,7 +173,7 @@ function normalizePolicyInput(input = {}, current = {}) {
     throw error;
   }
   if (['paper', 'live'].includes(config.mode)
-      && (config.budget_per_trade <= 0 || config.daily_budget <= 0)) {
+      && budgetValues.some((budget) => budget.budget_per_trade <= 0 || budget.daily_budget <= 0)) {
     const error = new Error(`${config.mode} dynamic policy requires positive trade and daily limits`);
     error.code = config.mode === 'live'
       ? 'DYNAMIC_POLICY_LIVE_LIMITS_REQUIRED' : 'DYNAMIC_POLICY_PAPER_LIMITS_REQUIRED';
@@ -110,7 +185,7 @@ function normalizePolicyInput(input = {}, current = {}) {
     throw error;
   }
   if (['paper', 'live'].includes(config.mode)
-      && config.daily_budget < config.budget_per_trade) {
+      && budgetValues.some((budget) => budget.daily_budget < budget.budget_per_trade)) {
     const error = new Error('Dynamic daily budget cannot be lower than one trade budget');
     error.code = 'DYNAMIC_POLICY_BUDGET_ORDER_INVALID';
     throw error;
@@ -171,16 +246,17 @@ async function upsert(kolId, input = {}, executor = db) {
   const result = await executor.query(
     `INSERT INTO x_actor_dynamic_policies
       (kol_id, mode, enabled, allowed_chain_ids, allowed_event_types, allowed_term_types,
-       approved_aliases, budget_per_trade, daily_budget, daily_new_token_limit,
+       approved_aliases, chain_budgets, budget_per_trade, daily_budget, daily_new_token_limit,
        per_token_buy_limit, slippage, exit_strategy, resolver_options, revision, context_hash)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      ON CONFLICT (kol_id) DO UPDATE SET
        mode = EXCLUDED.mode, enabled = EXCLUDED.enabled,
        allowed_chain_ids = EXCLUDED.allowed_chain_ids,
        allowed_event_types = EXCLUDED.allowed_event_types,
        allowed_term_types = EXCLUDED.allowed_term_types,
        approved_aliases = EXCLUDED.approved_aliases,
-       budget_per_trade = EXCLUDED.budget_per_trade,
+        chain_budgets = EXCLUDED.chain_budgets,
+        budget_per_trade = EXCLUDED.budget_per_trade,
        daily_budget = EXCLUDED.daily_budget,
        daily_new_token_limit = EXCLUDED.daily_new_token_limit,
        per_token_buy_limit = EXCLUDED.per_token_buy_limit,
@@ -190,8 +266,8 @@ async function upsert(kolId, input = {}, executor = db) {
        updated_at = NOW()
      RETURNING *`,
     [Number(kolId), config.mode, config.enabled, config.allowed_chain_ids,
-      config.allowed_event_types, config.allowed_term_types, JSON.stringify(config.approved_aliases),
-      config.budget_per_trade, config.daily_budget, config.daily_new_token_limit,
+       config.allowed_event_types, config.allowed_term_types, JSON.stringify(config.approved_aliases),
+       JSON.stringify(config.chain_budgets), config.budget_per_trade, config.daily_budget, config.daily_new_token_limit,
       config.per_token_buy_limit, config.slippage, JSON.stringify(config.exit_strategy),
       JSON.stringify(config.resolver_options), revision, config.context_hash]
   );
@@ -232,6 +308,6 @@ async function remove(id, executor = db) {
 }
 
 module.exports = {
-  CHAINS, EVENTS, MODES, TERMS, contextHash, getById, list,
+  CHAINS, EVENTS, MODES, TERMS, chainBudgetFor, contextHash, getById, list,
   normalizeApprovedAliases, normalizePolicyInput, remove, sortedObject, upsert, normalizeXHandle
 };

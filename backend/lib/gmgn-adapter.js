@@ -155,13 +155,15 @@ function normalizeTokenInfo(data) {
 
 function normalizeSecurity(data, chainId) {
   requireChain(chainId);
+  const explicitSellable = booleanOrNull(data?.is_sellable ?? data?.sellable);
+  const cannotSell = booleanOrNull(data?.can_not_sell);
   return {
     raw: data,
     isHoneypot: booleanOrNull(data?.is_honeypot ?? data?.honeypot),
     buyTax: numberOrNull(data?.buy_tax),
     sellTax: numberOrNull(data?.sell_tax),
     rugRatio: numberOrNull(data?.rug_ratio),
-    isSellable: booleanOrNull(data?.is_sellable ?? data?.can_sell ?? data?.sellable),
+    isSellable: explicitSellable ?? (cannotSell === null ? null : !cannotSell),
     isBlacklisted: booleanOrNull(data?.is_blacklisted ?? data?.blacklisted),
     renouncedMint: booleanOrNull(data?.renounced_mint),
     renouncedFreeze: booleanOrNull(data?.renounced_freeze_account),

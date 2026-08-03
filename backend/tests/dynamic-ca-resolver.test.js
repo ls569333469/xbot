@@ -69,6 +69,30 @@ test('resolver maps provider timeouts to a fail-closed timeout code', async () =
   assert.equal(result.selectedCandidate, null);
 });
 
+test('fresh provider verification replaces a cached unknown candidate status', async () => {
+  const result = await resolveDynamicSignal({ text: 'Buy $PONS', allowedChains: ['robinhood'] }, {
+    candidateIndex: new CandidateIndex([{
+      chain: 'robinhood', address: CA, symbol: 'PONS',
+      providerStatus: 'unknown', tradableStatus: 'unknown',
+      fetchedAt: '2026-08-02T12:00:00.000Z'
+    }]),
+    verifyCandidate: async (candidate) => ({
+      ...candidate,
+      providerAddress: candidate.contractAddress,
+      providerStatus: 'verified',
+      tradableStatus: 'untradable',
+      security: { isSellable: false },
+      liquidityUsd: 100000
+    })
+  });
+
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.failureCode, RESOLUTION_CODES.UNTRADABLE);
+  assert.equal(result.candidates[0].providerStatus, 'verified');
+  assert.equal(result.candidates[0].tradableStatus, 'untradable');
+  assert.deepEqual(result.candidates[0].rejectionReasonCodes, ['UNTRADABLE']);
+});
+
 test('resolver never uses a term type disabled by the actor policy', async () => {
   let calls = 0;
   const directCa = await resolveDynamicSignal({

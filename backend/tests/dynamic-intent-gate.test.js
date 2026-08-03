@@ -41,7 +41,28 @@ test('intent gate does not inherit intent from quoted content', () => {
   assert.equal(result.intentClass, 'quoted_only');
 });
 
-test('intent gate recognizes a sole complete CA but rejects an ordinary CA mention', () => {
+test('intent gate treats one author-owned full CA as the strongest positive signal', () => {
   assert.equal(classify({ text: CA }).intentClass, 'full_ca_solo');
-  assert.equal(classify({ text: `I am researching this CA ${CA}` }).intentClass, 'neutral_reference');
+  assert.equal(classify({ text: `test\n\n${CA}` }).intentClass, 'full_ca_solo');
+  assert.equal(classify({ text: `I am researching this CA ${CA}` }).intentClass, 'full_ca_solo');
+  assert.equal(classify({ text: `Avoid ${CA}` }).intentClass, 'negative_or_warning');
+});
+
+test('intent gate applies the full CA priority consistently to replies and tweets', () => {
+  assert.equal(classify({
+    eventType: 'reply',
+    actorText: `@TxxSw103 ${CA}`
+  }).intentClass, 'full_ca_solo');
+  assert.equal(classify({
+    eventType: 'reply',
+    actorText: `@TxxSw103 @another_user ${CA}`
+  }).intentClass, 'full_ca_solo');
+  assert.equal(classify({
+    eventType: 'tweet',
+    actorText: `@TxxSw103 ${CA}`
+  }).intentClass, 'full_ca_solo');
+  assert.equal(classify({
+    eventType: 'reply',
+    actorText: `@TxxSw103 avoid ${CA}`
+  }).intentClass, 'negative_or_warning');
 });

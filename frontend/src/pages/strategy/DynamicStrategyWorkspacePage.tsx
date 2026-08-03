@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../../lib/api';
 import { dynamicResolutionDisplay } from '../../lib/p20-runtime';
 import type { DynamicPolicy, DynamicSignalStatus, KolAccount } from '../../lib/types';
@@ -6,6 +7,7 @@ import { P20Operations } from '../kol/P20Operations';
 import StrategyWorkspaceLayout, { type WorkspaceSummaryItem } from './StrategyWorkspaceLayout';
 
 export default function DynamicStrategyWorkspacePage() {
+  const [searchParams] = useSearchParams();
   const [kols, setKols] = useState<KolAccount[]>([]);
   const [policies, setPolicies] = useState<DynamicPolicy[]>([]);
   const [runtime, setRuntime] = useState<DynamicSignalStatus | null>(null);
@@ -48,7 +50,7 @@ export default function DynamicStrategyWorkspacePage() {
       refreshing={refreshing}
     >
       <div className="strategy-workspace-panel-note"><span aria-hidden="true">▣</span><span>动态喊单只解析账号发帖中的 CA、代币符号、话题标签和项目名称，不会修改固定 CA / 项目策略。</span></div>
-      <P20Operations kols={kols} />
+      <P20Operations kols={kols} initialKolId={searchParams.get('kolId') || undefined} />
     </StrategyWorkspaceLayout>
   );
 }

@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useToast } from '../components/ui/ToastContext';
 import { api } from '../lib/api';
 import { dynamicPaperDisplay, dynamicResolutionDisplay } from '../lib/p20-runtime';
-import type { DynamicPolicy, DynamicSignalStatus, WhitelistEntry } from '../lib/types';
+import type { DynamicPolicy, DynamicSignalStatus, KolAccount, WhitelistEntry } from '../lib/types';
 import { strategySummary } from './whitelist/strategy-presets';
 
 type StrategyTab = 'fixed' | 'dynamic' | 'new';
@@ -54,23 +54,35 @@ function policyChains(policy: DynamicPolicy) {
   return policy.allowed_chain_ids.map((chain) => chainLabel(chain)).join(' · ') || '未配置链';
 }
 
+function policyBudgetSummary(policy: DynamicPolicy) {
+  const units: Record<string, string> = { sol: 'SOL', bsc: 'BNB', base: 'ETH', eth: 'ETH', robinhood: 'ETH' };
+  const budgets = policy.allowed_chain_ids.map((chain) => {
+    const budget = policy.chain_budgets?.[chain];
+    if (!budget) return `${chainLabel(chain)} 待配置`;
+    return `${chainLabel(chain)} ${budget.budget_per_trade}/${budget.daily_budget} ${units[chain]}`;
+  });
+  return budgets.join(' · ') || '未配置链预算';
+}
+
 export default function StrategyCenterPage() {
   const [tab, setTab] = useState<StrategyTab>('fixed');
   const [newType, setNewType] = useState<NewStrategyType>('fixed');
   const [fixedEntries, setFixedEntries] = useState<WhitelistEntry[]>([]);
   const [policies, setPolicies] = useState<DynamicPolicy[]>([]);
+  const [kols, setKols] = useState<KolAccount[]>([]);
   const [runtime, setRuntime] = useState<DynamicSignalStatus | null>(null);
   const [selectedFixedId, setSelectedFixedId] = useState('');
-  const [selectedPolicyId, setSelectedPolicyId] = useState('');
+  const [selectedDynamicKey, setSelectedDynamicKey] = useState('');
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
   const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const [fixedResponse, policyResponse, statusResponse] = await Promise.all([
+    const [fixedResponse, policyResponse, kolResponse, statusResponse] = await Promise.all([
       api.whitelist.list({ page: '1', pageSize: '50', summary: 'true' }),
       api.dynamicSignal.policies(),
+      api.kol.list(),
       api.dynamicSignal.status(),
     ]);
 
@@ -84,10 +96,11 @@ export default function StrategyCenterPage() {
     if (policyResponse.ok) {
       const nextPolicies = policyResponse.data || [];
       setPolicies(nextPolicies);
-      setSelectedPolicyId((current) => current || nextPolicies[0]?.id || '');
     } else {
       toast(policyResponse.error || '动态策略加载失败', 'error');
     }
+    if (kolResponse.ok) setKols(kolResponse.data || []);
+    else toast(kolResponse.error || 'KOL 账号加载失败', 'error');
     if (statusResponse.ok) setRuntime(statusResponse.data || null);
     setLoading(false);
   }, [toast]);
@@ -98,10 +111,25 @@ export default function StrategyCenterPage() {
     () => fixedEntries.find((item) => item.id === selectedFixedId) || fixedEntries[0] || null,
     [fixedEntries, selectedFixedId],
   );
-  const selectedPolicy = useMemo(
-    () => policies.find((item) => item.id === selectedPolicyId) || policies[0] || null,
-    [policies, selectedPolicyId],
+  const configuredKolIds = useMemo(() => new Set(policies.map((item) => String(item.kol_id))), [policies]);
+  const unconfiguredKols = useMemo(
+    () => kols.filter((item) => !configuredKolIds.has(String(item.id))),
+    [configuredKolIds, kols],
   );
+  useEffect(() => {
+    const selectionExists = policies.some((item) => selectedDynamicKey === `policy:${item.id}`)
+      || unconfiguredKols.some((item) => selectedDynamicKey === `kol:${item.id}`);
+    if (selectionExists || (!policies.length && !unconfiguredKols.length)) return;
+    setSelectedDynamicKey(policies[0] ? `policy:${policies[0].id}` : `kol:${unconfiguredKols[0].id}`);
+  }, [policies, selectedDynamicKey, unconfiguredKols]);
+  const selectedPolicy = useMemo(() => {
+    if (!selectedDynamicKey.startsWith('policy:')) return null;
+    return policies.find((item) => item.id === selectedDynamicKey.slice(7)) || null;
+  }, [policies, selectedDynamicKey]);
+  const selectedUnconfiguredKol = useMemo(() => {
+    if (!selectedDynamicKey.startsWith('kol:')) return null;
+    return unconfiguredKols.find((item) => String(item.id) === selectedDynamicKey.slice(4)) || null;
+  }, [selectedDynamicKey, unconfiguredKols]);
   const paperCount = policies.filter((item) => item.mode === 'paper').length;
   const liveCount = policies.filter((item) => item.mode === 'live' && item.enabled
     && item.approval_id && item.approval_expires_at && Date.parse(item.approval_expires_at) > Date.now()).length;
@@ -132,7 +160,7 @@ export default function StrategyCenterPage() {
       <section className="strategy-center-summary" aria-label="策略状态摘要">
         <div><span>全部策略</span><strong>{fixedEntries.length + policies.length}</strong><small>固定 {fixedEntries.length} · 动态 {policies.length}</small></div>
         <div><span>固定目标</span><strong>{fixedEntries.length}</strong><small>CA、项目和生态关系</small></div>
-        <div><span>动态账号</span><strong>{policies.length}</strong><small>记录 {policies.filter((item) => item.mode === 'record').length} · 模拟 {paperCount}</small></div>
+        <div><span>动态账号</span><strong>{policies.length}</strong><small>已配置 {policies.length} · 待配置 {unconfiguredKols.length}</small></div>
         <div><span>模拟验收</span><strong>{paperCount}</strong><small>修改后需重新验收</small></div>
         <div><span>实盘授权</span><strong className={liveCount ? 'danger' : ''}>{liveCount}</strong><small>{liveCount ? '动态策略已授权' : '未开启动态实盘'}</small></div>
       </section>
@@ -172,22 +200,30 @@ export default function StrategyCenterPage() {
 
         {tab === 'dynamic' && <section className="strategy-center-view">
           <div className="strategy-center-view-head"><div><h2>动态喊单策略</h2><p>账号发帖后才解析 CA，动态解析结果不会修改固定 CA / 项目策略。</p></div><Link className="btn btn-primary" to="/strategies/dynamic"><Layers3 size={16} />进入动态策略工作区</Link></div>
-          <div className="strategy-center-runtime"><span>解析任务：{resolutionRuntime.shortLabel}</span><span>模拟任务：{paperRuntime.shortLabel}</span><span>动态策略：{policies.length} 条</span><span>实盘授权：{liveCount} 条</span></div>
+          <div className="strategy-center-runtime"><span>解析任务：{resolutionRuntime.shortLabel}</span><span>模拟任务：{paperRuntime.shortLabel}</span><span>动态策略：{policies.length} 条</span><span>待配置账号：{unconfiguredKols.length} 个</span><span>实盘授权：{liveCount} 条</span></div>
           {loading ? <div className="p16-empty-line">加载动态策略中...</div> : <div className="strategy-center-split">
             <div className="strategy-center-list">
-              <div className="strategy-center-list-head"><strong>账号策略列表</strong><span>{policies.length} 条</span></div>
-              {policies.map((policy) => <button type="button" key={policy.id} className={`strategy-center-row ${selectedPolicy?.id === policy.id ? 'selected' : ''}`} onClick={() => setSelectedPolicyId(policy.id)}>
+              <div className="strategy-center-list-head"><strong>动态账号列表</strong><span>{policies.length} 已配置 · {unconfiguredKols.length} 待配置</span></div>
+              {policies.map((policy) => <button type="button" key={policy.id} className={`strategy-center-row ${selectedDynamicKey === `policy:${policy.id}` ? 'selected' : ''}`} onClick={() => setSelectedDynamicKey(`policy:${policy.id}`)}>
                 <span className="strategy-center-row-mark">X</span><span><strong>@{policy.x_handle.replace(/^@+/, '')}</strong><small>{modeLabel(policy.mode)} · {policyChains(policy)}</small></span><em className={policy.enabled && policy.mode !== 'paused' ? 'active' : ''}>{policyStatus(policy)}</em>
               </button>)}
-              {!policies.length && <div className="p16-empty-line">暂无动态账号策略</div>}
+              {unconfiguredKols.map((kol) => <button type="button" key={kol.id} className={`strategy-center-row ${selectedDynamicKey === `kol:${kol.id}` ? 'selected' : ''}`} onClick={() => setSelectedDynamicKey(`kol:${kol.id}`)}>
+                <span className="strategy-center-row-mark">X</span><span><strong>@{kol.x_handle.replace(/^@+/, '')}</strong><small>{kol.chain_ids?.length ? kol.chain_ids.map((chain) => chainLabel(chain)).join(' · ') : '尚未设置允许链'}</small></span><em className="pending">{kol.enabled ? '待配置' : '账号已禁用'}</em>
+              </button>)}
+              {!policies.length && !unconfiguredKols.length && <div className="p16-empty-line">暂无可配置的 KOL 账号</div>}
             </div>
             <div className="strategy-center-detail">
               {selectedPolicy ? <>
                 <div className="strategy-center-detail-head"><div><span className="strategy-center-eyebrow">账号级策略</span><h3>@{selectedPolicy.x_handle.replace(/^@+/, '')}</h3><p>{selectedPolicy.display_name || '动态喊单账号'} · 版本 {selectedPolicy.revision}</p></div><span className={`strategy-center-badge ${selectedPolicy.enabled ? 'active' : ''}`}>{policyStatus(selectedPolicy)}</span></div>
-                <div className="strategy-center-detail-grid"><div><span>允许链</span><strong>{policyChains(selectedPolicy)}</strong></div><div><span>匹配词条</span><strong>{policyTerms(selectedPolicy)}</strong></div><div><span>运行阶段</span><strong>{modeLabel(selectedPolicy.mode)}</strong></div><div><span>单笔 / 每日额度</span><strong>{selectedPolicy.budget_per_trade} / {selectedPolicy.daily_budget}</strong></div><div className="wide"><span>安全边界</span><strong>先逐帖解析和验收，再由账号级 Policy 决定是否进入交易链路。</strong></div></div>
+                <div className="strategy-center-detail-grid"><div><span>允许链</span><strong>{policyChains(selectedPolicy)}</strong></div><div><span>匹配词条</span><strong>{policyTerms(selectedPolicy)}</strong></div><div><span>运行阶段</span><strong>{modeLabel(selectedPolicy.mode)}</strong></div><div><span>按链预算</span><strong>{policyBudgetSummary(selectedPolicy)}</strong></div><div className="wide"><span>安全边界</span><strong>先逐帖解析和验收，再由账号级策略决定是否进入交易链路。</strong></div></div>
                 <div className="strategy-center-detail-note"><ShieldCheck size={16} /><span>动态策略只在独立工作区编辑、保存、验收和授权，不会覆盖固定 CA、项目关系或生态互动策略。</span></div>
-                <div className="strategy-center-detail-actions"><Link className="btn btn-primary" to="/strategies/dynamic">进入工作区 <ArrowRight size={15} /></Link></div>
-              </> : <div className="p16-empty-line">暂无动态策略，请进入工作区配置账号</div>}
+                <div className="strategy-center-detail-actions"><Link className="btn btn-primary" to={`/strategies/dynamic?kolId=${selectedPolicy.kol_id}`}>进入工作区 <ArrowRight size={15} /></Link></div>
+              </> : selectedUnconfiguredKol ? <>
+                <div className="strategy-center-detail-head"><div><span className="strategy-center-eyebrow">待配置账号</span><h3>@{selectedUnconfiguredKol.x_handle.replace(/^@+/, '')}</h3><p>{selectedUnconfiguredKol.display_name || '动态喊单账号'} · KOL 账号已保存</p></div><span className="strategy-center-badge pending">待配置</span></div>
+                <div className="strategy-center-detail-grid"><div><span>生态标签</span><strong>{selectedUnconfiguredKol.chain_ids?.length ? selectedUnconfiguredKol.chain_ids.map((chain) => chainLabel(chain)).join(' · ') : '未分类'}</strong></div><div><span>账号状态</span><strong>{selectedUnconfiguredKol.enabled ? '已启用' : '已禁用'}</strong></div><div><span>6551 核验</span><strong>{selectedUnconfiguredKol.profile_status === 'verified' ? '已核验' : '等待核验'}</strong></div><div><span>账号权重</span><strong>{selectedUnconfiguredKol.weight}</strong></div><div className="wide"><span>策略状态</span><strong>尚未创建动态策略，不会进入发帖解析或交易链路。</strong></div></div>
+                <div className="strategy-center-detail-note"><ShieldCheck size={16} /><span>保存账号不会自动开启动态喊单。进入工作区确认允许链、内容类型、词条、金额和运行阶段后，才会创建账号策略。</span></div>
+                <div className="strategy-center-detail-actions"><Link className="btn btn-primary" to={`/strategies/dynamic?kolId=${selectedUnconfiguredKol.id}`}><Plus size={15} />配置动态策略</Link></div>
+              </> : <div className="p16-empty-line">选择一个动态账号查看详情</div>}
             </div>
           </div>}
         </section>}

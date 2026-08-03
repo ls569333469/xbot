@@ -4,7 +4,7 @@ const {
   effectiveMode, errorMessage, fail, renew
 } = require('../domains/dynamic-signal/event-queue');
 const {
-  normalizeApprovedAliases, normalizePolicyInput, contextHash, remove
+  chainBudgetFor, normalizeApprovedAliases, normalizePolicyInput, contextHash, remove
 } = require('../domains/dynamic-signal/policy-service');
 const { validateP20Runtime } = require('../lib/p20-features');
 const { normalizeKline } = require('../lib/gmgn-adapter');
@@ -66,6 +66,19 @@ test('dynamic policy revision hash changes with safety-critical limits', () => {
   assert.notEqual(first.context_hash, second.context_hash);
   const { context_hash: ignored, ...firstConfig } = first;
   assert.equal(first.context_hash, contextHash(firstConfig));
+});
+
+test('scheme A keeps native budgets independent for every allowed chain', () => {
+  const policy = normalizePolicyInput({
+    allowed_chain_ids: ['bsc', 'sol'],
+    chain_budgets: {
+      bsc: { budget_per_trade: 0.01, daily_budget: 0.05 },
+      sol: { budget_per_trade: 0.05, daily_budget: 0.25 },
+    },
+  });
+  assert.deepEqual(chainBudgetFor(policy, 'bsc'), { budget_per_trade: 0.01, daily_budget: 0.05 });
+  assert.deepEqual(chainBudgetFor(policy, 'sol'), { budget_per_trade: 0.05, daily_budget: 0.25 });
+  assert.equal(chainBudgetFor({ allowed_chain_ids: ['bsc'], budget_per_trade: 1, daily_budget: 2 }, 'bsc'), null);
 });
 
 test('dynamic job errors serialize objects without falling back to object internals', () => {

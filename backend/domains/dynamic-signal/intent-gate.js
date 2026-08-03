@@ -51,16 +51,8 @@ function uniqueAuthorAssets(extraction) {
   return [...identities.values()];
 }
 
-function isFullCaSolo(text, assetTerms) {
-  if (assetTerms.length !== 1 || assetTerms[0].type !== 'ca') return false;
-  const withoutCa = String(text || '')
-    .replace(/https?:\/\/[^\s<>"']+/gi, ' ')
-    .replace(/0x[0-9A-Fa-f]{40}/g, ' ')
-    .replace(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g, ' ')
-    .replace(/\b(?:ca|contract|address)\b/gi, ' ')
-    .replace(/(?:合约|地址)/gu, ' ')
-    .replace(/[\s:：,，.。!！?？()（）\[\]{}<>]+/g, '');
-  return withoutCa.length === 0;
+function isFullCaSolo(_text, assetTerms) {
+  return assetTerms.length === 1 && assetTerms[0].type === 'ca';
 }
 
 function decision(intentClass, reasonCodes, extraction) {
@@ -79,10 +71,11 @@ function decision(intentClass, reasonCodes, extraction) {
 
 function classifyIntent(extraction = {}) {
   const text = String(extraction.actorText || '').normalize('NFKC');
+  const eventType = String(extraction.eventType || '').toLowerCase();
   const assets = uniqueAuthorAssets(extraction);
   const contextAssets = (extraction.quotedTerms || []).filter((term) => assetIdentity(term));
 
-  if (String(extraction.eventType || '').toLowerCase() === 'retweet') {
+  if (eventType === 'retweet') {
     return decision('quoted_only', ['RETWEET_NOT_AUTHOR_OWNED'], extraction);
   }
   const security = matchedCodes(text, PATTERNS.security, 'SECURITY_EVENT_LANGUAGE');

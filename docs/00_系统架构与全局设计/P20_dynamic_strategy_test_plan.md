@@ -1,6 +1,6 @@
 # P20 动态策略测试与运行时升级方案
 
-版本：v1.6。范围：Node 20 基线验收、P20 动态策略测试、Node 24 运行时升级回归、GitHub 隐私检查和受控服务器上传。必须先完成 Node 20 基线与 P20 测试，再单独升级 Node 24；两阶段都通过后才允许上传服务器。不启用动态实盘，不执行真实 Swap。
+版本：v1.8。范围：Node 20 基线验收、P20 动态策略测试、方案 A 多链资金矩阵、Node 24 运行时升级回归、GitHub 隐私检查和受控服务器上传。必须先完成 Node 20 基线与 P20 测试，再单独升级 Node 24；两阶段都通过后才允许上传服务器。不启用动态实盘，不执行真实 Swap。
 
 ## 1. 测试目标
 
@@ -51,6 +51,7 @@ P20_LIVE_ENABLED=false
 6. 查询 P20 Feature Flag，确认 `P20_LIVE_ENABLED=false`。
 7. 查询动态 Worker、6551 Watch、GMGN 限流和数据库 Migration 状态，确认没有遗留 `processing` 锁或失败任务。
 8. 确认 `P20_GMGN_CANDIDATE_TTL_MS` 使用受控短时缓存；测试环境不得将核验候选配置为永久有效。
+9. Schema audit 必须包含 Migration 032、`x_actor_dynamic_policies.chain_budgets` 和 `dynamic_policy_usage_daily_by_chain`。
 
 ## 3. 阶段一：策略保存和 Watch 同步
 
@@ -68,6 +69,15 @@ P20_LIVE_ENABLED=false
 - 策略保存后，6551 Watch 期望列表包含该账号，事件权限与策略一致。
 - 禁用或暂停策略后，若没有其他业务依赖，Watch 需求会被撤销或降级。
 - 不创建 CA 白名单、不创建交易 Signal、不创建 Paper Position。
+
+### 3.1 方案 A 多链资金矩阵
+
+1. 在同一个账号策略中启用 Solana、BSC 和 Base，分别填写 SOL、BNB、ETH 的单笔金额与每日上限；不填写 USD。
+2. 保存后重新读取策略，确认 `chain_budgets` 逐链保留，旧的 `budget_per_trade`/`daily_budget` 只作为兼容派生值，不出现在正式编辑器中。
+3. 切换到 EVM 链模板、Solana 单链模板和仅记录模板，确认模板只改变允许链与资金矩阵，不改变账号、词条、离场策略、授权或 Paper 状态。
+4. 在 Paper/Live 模式下分别验证：单笔为 0、每日上限小于单笔、某一已启用链缺预算时保存被拒绝；Record 模式允许 0 预算但不能创建交易。
+5. 用同一账号分别解析 BSC 和 Solana 的唯一 CA，确认授权预占、每日统计、结算和 `config_snapshot` 使用各自链预算，不读取另一条链金额。
+6. 全选多链后只注入一个 BSC 目标，确认只创建一个目标和一笔授权预占，不因允许链数量增加而重复买入。
 
 ## 4. 阶段二：确定性解析样例
 
@@ -129,7 +139,7 @@ P20_PAPER_ENABLED=true
 P20_LIVE_ENABLED=false
 ```
 
-动态策略模式改为 `paper`，单笔预算和每日预算都必须为正数，且每日预算不低于单笔预算。
+动态策略模式改为 `paper`，每条已启用链的单笔预算和每日预算都必须为正数，且每日预算不低于单笔预算。
 
 ### 检查项
 
@@ -137,7 +147,7 @@ P20_LIVE_ENABLED=false
 2. 同一账号策略 + revision 只创建一个 running Paper Session；并发事件不能创建重复 Session。
 3. 同一 Paper Session + Dynamic Target 只创建一个 Evaluation。
 4. Paper 只调用 GMGN 只读 Token/价格接口，绝不调用 `gmgnHttp.swap()`。
-5. 模拟仓位的预算、入场价、数量、离场策略快照正确写入。
+5. 模拟仓位的对应链原生币预算、入场价、数量、离场策略快照正确写入。
 6. 同链同 CA 已有 Paper 仓位时，重复买入按策略限制拒绝或合并。
 7. Paper 失败会写入 Evaluation 的 `failure_code` 和结果快照，不影响其他账号策略。
 8. 把测试库中的 Session 结束时间移到过去，只验证到期 Worker 能收尾；这不能替代生产环境连续 7 天 Paper 验收。
@@ -220,7 +230,7 @@ P20_LIVE_ENABLED=false
 4. 提交并推送经过测试的唯一 Commit，记录 Commit SHA；服务器只能部署该 Commit，不允许上传未提交目录覆盖。
 5. 关闭新买入安全门，等待 `pending/submitting` 真实订单归零；确认已有持仓、离场订单和资金账本状态后再停止服务进程。
 6. 核对服务器已通过 Node 24 阶段的 Node `24.11.x`、npm `11.6.x`、PostgreSQL 和依赖安装方式；使用锁文件安装，不在服务器临时改动主版本。
-7. 执行 Migration 028、029、030、031，然后在服务器运行 `npm run audit:schema:production`；该命令只读审计生产 Schema，不修改数据。
+7. 执行 Migration 028、029、030、031、032，然后在服务器运行 `npm run audit:schema:production`；该命令只读审计生产 Schema，不修改数据。
 8. 后端健康检查通过后再发布前端，并核对静态资源和 API 版本来自同一 Commit。
 
 ## 11. 服务器上传后验证
@@ -258,11 +268,11 @@ P20_LIVE_ENABLED=false
 - 上线窗口只允许把仍为 `rejected` 的动态 Job 重新排队；策略删除或 revision 变化后，Job 保持 `cancelled`，不得被窗口 Worker 复活。
 - 动态解析任务在 GMGN 慢响应期间必须续租；租约丢失时不得写入 Resolution、Target、Signal 或覆盖新 Worker 的错误状态。
 - `gmgn_info` 候选快照默认 5 分钟过期，过期后必须重新验证；Provider 返回不同 CA 时必须记录 `GMGN_ADDRESS_MISMATCH`。
-- Schema audit 必须同时确认 Migration 027、028、029、030、031，以及动态上线窗口租约字段和 P20 关键索引。
+- Schema audit 必须同时确认 Migration 027、028、029、030、031、032，以及动态上线窗口租约字段、按链预算列和 P20 关键索引。
 
 对应 Node 20 基线回归结果（2026-08-02）：完整后端单元测试 `338/338`、定向 P20/GMGN 测试 `31/31`、前端 lint/build、后端语法检查和 `git diff --check` 均通过；独立测试库集成测试 `36/36` 通过，Schema audit 输出 `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`。期间发现旧测试库已登记 `029` 但缺少动态上线窗口租约字段和 Paper/动态信号唯一索引，已补充幂等迁移 `030`、`031` 并验证通过。
 
-Node 24 阶段回归结果（2026-08-02）：后端和前端 `npm ci` 均通过；后端全量单测 `338/338`、P20/GMGN 定向测试 `39/39`、数据库集成测试 `36/36`、Schema audit `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`、前端 lint/build、运行时校验、lockfile 完整性检查和 `git diff --check` 均通过。Node 24 初始基线已提交 GitHub；生产服务器尚未升级或开启 P20 Live。
+Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量单测、P20/GMGN 定向测试、数据库集成测试和 Schema audit 通过；该记录属于当时的专用测试库环境，不能替代本次发布前复核。当前工作区复核结果（2026-08-03）为：Node `24.11.1`、npm `11.6.2`；后端全量单测 `348/348`；前端 lint/build 通过；受影响后端文件语法检查通过；`git diff --check` 通过（仅有换行符提示）。本次专用测试库集成测试为 `36/37`，唯一失败是旧 P12 `SKIP LOCKED` 隔离测试，P20 集成项通过；Schema audit 输出 `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`；Record smoke 通过并确认 `signalCount=0`、`targetCount=0`；Paper smoke 通过并确认 `swapCallCount=0`。`origin/main` 当前仍是上一份基线提交，工作区存在未提交修改；生产服务器尚未升级或开启 P20 Live。
 
 ## 13. Node 24 本地运行时实测记录（2026-08-02）
 
@@ -293,7 +303,7 @@ Node 24 阶段回归结果（2026-08-02）：后端和前端 `npm ci` 均通过�
 - Live 授权接口返回 `DYNAMIC_PAPER_ACCEPTANCE_REQUIRED`，HTTP 400；`approval_id` 和 `approval_expires_at` 均为空，前端授权按钮保持禁用。
 - 本轮只验证拒绝路径，没有开启 `P20_LIVE_ENABLED`，没有执行真实 Swap。
 
-### 最终回归
+### 历史最终回归记录（2026-08-02）
 
 - 后端全量单元测试：`341/341`。
 - 独立测试库集成测试：`37/37`。
@@ -301,3 +311,24 @@ Node 24 阶段回归结果（2026-08-02）：后端和前端 `npm ci` 均通过�
 - Schema audit：`SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`。
 - 新增烟雾脚本、动态上线窗口和前端运行状态文件的 Node/TypeScript 语法检查通过，`git diff --check` 通过。
 - 测试结束后必须恢复全部 P20 Feature Flag 为 `false`；服务器部署和 P20 生产启用仍需单独批准。
+
+### 当前复核结论（2026-08-03）
+
+- P20 代码、前端方案 A、统一 API、按链预算、CA 解析失败关闭、租约保护和 Live 安全门已接入当前工作区。
+- 本地 Node `24.11.1` / npm `11.6.2`；后端 `348/348` 通过，前端 lint/build 通过。
+- 专用测试库 Schema audit、Record smoke、Paper smoke 通过；Paper 未调用真实 Swap。
+- 全量集成套件仍为 `36/37`，旧 P12 测试红灯必须在发布前修复或隔离；它不改变 P20 相关测试结果，但不能忽略。
+- 7 天 Paper 是运行时验收，不是 smoke 测试。当前尚未完成，因此 P20 Live 仍不可开启。
+
+## 14. 当前发布门与服务器部署清单
+
+截至 2026-08-03，P20 代码可以进入“服务器冷部署准备”，但还不能直接进入动态实盘。发布前必须补齐以下门槛：
+
+1. 使用名称包含 `test` 且不等于生产库的专用 PostgreSQL 测试库，设置 `XBOT_TEST_DB_NAME`，重跑 `npm.cmd run test:integration`、`npm.cmd run audit:schema:test`、`npm.cmd run test:p20:record-smoke` 和 `npm.cmd run test:p20:paper-smoke`。
+2. 校验 Migration `027`、`028`、`029`、`030`、`031`、`032`，特别是 `chain_budgets`、`dynamic_policy_usage_daily_by_chain`、动态解析唯一索引和上线窗口租约字段。
+3. 记录本次发布 commit；当前工作区未提交修改不能直接当作服务器版本，也不能只依据 `origin/main` 判断本轮已上传。
+4. 服务器冷部署时保持 `P20_CANDIDATE_INDEX_ENABLED=false`、`P20_DYNAMIC_RESOLUTION_ENABLED=false`、`P20_RECORD_ENABLED=false`、`P20_PAPER_ENABLED=false`、`P20_LIVE_ENABLED=false`，并先验证固定 CA、持仓、Settings、WebSocket 和 TGBOT 不受影响。
+5. 冷部署完成且固定链路冒烟通过后，按 `Candidate Index -> Dynamic Resolution -> Record -> Paper` 的顺序分阶段开启；动态 Live 必须等同一 revision 完成至少 7 天 Paper 和人工核对后，另行单账号、小金额、单链授权。
+6. 不上传 `.env`、API Key、GMGN 私钥、OPENNEWS_TOKEN、ADMIN_TOKEN、数据库密码、日志或数据库 dump；生产秘密只存在服务器 `/opt/xbot/backend/.env`，权限保持 `0600`。
+
+以上任一项未完成，状态都应标记为“代码完成、发布未完成”，不能标记为“P20 已可实盘”。

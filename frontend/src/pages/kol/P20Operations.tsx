@@ -8,6 +8,7 @@ import type {
 import { useToast } from '../../components/ui/ToastContext';
 import StrategyEditor from '../whitelist/StrategyEditor';
 import { cloneStrategy, STRATEGY_PRESETS, strategySummary } from '../whitelist/strategy-presets';
+import DynamicTradeConfigMatrix from '../strategy/DynamicTradeConfigMatrix';
 
 const CHAINS: ChainId[] = ['sol', 'bsc', 'base', 'eth', 'robinhood'];
 const TERM_TYPES = [
@@ -18,14 +19,28 @@ const EVENT_TYPES = [
 ] as const;
 
 type Draft = Pick<DynamicPolicy, 'mode' | 'enabled' | 'allowed_chain_ids' |
-  'allowed_event_types' | 'allowed_term_types' | 'approved_aliases' | 'budget_per_trade' | 'daily_budget' |
+  'allowed_event_types' | 'allowed_term_types' | 'approved_aliases' | 'chain_budgets' |
   'daily_new_token_limit' | 'per_token_buy_limit' | 'slippage' | 'exit_strategy'>;
+
+function emptyChainBudgets(): DynamicPolicy['chain_budgets'] {
+  return Object.fromEntries(CHAINS.map((chain) => [chain, {
+    budget_per_trade: 0,
+    daily_budget: 0,
+  }])) as DynamicPolicy['chain_budgets'];
+}
+
+function normalizeChainBudgets(value?: Partial<DynamicPolicy['chain_budgets']>) {
+  return Object.fromEntries(CHAINS.map((chain) => [chain, {
+    budget_per_trade: Number(value?.[chain]?.budget_per_trade || 0),
+    daily_budget: Number(value?.[chain]?.daily_budget || 0),
+  }])) as DynamicPolicy['chain_budgets'];
+}
 
 const DEFAULT_DRAFT: Draft = {
   mode: 'record', enabled: true, allowed_chain_ids: ['bsc'],
   allowed_event_types: ['tweet'], allowed_term_types: ['ca', 'cashtag', 'hashtag'],
   approved_aliases: [],
-  budget_per_trade: 0, daily_budget: 0, daily_new_token_limit: 0,
+  chain_budgets: emptyChainBudgets(), daily_new_token_limit: 0,
   per_token_buy_limit: 1, slippage: 10, exit_strategy: cloneStrategy(STRATEGY_PRESETS[0].value),
 };
 
@@ -63,7 +78,7 @@ function normalizeExitStrategy(value: unknown): ExitStrategy {
   return cloneStrategy(STRATEGY_PRESETS[0].value);
 }
 
-export function P20Operations({ kols }: { kols: KolAccount[] }) {
+export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; initialKolId?: string }) {
   const [policies, setPolicies] = useState<DynamicPolicy[]>([]);
   const [kolId, setKolId] = useState('');
   const [draft, setDraft] = useState<Draft>(DEFAULT_DRAFT);
@@ -103,11 +118,16 @@ export function P20Operations({ kols }: { kols: KolAccount[] }) {
     return () => window.clearInterval(timer);
   }, [activeRun, refresh]);
 
-  const selected = useMemo(() => policies.find((item) => item.kol_id === kolId), [kolId, policies]);
+  const selected = useMemo(
+    () => policies.find((item) => String(item.kol_id) === kolId),
+    [kolId, policies],
+  );
   useEffect(() => {
     if (kolId) return;
-    setKolId(policies[0]?.kol_id || kols[0]?.id || '');
-  }, [kolId, kols, policies]);
+    const requestedKolId = initialKolId && kols.some((item) => String(item.id) === initialKolId)
+      ? initialKolId : '';
+    setKolId(requestedKolId || String(policies[0]?.kol_id || kols[0]?.id || ''));
+  }, [initialKolId, kolId, kols, policies]);
   useEffect(() => {
     if (!kolId) return;
     setDraft(selected ? {
@@ -116,14 +136,14 @@ export function P20Operations({ kols }: { kols: KolAccount[] }) {
       allowed_event_types: selected.allowed_event_types,
       allowed_term_types: selected.allowed_term_types,
       approved_aliases: selected.approved_aliases || [],
-      budget_per_trade: Number(selected.budget_per_trade), daily_budget: Number(selected.daily_budget),
+      chain_budgets: normalizeChainBudgets(selected.chain_budgets),
       daily_new_token_limit: Number(selected.daily_new_token_limit),
       per_token_buy_limit: Number(selected.per_token_buy_limit), slippage: Number(selected.slippage),
       exit_strategy: normalizeExitStrategy(selected.exit_strategy),
     } : { ...DEFAULT_DRAFT, exit_strategy: cloneStrategy(DEFAULT_DRAFT.exit_strategy) });
   }, [kolId, selected]);
 
-  const toggle = <T extends string>(field: 'allowed_chain_ids' | 'allowed_event_types' | 'allowed_term_types', value: T) => {
+  const toggle = <T extends string>(field: 'allowed_event_types' | 'allowed_term_types', value: T) => {
     setDraft((current) => {
       const values = current[field] as string[];
       return { ...current, [field]: values.includes(value) ? values.filter((item) => item !== value) : [...values, value] };
@@ -134,9 +154,12 @@ export function P20Operations({ kols }: { kols: KolAccount[] }) {
     if (!kolId || draft.allowed_chain_ids.length === 0) return toast('请选择账号和至少一条链', 'error');
     if (!draft.allowed_event_types.length || !draft.allowed_term_types.length) return toast('请至少选择一种内容类型和词条类型', 'error');
     if (draft.allowed_term_types.includes('approved_name') && !draft.approved_aliases.length) return toast('启用项目名称时必须填写至少一个批准别名', 'error');
-    if (['paper', 'live'].includes(draft.mode)
-      && (draft.budget_per_trade <= 0 || draft.daily_budget < draft.budget_per_trade || draft.slippage <= 0)) {
-      return toast('模拟或实盘必须填写有效单笔金额、每日总额和滑点', 'error');
+    const invalidChainBudget = draft.allowed_chain_ids.some((chain) => {
+      const budget = draft.chain_budgets[chain];
+      return !budget || budget.budget_per_trade <= 0 || budget.daily_budget < budget.budget_per_trade;
+    });
+    if (['paper', 'live'].includes(draft.mode) && (invalidChainBudget || draft.slippage <= 0)) {
+      return toast('模拟或实盘必须为每条已启用链填写有效金额和每日上限', 'error');
     }
     setSaving(true);
     try {
@@ -214,22 +237,20 @@ export function P20Operations({ kols }: { kols: KolAccount[] }) {
         <div className="p20-policy-editor">
           <div className="p20-section-title"><strong>账号策略</strong><span>{policies.length} 个已配置</span></div>
           <div className="p20-policy-list">
-            {policies.map((policy) => <button type="button" key={policy.id} className={policy.kol_id === kolId ? 'selected' : ''} onClick={() => setKolId(policy.kol_id)}><strong>@{policy.x_handle.replace(/^@+/, '')}</strong><span>{modeLabel(policy.mode)} · 版本 {policy.revision}</span></button>)}
+            {policies.map((policy) => <button type="button" key={policy.id} className={String(policy.kol_id) === kolId ? 'selected' : ''} onClick={() => setKolId(String(policy.kol_id))}><strong>@{policy.x_handle.replace(/^@+/, '')}</strong><span>{modeLabel(policy.mode)} · 版本 {policy.revision}</span></button>)}
             {!policies.length && <div className="p16-empty-line">还没有动态策略，请先选择账号并保存。</div>}
           </div>
           <div className="p20-form-row">
-            <label><span>X 账号</span><select value={kolId} onChange={(event) => setKolId(event.target.value)}><option value="">选择账号</option>{kols.map((kol) => <option key={kol.id} value={kol.id}>@{kol.x_handle.replace(/^@+/, '')}</option>)}</select></label>
+            <label><span>X 账号</span><select value={kolId} onChange={(event) => setKolId(event.target.value)}><option value="">选择账号</option>{kols.map((kol) => <option key={kol.id} value={String(kol.id)}>@{kol.x_handle.replace(/^@+/, '')}</option>)}</select></label>
             <label><span>运行阶段</span><select value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as Draft['mode'] })}><option value="record">记录：仅记录</option><option value="paper">模拟：模拟交易</option><option value="live">实盘：需单独授权</option><option value="paused">暂停</option></select></label>
           </div>
           <div className="p20-choice-row"><span>状态</span><label><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />启用该账号策略</label></div>
           <div className="p20-choice-row"><span>内容</span>{EVENT_TYPES.map(([value, label]) => <label key={value}><input type="checkbox" checked={draft.allowed_event_types.includes(value)} onChange={() => toggle('allowed_event_types', value)} />{label}</label>)}</div>
-          <div className="p20-choice-row"><span>允许链</span>{CHAINS.map((chain) => <label key={chain}><input type="checkbox" checked={draft.allowed_chain_ids.includes(chain)} onChange={() => toggle('allowed_chain_ids', chain)} />{chain === 'robinhood' ? 'Robinhood' : chain.toUpperCase()}</label>)}</div>
-          <div className="p20-choice-row"><span>词条</span>{TERM_TYPES.map(([value, label]) => <label key={value}><input type="checkbox" checked={draft.allowed_term_types.includes(value)} onChange={() => toggle('allowed_term_types', value)} />{label}</label>)}</div>
-          {draft.allowed_term_types.includes('approved_name') && <label className="p20-alias-field"><span>批准项目名 / 别名</span><textarea rows={3} value={aliasesText(draft.approved_aliases)} onChange={(event) => setDraft({ ...draft, approved_aliases: parseAliases(event.target.value) })} placeholder="每行一个完整项目名" /></label>}
-          <div className="p20-number-grid">
-            <label><span>单笔金额</span><input type="number" min="0" step="0.001" value={draft.budget_per_trade} onChange={(e) => setDraft({ ...draft, budget_per_trade: Number(e.target.value) })} /></label>
-            <label><span>每日总额</span><input type="number" min="0" step="0.001" value={draft.daily_budget} onChange={(e) => setDraft({ ...draft, daily_budget: Number(e.target.value) })} /></label>
-            <label><span>每日新币上限</span><input type="number" min="0" value={draft.daily_new_token_limit} onChange={(e) => setDraft({ ...draft, daily_new_token_limit: Number(e.target.value) })} /></label>
+           <div className="p20-choice-row"><span>词条</span>{TERM_TYPES.map(([value, label]) => <label key={value}><input type="checkbox" checked={draft.allowed_term_types.includes(value)} onChange={() => toggle('allowed_term_types', value)} />{label}</label>)}</div>
+           {draft.allowed_term_types.includes('approved_name') && <label className="p20-alias-field"><span>批准项目名 / 别名</span><textarea rows={3} value={aliasesText(draft.approved_aliases)} onChange={(event) => setDraft({ ...draft, approved_aliases: parseAliases(event.target.value) })} placeholder="每行一个完整项目名" /></label>}
+           <DynamicTradeConfigMatrix allowedChainIds={draft.allowed_chain_ids} chainBudgets={draft.chain_budgets} mode={draft.mode} onChange={(value) => setDraft((current) => ({ ...current, ...value }))} />
+           <div className="p20-number-grid">
+             <label><span>每日新币上限</span><input type="number" min="0" value={draft.daily_new_token_limit} onChange={(e) => setDraft({ ...draft, daily_new_token_limit: Number(e.target.value) })} /></label>
             <label><span>单币买入次数</span><input type="number" min="1" value={draft.per_token_buy_limit} onChange={(e) => setDraft({ ...draft, per_token_buy_limit: Number(e.target.value) })} /></label>
             <label><span>滑点 %</span><input type="number" min="0.01" max="100" step="0.01" value={draft.slippage} onChange={(e) => setDraft({ ...draft, slippage: Number(e.target.value) })} /></label>
           </div>

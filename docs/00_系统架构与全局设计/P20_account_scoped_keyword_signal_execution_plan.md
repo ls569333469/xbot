@@ -1,12 +1,14 @@
 # P20 高权重账号动态关键词信号与 CA 解析方案
 
-> 版本：v4.6。状态：P20.0-P20.2 代码已完成，P20.3-P20.5 已实现安全门与运行时契约，P20 API 已按当前实现统一；前端统一信息架构与工作区交互已接入正式 React 页面，Paper 验收尚未完成。动态候选已补充短时过期、Provider CA 精确回显校验、解析任务租约所有权保护和动态上线窗口租约保护。更新日期：2026-08-01。
+> 版本：v4.8。状态：P20.0-P20.2 代码已完成，P20.3-P20.5 已实现安全门与运行时契约，P20 API 已按当前实现统一；方案 A 多链资金矩阵已接入正式动态策略工作区，Paper 验收尚未完成。动态候选已补充短时过期、Provider CA 精确回显校验、解析任务租约所有权保护和动态上线窗口租约保护。更新日期：2026-08-03。
 >
-> 本文定义技术方案、实施顺序、前端职责和验收标准。当前已实现 Candidate Index、Asset Family/Variant、Resolver、Intent Gate、GMGN 只读接口、6551 动态任务入队、账号级运行策略、Paper/Live 安全门和 Migration 028-029；当前已补齐 Dynamic Resolution 详情读取、前端 API 封装、策略中心统一入口和固定/动态统一工作区，所有运行时开关默认关闭，尚未部署生产或完成 Paper 实盘验收。GMGN 核验快照默认按 `P20_GMGN_CANDIDATE_TTL_MS` 使用短时缓存，非法 TTL 回退安全默认值并限制上下界，Token Info 地址错配失败关闭，动态 Job 和动态上线窗口的租约续期与所有权回写已纳入运行时契约。
+> 本文定义技术方案、实施顺序、前端职责和验收标准。当前已实现 Candidate Index、Asset Family/Variant、Resolver、Intent Gate、GMGN 只读接口、6551 动态任务入队、账号级运行策略、Paper/Live 安全门和 Migration 028-032；当前已补齐 Dynamic Resolution 详情读取、前端 API 封装、策略中心统一入口、固定/动态统一工作区和方案 A 多链资金矩阵，所有运行时开关默认关闭，尚未部署生产或完成 Paper 实盘验收。GMGN 核验快照默认按 `P20_GMGN_CANDIDATE_TTL_MS` 使用短时缓存，非法 TTL 回退安全默认值并限制上下界，Token Info 地址错配失败关闭，动态 Job 和动态上线窗口的租约续期与所有权回写已纳入运行时契约。
 >
 > 生产服务器版本是后续实施、测试和实盘验收的唯一基线；GitHub 用于版本备份，本地工作区仅用于开发、测试和备份。实施前必须重新核对三者提交号并检查密钥、数据库、日志和运行数据不会进入 Git。
 >
 > 明日测试与服务器上传步骤以 [P20_dynamic_strategy_test_plan.md](./P20_dynamic_strategy_test_plan.md) 为准；测试不通过时不得上传服务器，上传后所有 P20 运行时开关仍保持关闭。
+
+> 发布前复核结论（2026-08-03）：当前本地 Node `24.11.1` / npm `11.6.2`，后端单元测试 `348/348`、前端 lint/build、受影响后端语法检查和 Schema audit 通过；专用测试库集成测试为 `36/37`，唯一失败是未修改的旧 P12 `SKIP LOCKED` 隔离测试，P20 集成项全部通过；Record smoke 和 Paper smoke 通过，Paper 的 `swapCallCount=0`。工作区仍有未提交的 P20 修改，`origin/main` 只代表上一份已提交基线，不能视为本次工作区已上传或服务器已部署。正式服务器发布前必须处理或隔离 P12 测试红灯，再核对 commit、Migration 032 与生产配置。
 
 ## 1. 最终目标
 
@@ -222,7 +224,7 @@ multi_asset_ambiguous
 unknown
 ```
 
-初始 Live 只允许 `buy_direct`、`launch_direct`，以及“Actor 原文仅包含一个完整 CA/平台 URL 且没有任何拒绝语义”的 `full_ca_solo`。其余状态全部降级为 Research/Record；Paper 可以采集但必须保留原状态。
+初始 Live 只允许 `buy_direct`、`launch_direct`，以及“Actor 原文包含唯一完整 CA/平台 URL且没有任何拒绝语义”的 `full_ca_solo`。完整 CA 是最高优先级强锚点，允许正文同时包含普通中性文字；其余状态全部降级为 Research/Record；Paper 可以采集但必须保留原状态。
 
 判定顺序必须固定：
 
@@ -425,9 +427,13 @@ allowed_chains
 allowed_launchpads
 allowed_term_modes: cashtag / hashtag / approved_phrase / full_ca
 buy_amount_usd
-max_new_tokens_per_day
-max_daily_dynamic_notional_usd
-max_single_token_notional_usd
+  chain_budgets:
+    sol:       { budget_per_trade_native, daily_budget_native }
+    bsc:       { budget_per_trade_native, daily_budget_native }
+    base:      { budget_per_trade_native, daily_budget_native }
+    eth:       { budget_per_trade_native, daily_budget_native }
+    robinhood: { budget_per_trade_native, daily_budget_native }
+  max_new_tokens_per_day
 max_candidates_per_resolution
 launch_wait_window_seconds
 minimum_liquidity_usd_by_chain
@@ -438,10 +444,29 @@ minimum_score_margin
 ambiguous_action: research_only
 existing_position_policy
 repeat_buy_policy / cooldown
-exit_strategy_template_id
+  exit_strategy_template_id
 ```
 
 只有用户显式批准为 `live` 的账号级策略才能为未知 Token 提供资金授权。Actor Profile、Grok 画像、历史胜率和自动创建的 Target 均不能替代该授权。
+
+### 9.1 方案 A：多链资金矩阵（唯一正式交互）
+
+动态策略仍然是**一条账号级策略**，但交易预算必须按允许链分别保存，不再使用 USD 换算，也不把一条账号策略拆成多条链策略：
+
+```text
+一个账号策略
+  ├─ Solana       -> 单笔 SOL / 每日 SOL 上限
+  ├─ BNB Chain    -> 单笔 BNB / 每日 BNB 上限
+  ├─ Base         -> 单笔 ETH / 每日 ETH 上限
+  ├─ Ethereum     -> 单笔 ETH / 每日 ETH 上限
+  └─ Robinhood    -> 单笔 ETH / 每日 ETH 上限
+```
+
+保存契约为 `chain_budgets`，每个已启用链必须有 `budget_per_trade` 和 `daily_budget`。Paper/Live 下两者都必须大于 0，且 `daily_budget >= budget_per_trade`；Record 可以保存 0 预算，因为它只记录不交易。解析得到唯一 `chain_id + contract_address` 后，只读取该链预算；全选多链不会对同一目标重复买入。
+
+前端只提供一个矩阵编辑器和内置交易配置模板：模板只填充允许链与各链资金，不保存 X 账号、词条、实盘授权或 Paper 验收状态。固定 CA 和动态策略均使用同一套 `StrategyEditor` 与离场策略编译器。曾经评审过的其他配置交互不属于正式产品能力，不保留为可切换页面或运行时分支。
+
+每次修改链预算、允许链或离场策略都会进入 `revision/context_hash`，自动撤销旧的 Live Approval，并要求重新完成同 Revision 的 Paper 验收。
 
 ## 10. 动态 Target 物化
 
@@ -483,6 +508,7 @@ expires_at
 ### 11.1 核心表
 
 - `x_actor_dynamic_policies`：账号级动态授权与资金模板；
+- `x_actor_dynamic_policies.chain_budgets`：方案 A 的按链原生币资金矩阵；旧的 `budget_per_trade`/`daily_budget` 仅保留为兼容派生字段，不作为新前端或执行授权来源；
 - `dynamic_asset_families`：项目/叙事家族；
 - `dynamic_asset_variants`：具体 `chain + CA + launchpad` 版本；
 - `dynamic_asset_variant_relations`：original、relaunch、migration、cross_chain、cto、unknown；
@@ -491,6 +517,7 @@ expires_at
 - `dynamic_targets`：系统物化的兼容交易标的；
 - `x_actor_screening_runs`：账号清洗批次；
 - `x_actor_screening_results`：账号统计、回测和建议等级。
+- `dynamic_policy_usage_daily_by_chain`：按 `actor_policy_id + usage_date + chain_id` 统计预占、已花费、新 Token 和信号数量。
 
 ### 11.2 Signal 证据
 
@@ -692,6 +719,22 @@ GET  /api/dynamic-signal/asset-families/:id
 
 暂停策略直接使用 `PUT /api/dynamic-signal/policies/:kolId` 将 `mode` 设置为 `paused`，不重复增加 `pause` API。
 
+`PUT /api/dynamic-signal/policies/:kolId` 的交易配置字段使用方案 A 契约：
+
+```json
+{
+  "allowed_chain_ids": ["sol", "bsc"],
+  "chain_budgets": {
+    "sol": { "budget_per_trade": 0.05, "daily_budget": 0.25 },
+    "bsc": { "budget_per_trade": 0.01, "daily_budget": 0.05 }
+  },
+  "slippage": 10,
+  "exit_strategy": { "version": 1, "sell_ratio_type": "buy_amount", "legs": [] }
+}
+```
+
+`chain_budgets` 中的数值始终是对应链原生币数量：SOL 使用 SOL，BSC 使用 BNB，Base/Ethereum/Robinhood 使用 ETH。接口不接受前端换算出的 USD 结果；解析、授权预占、结算和动态兼容白名单必须使用同一 `chain_id` 读取同一份预算。若运行时发现允许链没有预算，必须返回 `DYNAMIC_CHAIN_BUDGET_NOT_CONFIGURED` 并失败关闭。
+
 ### 16.3 前端统一布局
 
 本版将“系统总览”“策略总览”和“策略工作区”严格分层。统一一级策略入口为 **策略中心**，但策略中心本身只负责策略状态总览，不直接承载编辑器。固定 CA、项目关系、生态互动、动态喊单和未来扩展仍作为策略类型管理，不为每种触发逻辑增加新的一级导航。
@@ -744,7 +787,7 @@ GET  /api/dynamic-signal/asset-families/:id
 
 固定策略工作区的业务内容仍然使用原白名单功能：`已知 CA`、`未发币监控`、`快速投研`、`添加白名单`、生态账号与项目账号关系、6551 Watch 状态、资金和离场策略必须保留。统一壳层只改变入口和页面层级，不删除或另造这些能力。
 
-动态策略工作区的业务内容包括：账号选择、运行阶段、允许链、原创/引用/回复事件类型、完整 CA / `$` 代币符号 / `#` 话题标签 / 项目名称匹配、账号级资金限制、共用离场策略、解析任务、账号清洗和模拟验收。
+动态策略工作区的业务内容包括：账号选择、运行阶段、方案 A 多链资金矩阵、原创/引用/回复事件类型、完整 CA / `$` 代币符号 / `#` 话题标签 / 项目名称匹配、共用离场策略、解析任务、账号清洗和模拟验收。金额只填写链原生币，不做 USD 换算。
 
 两类工作区的编辑器必须遵循相同规则：
 
@@ -769,6 +812,8 @@ frontend/src/pages/strategy/FixedStrategyWorkspacePage.tsx
   复用 WhitelistPage / WhitelistWorkspace 的固定业务能力
 frontend/src/pages/strategy/DynamicStrategyWorkspacePage.tsx
   复用 P20Operations 的动态业务能力
+frontend/src/pages/strategy/DynamicTradeConfigMatrix.tsx
+  方案 A 的允许链、原生币金额、每日上限和内置资金模板
 frontend/src/pages/WhitelistPage.tsx
   被固定策略工作区复用，/whitelist 作为兼容入口
 ```
@@ -782,8 +827,8 @@ API 继续复用现有标准封装：固定策略使用 `api.whitelist.*`，动�
 3. 将 `P20Operations` 移入动态工作区，策略总览只保留动态摘要；
 4. 重做策略中心为对称的固定/动态总览模块；
 5. 统一空状态、加载状态、错误、未保存、保存成功、验收中和授权失败的组件；
-6. 已完成桌面端和移动端视觉检查，并接入正式 React 页面；
-7. 已完成路由、API、权限和实盘安全门回归，本轮没有改变交易执行逻辑。
+6. 已完成桌面端和移动端视觉检查，并接入正式 React 页面；方案 A 是唯一正式动态交易配置交互；
+7. 已完成路由、API、权限和实盘安全门回归；P20 本轮只增加按链预算契约，不改变 P19 Quote/Swap/Exit 执行接口。
 
 Signal 页面显示：
 
@@ -822,7 +867,7 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - “I sold $TOKEN”“avoid $TOKEN”“account hacked, CA ...”：Intent Gate 必须硬拒绝；
 - “$A vs $B”“top tokens: $A $B $C”：必须 `multi_asset_ambiguous`；
 - Actor 只 Quote 别人的 `$TOKEN`、自己未表达动作：必须 `quoted_only`；
-- Actor 原文只有一个完整 CA，且无拒绝语义：可得到 `full_ca_solo`，随后仍执行所有 CA 与资金门；
+- Actor 原文包含唯一完整 CA，且无拒绝语义：即使同时有普通中性文字，也可得到 `full_ca_solo`，随后仍执行所有 CA 与资金门；
 
 ### 17.2 并发与资金安全
 
@@ -868,7 +913,8 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 
 ### P20.3 Paper
 
-- 已实现账号级 Dynamic Policy、Dynamic Target、动态白名单兼容载体、同链同 CA 跨白名单持仓检查和 Paper Worker；
+- 已实现账号级 Dynamic Policy、按链 `chain_budgets`、Dynamic Target、动态白名单兼容载体、同链同 CA 跨白名单持仓检查和 Paper Worker；
+- 按链每日预算使用 `dynamic_policy_usage_daily_by_chain`，授权预占、实际结算和释放不能回退到旧的账号级统计表；
 - Paper 复用 `paper-engine`，不会调用 `gmgnHttp.swap()`；
 - 已实现 Paper Session/Evaluation、独立到期收尾 Worker 与 7 天完成门；
 - 最终 7 天验收必须先保存“目标 Live 配置”，保持全局 `P20_LIVE_ENABLED=false`、`P20_PAPER_ENABLED=true`，由运行时将该 Live Policy 降级为同 Revision Paper；不能先用 `paper` Revision 跑完再切换 `live`，因为切换会生成新 Revision 并使旧验收失效；
@@ -876,13 +922,13 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 
 ### P20.4 单账号 Live 灰度
 
-- 已实现单账号 Dynamic Policy、revision/context hash、每日新 Token/总额/单币限制、最终下单前动态复核和自动失效；
+- 已实现单账号 Dynamic Policy、revision/context hash、按链每日预算、每日新 Token/单币限制、最终下单前动态复核和自动失效；
 - Live API 还要求 `APPROVE P20 DYNAMIC LIVE`、当前 revision/context hash 和已完成至少 7 天 Paper Session；
 - 全局 `P20_LIVE_ENABLED` 默认关闭，且不自动 Arm、不自动部署、不自动启动实盘。
 
 ### P20.5 扩大范围
 
-- Policy 的链、事件类型、词条类型、金额和离场策略全部纳入 revision；修改后旧 Live Approval 自动撤销；
+- Policy 的链、事件类型、词条类型、每链金额和离场策略全部纳入 revision；修改后旧 Live Approval 自动撤销；
 - 中文批准名称、新盘和跨链候选仍须单独完成样本验证后再晋级；
 - 不得把动态 Target 当作普通 Relation 绕过最终资金提交门。
 
@@ -894,6 +940,7 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - 新增设计约束：后续策略只能从策略中心的“新增策略”进入；新类型必须先补齐策略标识、触发字段、API 契约、执行适配器、审计记录和测试，再从占位状态切换为可用。
 - 未实现且保持隐藏：resolve preview、Candidate Index 状态诊断、Asset Family 详情诊断。它们需要明确产品需求后再单独评审，不能因为文档列过就当作已完成。
 - 不变：P20 不新增交易接口，不复制 P19 的资金和订单 API，不增加同义路由，不改变 P16 固定 CA 与生态互动语义。
+- 正式交互统一收口：动态策略只保留方案 A 的多链矩阵配置、运行时分支和统一工作区入口；后续新策略只能通过策略中心新增类型并复用统一工作区壳层。
 
 ## 19. 验收标准
 
@@ -907,6 +954,7 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - 币有纯关键词不会自动选原盘或重启盘；
 - Flap/Four.meme 上下文能选择对应版本；
 - 每个失败都有用户可读原因和逐候选证据。
+- 动态策略允许多链时，每条链的预算独立保存、独立限额和独立结算；同一目标不会因多链勾选而重复买入。
 - 比较、历史、卖出、否定、安全事件和多资产正文即使解析到正确 CA 也不能进入 Live。
 
 ### 19.2 安全
@@ -915,6 +963,7 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - Grok 不能提供实时资金授权；
 - 自动物化 Target 不能绕过 Actor Dynamic Policy；
 - 最终提交前再次核验 Policy Revision、预算、持仓和 Engine；
+- 最终提交前按解析出的 `chain_id` 再次核验该链 `chain_budgets`，缺失时失败关闭；
 - 最终提交前再次核验 Intent Revision、Dynamic Resolution、Dynamic Target 和 `chain + CA` 一致性；
 - 旧 P16 直接 CA 与生态互动线路语义不变；
 - 删除动态策略采用审计保留的停用归档，撤销 Live Approval、取消未完成 Job、暂停 Dynamic Target，但不破坏已有仓位对账和离场；
@@ -947,7 +996,7 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 
 ## 21. 审核结论
 
-P20 v4.4 的核心不是“为关键词提前绑定一个 CA”，而是：
+P20 v4.7 的核心不是“为关键词提前绑定一个 CA”，而是：
 
 ```text
 先清洗账号
@@ -955,7 +1004,7 @@ P20 v4.4 的核心不是“为关键词提前绑定一个 CA”，而是：
   -> 逐帖确认这是当前、单一资产的买入意图
   -> 用本地候选缓存和 GMGN 快速核验建立 Asset Family / Variant
   -> 只在当次事件唯一指向一个可交易版本时继续
-  -> 由账号级 Dynamic Policy 授权金额和离场策略
+   -> 由账号级 Dynamic Policy 按链原生币预算矩阵和离场策略授权
   -> 复用 P19 完成交易
 ```
 

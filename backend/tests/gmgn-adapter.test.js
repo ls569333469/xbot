@@ -10,6 +10,24 @@ test('adapter normalizes nested prices, nullable security, and processed orders'
   assert.equal(adapter.normalizeStrategyStatus('success'), 'triggered');
 });
 
+test('security adapter does not treat GMGN can_sell risk flags as sellability', () => {
+  const sellable = adapter.normalizeSecurity({
+    is_honeypot: false,
+    can_sell: 0,
+    can_not_sell: 0
+  }, 'bsc');
+  assert.equal(sellable.isSellable, true);
+
+  const blocked = adapter.normalizeSecurity({ can_sell: 0, can_not_sell: 1 }, 'bsc');
+  assert.equal(blocked.isSellable, false);
+
+  const explicit = adapter.normalizeSecurity({
+    is_sellable: false,
+    can_not_sell: 0
+  }, 'bsc');
+  assert.equal(explicit.isSellable, false);
+});
+
 test('strategy adapter preserves provider close facts for chain verification', () => {
   const strategy = adapter.normalizeStrategy({
     order_id: 'strategy-1',
