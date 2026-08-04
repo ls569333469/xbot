@@ -4,19 +4,23 @@ const {
   effectiveMode, errorMessage, fail, renew
 } = require('../domains/dynamic-signal/event-queue');
 const {
-  chainBudgetFor, normalizeApprovedAliases, normalizePolicyInput, contextHash, remove
+  chainBudgetFor, normalizeApprovedAliases, normalizePolicyInput, contextHash, remove, upsert
 } = require('../domains/dynamic-signal/policy-service');
+const {
+  normalizeTemplateConfig, updateTemplateTransactional
+} = require('../domains/dynamic-signal/templates');
 const { validateP20Runtime } = require('../lib/p20-features');
 const { normalizeKline } = require('../lib/gmgn-adapter');
 const { DynamicSignalWorker } = require('../domains/dynamic-signal/event-worker');
 const { DynamicLaunchWindowWorker } = require('../jobs/dynamic-launch-window');
 const { DynamicPaperSessionWorker } = require('../domains/dynamic-signal/paper-worker');
 const { ensureSession } = require('../domains/dynamic-signal/paper-worker');
-const { approve: approveDynamicLive } = require('../domains/dynamic-signal/dynamic-authorization');
 const {
   boundedGmgnCandidateTtlMs,
   upsertCandidate
 } = require('../domains/dynamic-signal/candidate-repository');
+const { dynamicLivePolicyState } = require('../domains/trade/readiness-service');
+const { usesWhitelistLifetimeBudget } = require('../domains/trade/trade-repository');
 
 const DISABLED_RUNTIME = Object.freeze({
   P20_DYNAMIC_RESOLUTION_ENABLED: false,
@@ -25,7 +29,7 @@ const DISABLED_RUNTIME = Object.freeze({
   P20_LIVE_ENABLED: false
 });
 
-test('P20 runtime stages stay dependency ordered and live remains opt-in', () => {
+test('P20 runtime never silently changes an explicitly configured stage', () => {
   assert.equal(effectiveMode('record', {
     P20_DYNAMIC_RESOLUTION_ENABLED: true, P20_RECORD_ENABLED: true,
     P20_PAPER_ENABLED: false, P20_LIVE_ENABLED: false
@@ -37,27 +41,54 @@ test('P20 runtime stages stay dependency ordered and live remains opt-in', () =>
   assert.equal(effectiveMode('live', {
     P20_DYNAMIC_RESOLUTION_ENABLED: true, P20_RECORD_ENABLED: true,
     P20_PAPER_ENABLED: true, P20_LIVE_ENABLED: false
-  }), 'paper');
-  assert.throws(() => validateP20Runtime({ P20_LIVE_ENABLED: 'true' }), { code: 'P20_LIVE_REQUIRES_PAPER' });
+  }), null);
+  assert.equal(effectiveMode('paper', {
+    P20_DYNAMIC_RESOLUTION_ENABLED: true, P20_RECORD_ENABLED: true,
+    P20_PAPER_ENABLED: false, P20_LIVE_ENABLED: true
+  }), null);
+  const liveOnly = validateP20Runtime({
+    P20_RECORD_ENABLED: 'true', P20_LIVE_ENABLED: 'true', P20_PAPER_ENABLED: 'false'
+  });
+  assert.equal(liveOnly.P20_LIVE_ENABLED, true);
+  assert.equal(liveOnly.P20_PAPER_ENABLED, false);
 });
 
-test('dynamic Live approval rejects a policy without same-revision seven-day Paper acceptance', async () => {
-  const calls = [];
-  const executor = {
-    async query(sql) {
-      calls.push(sql);
-      if (sql.startsWith('SELECT * FROM x_actor_dynamic_policies')) {
-        return { rows: [{ id: 8, mode: 'live', enabled: true, revision: 3, context_hash: 'ctx-3' }] };
-      }
-      if (sql.includes('FROM dynamic_paper_sessions')) return { rows: [] };
-      assert.fail('approval persistence must not run without Paper acceptance');
-    }
-  };
-  await assert.rejects(
-    approveDynamicLive(8, { confirmation: 'APPROVE P20 DYNAMIC LIVE' }, executor),
-    (error) => error.code === 'DYNAMIC_PAPER_ACCEPTANCE_REQUIRED'
-  );
-  assert.equal(calls.length, 2);
+test('dynamic readiness accepts a standalone live policy only when its runtime and budgets are valid', () => {
+  const rows = [{
+    id: 1,
+    allowed_chain_ids: ['bsc', 'sol'],
+    chain_budgets: {
+      bsc: { budget_per_trade: 0.01, daily_budget: 0.05 },
+      sol: { budget_per_trade: 0.05, daily_budget: 0.25 }
+    },
+    daily_new_token_limit: 2,
+    slippage: 10
+  }];
+  const enabledState = dynamicLivePolicyState(rows, {
+    P20_DYNAMIC_RESOLUTION_ENABLED: true,
+    P20_RECORD_ENABLED: true,
+    P20_LIVE_ENABLED: true
+  });
+  assert.equal(enabledState.configured, true);
+  assert.deepEqual(enabledState.chains, ['bsc', 'sol']);
+  assert.equal(enabledState.maxTradeByChain.sol, 0.05);
+
+  const disabledState = dynamicLivePolicyState(rows, {
+    P20_DYNAMIC_RESOLUTION_ENABLED: true,
+    P20_RECORD_ENABLED: true,
+    P20_LIVE_ENABLED: false
+  });
+  assert.equal(disabledState.configured, false);
+  assert.equal(disabledState.validRows, 1);
+});
+
+test('dynamic signals use the per-chain daily ledger instead of fixed whitelist lifetime budget', () => {
+  assert.equal(usesWhitelistLifetimeBudget({ whitelist_id: 1 }), true);
+  assert.equal(usesWhitelistLifetimeBudget({
+    whitelist_id: 2,
+    actor_policy_id: 3,
+    dynamic_target_id: 4
+  }), false);
 });
 
 test('dynamic policy revision hash changes with safety-critical limits', () => {
@@ -151,13 +182,86 @@ test('paper runtime rejects zero-budget policies before materialization', () => 
   );
 });
 
-test('dynamic aliases are bounded, normalized, and deduplicated', () => {
-  assert.deepEqual(normalizeApprovedAliases([' 何必东奔西走 ', '何必东奔西走', 'PONS']), [
-    '何必东奔西走', 'PONS'
+test('dynamic aliases preserve distinct lines and reject silent normalized duplicates', () => {
+  assert.deepEqual(normalizeApprovedAliases([' 何必东奔西走，币安全部都有。 ', '币有', 'PONS']), [
+    '何必东奔西走，币安全部都有。', '币有', 'PONS'
   ]);
+  assert.throws(
+    () => normalizeApprovedAliases(['何必东奔西走，币安全部都有。', '何必东奔西走, 币安全部都有!']),
+    { code: 'DYNAMIC_POLICY_ALIAS_DUPLICATE' }
+  );
   assert.throws(() => normalizeApprovedAliases(Array.from({ length: 51 }, (_, index) => `alias-${index}`)), {
     code: 'DYNAMIC_POLICY_INVALID'
   });
+});
+
+test('dynamic account templates preserve exact aliases and exclude runtime switches', () => {
+  const config = normalizeTemplateConfig({
+    mode: 'live',
+    enabled: false,
+    allowed_chain_ids: ['bsc'],
+    allowed_event_types: ['tweet'],
+    allowed_term_types: ['approved_name'],
+    approved_aliases: ['何必东奔西走，币安全部都有。'],
+    chain_budgets: { bsc: { budget_per_trade: 0.01, daily_budget: 0.1 } },
+    daily_new_token_limit: 2,
+    per_token_buy_limit: 1,
+    slippage: 10,
+    exit_strategy: {
+      version: 1,
+      sell_ratio_type: 'buy_amount',
+      legs: [{ type: 'take_profit', trigger_pct: 100, sell_pct: 50 }]
+    },
+    resolver_options: {}
+  });
+
+  assert.deepEqual(config.approved_aliases, ['何必东奔西走，币安全部都有。']);
+  assert.equal('mode' in config, false);
+  assert.equal('enabled' in config, false);
+  assert.deepEqual(config.chain_budgets.bsc, { budget_per_trade: 0.01, daily_budget: 0.1 });
+});
+
+test('dynamic template updates keep the row lock inside one database transaction', async () => {
+  const calls = [];
+  const currentConfig = normalizeTemplateConfig({
+    allowed_chain_ids: ['bsc'],
+    allowed_event_types: ['tweet'],
+    allowed_term_types: ['ca'],
+    approved_aliases: [],
+    chain_budgets: { bsc: { budget_per_trade: 0.01, daily_budget: 0.1 } },
+    daily_new_token_limit: 2,
+    per_token_buy_limit: 1,
+    slippage: 10,
+    exit_strategy: {
+      version: 1,
+      sell_ratio_type: 'buy_amount',
+      legs: [{ type: 'take_profit', trigger_pct: 100, sell_pct: 50 }]
+    },
+    resolver_options: {}
+  });
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (sql.startsWith('SELECT id, name, config')) {
+        return { rows: [{ id: 3, name: 'current', config: currentConfig }] };
+      }
+      if (sql.startsWith('UPDATE dynamic_policy_templates')) {
+        return { rows: [{ id: 3, name: 'updated', version: 2 }] };
+      }
+      return { rows: [] };
+    },
+    release() { calls.push({ sql: 'RELEASE', params: [] }); }
+  };
+  const result = await updateTemplateTransactional(3, { name: 'updated' }, {
+    async connect() { return client; }
+  });
+
+  assert.equal(result.version, 2);
+  assert.equal(calls[0].sql, 'BEGIN');
+  assert.match(calls[1].sql, /FOR UPDATE/);
+  assert.match(calls[2].sql, /^UPDATE dynamic_policy_templates/);
+  assert.equal(calls[3].sql, 'COMMIT');
+  assert.equal(calls[4].sql, 'RELEASE');
 });
 
 test('removing a dynamic policy preserves audit rows and cancels future execution', async () => {
@@ -184,7 +288,62 @@ test('removing a dynamic policy preserves audit rows and cancels future executio
   assert.equal(queries.some((item) => /^DELETE FROM x_actor_dynamic_policies/.test(item.sql)), false);
   assert.ok(queries.some((item) => item.sql.includes("mode = 'paused', enabled = false")));
   assert.ok(queries.some((item) => item.sql.includes("failure_code = 'DYNAMIC_POLICY_REMOVED'")));
-  assert.ok(queries.some((item) => item.sql.includes("dynamic_live_approvals SET status = 'revoked'")));
+  assert.ok(queries.some((item) => item.sql.includes("source = 'dynamic_keyword'")
+    && item.sql.includes("status = 'archived'")));
+  assert.ok(queries.some((item) => item.sql.includes('UPDATE whitelist_activation_outbox')));
+  assert.ok(queries.some((item) => item.sql.includes("reject_reason = 'DYNAMIC_POLICY_REMOVED'")));
+  assert.equal(queries.some((item) => item.sql.includes('dynamic_live_approvals')), false);
+});
+
+test('saving a changed dynamic policy locks its revision and cancels stale queued work', async () => {
+  const calls = [];
+  const current = {
+    id: 9,
+    kol_id: 3,
+    mode: 'live',
+    enabled: true,
+    allowed_chain_ids: ['bsc'],
+    allowed_event_types: ['tweet'],
+    allowed_term_types: ['ca'],
+    approved_aliases: [],
+    chain_budgets: { bsc: { budget_per_trade: 0.01, daily_budget: 0.05 } },
+    budget_per_trade: 0.01,
+    daily_budget: 0.05,
+    daily_new_token_limit: 2,
+    per_token_buy_limit: 1,
+    slippage: 10,
+    exit_strategy: {
+      version: 1,
+      sell_ratio_type: 'buy_amount',
+      legs: [{ type: 'take_profit', trigger_pct: 100, sell_pct: 50 }]
+    },
+    resolver_options: {},
+    revision: 6,
+    context_hash: 'old-context'
+  };
+  const executor = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (sql.startsWith('SELECT * FROM x_actor_dynamic_policies')) return { rows: [current] };
+      if (sql.startsWith('INSERT INTO x_actor_dynamic_policies')) {
+        return { rows: [{ ...current, revision: 7, context_hash: params[16] }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const saved = await upsert(3, { slippage: 11 }, executor);
+  assert.equal(saved.revision, 7);
+  assert.match(calls[0].sql, /pg_advisory_xact_lock/);
+  assert.match(calls[1].sql, /FOR UPDATE/);
+  const launchCancellation = calls.find((item) => item.sql.includes('UPDATE dynamic_launch_windows'));
+  assert.deepEqual(launchCancellation.params, [9, 7]);
+  assert.ok(calls.some((item) => item.sql.includes("reject_reason = 'DYNAMIC_POLICY_CHANGED'")));
+  assert.ok(calls.some((item) => item.sql.includes("source = 'dynamic_keyword'")
+    && item.sql.includes("status = 'archived'")));
+  const cancellation = calls.find((item) => item.sql.includes('UPDATE dynamic_signal_jobs'));
+  assert.deepEqual(cancellation.params, [9, 7]);
+  assert.match(cancellation.sql, /status IN\('pending','processing'\)/);
 });
 
 test('GMGN Kline adapter preserves only timestamped price rows', () => {
@@ -330,7 +489,8 @@ test('P20 launch window can reclaim an abandoned processing lease', async () => 
       query: async (sql, params) => {
         queries.push({ sql, params });
         if (sql.includes('WITH candidate AS')) {
-          assert.match(sql, /status = 'processing' AND lease_expires_at < NOW\(\)/);
+          assert.match(sql, /launch_window\.status = 'processing' AND launch_window\.lease_expires_at < NOW\(\)/);
+          assert.match(sql, /job\.status = 'rejected'/);
           assert.equal(params[0], 'launch-test-worker');
           return { rows: [] };
         }

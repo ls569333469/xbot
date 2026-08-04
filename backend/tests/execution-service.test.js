@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   assertTargetChainReady,
+  boundedEvidenceDeadline,
   derivePriceImpactPct,
   evaluateRisk,
   feeReserve,
@@ -11,6 +12,11 @@ const {
   resolveWalletNativeBalance,
   taxAdjustedPriceImpact
 } = require('../domains/trade/execution-service');
+
+test('pre-submit evidence receives its full bounded window when evidence capture begins', () => {
+  assert.equal(boundedEvidenceDeadline(20_000, 10_000), 11_500);
+  assert.equal(boundedEvidenceDeadline(11_000, 10_000), 11_000);
+});
 
 test('execution fee reserve must be explicitly configured per chain', () => {
   const previous = process.env.GMGN_MAX_FEE_RESERVE_ROBINHOOD;
@@ -36,6 +42,26 @@ test('execution checks readiness for the target chain instead of any ready chain
   assert.throws(
     () => assertTargetChainReady(readiness, 'base'),
     (error) => error.code === 'LIVE_CHAIN_READINESS_FAILED'
+  );
+});
+
+test('dynamic execution accepts infrastructure readiness without widening fixed scope', () => {
+  const readiness = {
+    chains: [{
+      chain: 'bsc',
+      ready: false,
+      infrastructure_ready: true,
+      blockers: []
+    }]
+  };
+
+  assert.throws(
+    () => assertTargetChainReady(readiness, 'bsc'),
+    { code: 'LIVE_CHAIN_READINESS_FAILED' }
+  );
+  assert.equal(
+    assertTargetChainReady(readiness, 'bsc', { dynamicScope: true }).chain,
+    'bsc'
   );
 });
 

@@ -7,16 +7,11 @@ async function evaluateSignal(signal, executor = db, options = {}) {
   const flags = options.flags || p20FeatureState();
   if (!flags.P20_LIVE_ENABLED) blockers.push('P20_LIVE_DISABLED');
   const result = await executor.query(
-    `SELECT policy.*, approval.id AS approval_id, approval.expires_at AS approval_expires_at,
-            approval.policy_revision AS approval_revision,
-            approval.context_hash AS approval_context_hash,
-            target.status AS target_status, target.chain_id AS target_chain,
+    `SELECT policy.*, target.status AS target_status, target.chain_id AS target_chain,
             target.contract_address AS target_ca, target.context_hash AS target_context_hash,
             kol.enabled AS kol_enabled
      FROM x_actor_dynamic_policies policy
      JOIN x_kol_accounts kol ON kol.id = policy.kol_id
-     LEFT JOIN dynamic_live_approvals approval ON approval.actor_policy_id = policy.id
-       AND approval.status = 'active' AND approval.expires_at > NOW()
      LEFT JOIN dynamic_targets target ON target.id = $2
      WHERE policy.id = $1 ${options.lock ? 'FOR UPDATE OF policy' : ''}`,
     [Number(signal.actor_policy_id), Number(signal.dynamic_target_id)]
@@ -26,8 +21,6 @@ async function evaluateSignal(signal, executor = db, options = {}) {
   if (row && (!row.enabled || row.mode !== 'live' || !row.kol_enabled)) blockers.push('DYNAMIC_POLICY_NOT_LIVE');
   if (row && Number(row.revision) !== Number(signal.actor_policy_revision)) blockers.push('DYNAMIC_POLICY_REVISION_CHANGED');
   if (row && row.context_hash !== signal.dynamic_policy_context_hash) blockers.push('DYNAMIC_POLICY_CONTEXT_CHANGED');
-  if (row && (!row.approval_id || Number(row.approval_revision) !== Number(row.revision)
-      || row.approval_context_hash !== row.context_hash)) blockers.push('DYNAMIC_LIVE_APPROVAL_INVALID');
   if (row && (row.target_status !== 'active' || row.target_chain !== signal.chain_id
       || row.target_ca !== signal.contract_address
       || row.target_context_hash !== row.context_hash)) blockers.push('DYNAMIC_TARGET_CHANGED');
@@ -51,7 +44,9 @@ async function evaluateSignal(signal, executor = db, options = {}) {
                  AND position.status IN('pending','open','open_unprotected','open_protected',
                    'partially_closed','closing','close_uncertain','protection_failed')) AS open_positions,
               (SELECT COUNT(*)::int FROM trade_attempts attempt
-               WHERE attempt.chain = $2 AND attempt.output_token = $3 AND attempt.side = 'buy'
+               JOIN trade_signals attempt_signal ON attempt_signal.id = attempt.signal_id
+               WHERE attempt_signal.actor_policy_id = $1
+                 AND attempt.chain = $2 AND attempt.output_token = $3 AND attempt.side = 'buy'
                  AND attempt.status IN('reserved','preparing','submitting','submitted','confirming',
                    'submission_uncertain','reconciliation_required','confirmed')) AS token_buys,
               (SELECT COUNT(*)::int FROM dynamic_policy_usage_events event
@@ -131,7 +126,8 @@ async function settleUsage(signalId, status, actualAmount, executor = db) {
   await executor.query(
     `UPDATE dynamic_policy_usage_daily_by_chain SET
        reserved_native = GREATEST(0, reserved_native - $3),
-       spent_native = spent_native + CASE WHEN $2 = 'committed' THEN $4 ELSE 0 END,
+       spent_native = spent_native
+         + CASE WHEN $2 = 'committed' THEN $4::numeric ELSE 0::numeric END,
        new_token_count = GREATEST(0, new_token_count - CASE WHEN $2 = 'released' AND $6 THEN 1 ELSE 0 END),
        updated_at = NOW()
       WHERE actor_policy_id = $1 AND usage_date = $5 AND chain_id = $7`,
@@ -156,58 +152,7 @@ async function releaseUsageByAttempt(attemptId, executor = db) {
   return result.rows[0]?.signal_id ? releaseUsage(result.rows[0].signal_id, executor) : false;
 }
 
-async function approve(policyId, input = {}, executor = db) {
-  if (input.confirmation !== 'APPROVE P20 DYNAMIC LIVE') {
-    const error = new Error('Explicit dynamic live confirmation is required');
-    error.code = 'DYNAMIC_LIVE_CONFIRMATION_REQUIRED';
-    throw error;
-  }
-  const policyResult = await executor.query(
-    'SELECT * FROM x_actor_dynamic_policies WHERE id = $1', [Number(policyId)]
-  );
-  const policy = policyResult.rows[0];
-  if (!policy || policy.mode !== 'live' || !policy.enabled) {
-    const error = new Error('Policy must be enabled in live mode before approval');
-    error.code = 'DYNAMIC_POLICY_NOT_LIVE';
-    throw error;
-  }
-  const paperResult = await executor.query(
-    `SELECT id FROM dynamic_paper_sessions
-     WHERE actor_policy_id = $1 AND policy_revision = $2 AND status = 'completed'
-       AND completed_at - started_at >= INTERVAL '7 days'
-     ORDER BY id DESC LIMIT 1`, [policy.id, policy.revision]
-  );
-  if (paperResult.rows.length === 0) {
-    const error = new Error('A completed seven-day Paper session is required');
-    error.code = 'DYNAMIC_PAPER_ACCEPTANCE_REQUIRED';
-    throw error;
-  }
-  const minutes = Math.min(24 * 60, Math.max(5, Number(input.duration_minutes || 30)));
-  await executor.query(
-    `UPDATE dynamic_live_approvals SET status = 'revoked', revoked_at = NOW()
-     WHERE actor_policy_id = $1 AND status = 'active'`, [policy.id]
-  );
-  const result = await executor.query(
-    `INSERT INTO dynamic_live_approvals
-      (actor_policy_id, policy_revision, context_hash, approved_by, approval_note, expires_at)
-     VALUES ($1,$2,$3,$4,$5,NOW() + ($6 * INTERVAL '1 minute')) RETURNING *`,
-    [policy.id, policy.revision, policy.context_hash, input.approved_by || 'admin',
-      input.approval_note || null, minutes]
-  );
-  await executor.query(
-    'UPDATE x_actor_dynamic_policies SET last_approved_revision = revision WHERE id = $1', [policy.id]
-  );
-  return result.rows[0];
-}
-
-async function revoke(policyId, executor = db) {
-  await executor.query(
-    `UPDATE dynamic_live_approvals SET status = 'revoked', revoked_at = NOW()
-     WHERE actor_policy_id = $1 AND status = 'active'`, [Number(policyId)]
-  );
-}
-
 module.exports = {
-  approve, commitUsage, evaluateSignal, releaseUsage, releaseUsageByAttempt,
-  reserveUsage, revoke, settleUsage
+  commitUsage, evaluateSignal, releaseUsage, releaseUsageByAttempt,
+  reserveUsage, settleUsage
 };

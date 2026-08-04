@@ -1,5 +1,5 @@
-import { Check, ChevronDown, ListChecks } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ListChecks } from 'lucide-react';
+import { useMemo } from 'react';
 import type { ChainId, DynamicChainBudget, DynamicPolicy } from '../../lib/types';
 
 export type DynamicChainBudgetMap = Record<ChainId, DynamicChainBudget>;
@@ -26,50 +26,6 @@ const CHAINS: ChainMeta[] = [
   { id: 'robinhood', name: 'Robinhood Chain', unit: 'ETH', mark: 'RH' },
 ];
 
-const TEMPLATE_VALUES: Record<string, {
-  name: string;
-  ids: ChainId[];
-  values: Partial<DynamicChainBudgetMap>;
-}> = {
-  standard: {
-    name: '多链小额标准',
-    ids: ['sol', 'bsc', 'base', 'eth', 'robinhood'],
-    values: {
-      sol: { budget_per_trade: 0.05, daily_budget: 0.25 },
-      bsc: { budget_per_trade: 0.01, daily_budget: 0.05 },
-      base: { budget_per_trade: 0.003, daily_budget: 0.015 },
-      eth: { budget_per_trade: 0.002, daily_budget: 0.01 },
-      robinhood: { budget_per_trade: 0.003, daily_budget: 0.015 },
-    },
-  },
-  evm: {
-    name: 'EVM 多链小额',
-    ids: ['bsc', 'base', 'eth', 'robinhood'],
-    values: {
-      bsc: { budget_per_trade: 0.01, daily_budget: 0.05 },
-      base: { budget_per_trade: 0.003, daily_budget: 0.015 },
-      eth: { budget_per_trade: 0.002, daily_budget: 0.01 },
-      robinhood: { budget_per_trade: 0.003, daily_budget: 0.015 },
-    },
-  },
-  sol: {
-    name: 'Solana 单链',
-    ids: ['sol'],
-    values: { sol: { budget_per_trade: 0.05, daily_budget: 0.25 } },
-  },
-  record: {
-    name: '仅记录，不交易',
-    ids: ['sol', 'bsc', 'base', 'eth', 'robinhood'],
-    values: {
-      sol: { budget_per_trade: 0, daily_budget: 0 },
-      bsc: { budget_per_trade: 0, daily_budget: 0 },
-      base: { budget_per_trade: 0, daily_budget: 0 },
-      eth: { budget_per_trade: 0, daily_budget: 0 },
-      robinhood: { budget_per_trade: 0, daily_budget: 0 },
-    },
-  },
-};
-
 function emptyBudgets(value?: Partial<DynamicChainBudgetMap>): DynamicChainBudgetMap {
   return Object.fromEntries(CHAINS.map(({ id }) => [id, {
     budget_per_trade: Number(value?.[id]?.budget_per_trade || 0),
@@ -89,7 +45,6 @@ export default function DynamicTradeConfigMatrix({
   mode,
   onChange,
 }: Props) {
-  const [templateId, setTemplateId] = useState('standard');
   const safeAllowedChainIds = Array.isArray(allowedChainIds) ? allowedChainIds : EMPTY_CHAIN_IDS;
   const safeChainBudgets = useMemo(() => emptyBudgets(chainBudgets), [chainBudgets]);
   const selected = new Set(safeAllowedChainIds);
@@ -97,11 +52,6 @@ export default function DynamicTradeConfigMatrix({
 
   const update = (ids: ChainId[], budgets: Partial<DynamicChainBudgetMap> = safeChainBudgets) => {
     onChange({ allowed_chain_ids: [...new Set(ids)], chain_budgets: emptyBudgets(budgets) });
-  };
-
-  const applyTemplate = () => {
-    const template = TEMPLATE_VALUES[templateId] || TEMPLATE_VALUES.standard;
-    update(template.ids, template.values);
   };
 
   const setQuickSelection = (kind: 'all' | 'evm' | 'sol' | 'clear') => {
@@ -126,11 +76,7 @@ export default function DynamicTradeConfigMatrix({
     <section className="p20-chain-matrix" aria-label="方案 A 多链资金矩阵">
       <div className="p20-matrix-head">
         <div><strong>资金与买入</strong><span>每条链使用自己的原生币金额，不做 USD 换算。</span></div>
-        <span className="p20-matrix-badge">方案 A</span>
-      </div>
-      <div className="p20-matrix-template-bar">
-        <label><span>交易配置模板</span><div className="p20-matrix-select"><select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>{Object.entries(TEMPLATE_VALUES).map(([id, template]) => <option value={id} key={id}>{template.name}</option>)}</select><ChevronDown size={14} /></div></label>
-        <button type="button" className="btn btn-secondary p20-matrix-apply" onClick={applyTemplate}><Check size={14} />应用模板</button>
+        <span className="p20-matrix-badge">原生币计价</span>
       </div>
       <div className="p20-matrix-quick-actions" aria-label="快速选择允许链">
         <span><ListChecks size={14} />快速选择</span>

@@ -31,3 +31,24 @@ test('execution gate fails closed on a configuration fingerprint mismatch', () =
   });
   assert.throws(() => gate.assertReady('robinhood'), { code: 'LIVE_CONFIGURATION_CHANGED' });
 });
+
+test('execution gate permits infrastructure-ready chains only for dynamic scope', () => {
+  const gate = new ExecutionGateService({ engine: engine(), maxAgeMs: 1500 });
+  gate.update({
+    readyToArm: true,
+    blockers: [],
+    configurationFingerprint: 'config-1',
+    chains: [{
+      chain: 'bsc',
+      ready: false,
+      infrastructure_ready: true,
+      blockers: []
+    }]
+  });
+
+  assert.throws(() => gate.assertReady('bsc'), { code: 'LIVE_CHAIN_READINESS_FAILED' });
+  assert.equal(
+    gate.assertReady('bsc', { dynamicScope: true }).configurationFingerprint,
+    'config-1'
+  );
+});

@@ -2,8 +2,8 @@ const { EventEmitter } = require('events');
 
 const OFFICIAL_RATE = 20;
 const OFFICIAL_CAPACITY = 20;
-const INTERNAL_RATE = 14;
-const INTERNAL_CAPACITY = 14;
+const INTERNAL_RATE = 5;
+const INTERNAL_CAPACITY = 7;
 const TRADE_RESERVATION_WEIGHT = 7;
 const TRADE_EVIDENCE_WEIGHT = 4;
 
@@ -222,10 +222,11 @@ class WeightedRateScheduler extends EventEmitter {
     this._drain();
   }
 
-  observe429(resetAt) {
+  observe429(resetAt, options = {}) {
     const now = this.now();
     const parsedReset = parseResetAt(resetAt, now);
-    const minimumReset = now + 60_000;
+    const minimumCooldownMs = Math.max(60_000, Number(options.minimumCooldownMs || 60_000));
+    const minimumReset = now + minimumCooldownMs;
     this.cooldownUntil = Math.max(this.cooldownUntil, parsedReset || minimumReset);
     if (!resetAt) this.cooldownUntil = Math.max(this.cooldownUntil, minimumReset);
     this.last429At = now;

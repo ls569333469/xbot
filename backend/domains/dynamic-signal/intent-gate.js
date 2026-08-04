@@ -1,4 +1,4 @@
-const INTENT_RULE_REVISION = 'p20.1-intent-v1';
+const INTENT_RULE_REVISION = 'p20.1-intent-v2';
 
 const PATTERNS = Object.freeze({
   security: [
@@ -38,7 +38,9 @@ function matchedCodes(text, patterns, code) {
 function assetIdentity(term) {
   if (term.type === 'ca') return `ca:${term.normalized}`;
   if (['cashtag', 'hashtag'].includes(term.type)) return `symbol:${term.normalized}`;
-  if (term.type === 'approved_name') return `name:${term.assetFamilyId || term.normalized}`;
+  if (term.type === 'approved_name') {
+    return `name:${term.assetFamilyId || term.matchKey || term.normalized}`;
+  }
   return null;
 }
 
@@ -56,7 +58,9 @@ function isFullCaSolo(_text, assetTerms) {
 }
 
 function decision(intentClass, reasonCodes, extraction) {
-  const canProceedToResolution = ['buy_direct', 'launch_direct', 'full_ca_solo']
+  const canProceedToResolution = [
+    'buy_direct', 'launch_direct', 'full_ca_solo', 'approved_term_direct'
+  ]
     .includes(intentClass);
   return {
     intentClass,
@@ -101,6 +105,9 @@ function classifyIntent(extraction = {}) {
   if (launch.length > 0 && assets.length === 1) return decision('launch_direct', launch, extraction);
   if (isFullCaSolo(text, assets)) {
     return decision('full_ca_solo', ['SOLE_AUTHOR_CA'], extraction);
+  }
+  if (assets.length === 1 && assets[0].type === 'approved_name') {
+    return decision('approved_term_direct', ['APPROVED_TERM_MATCH'], extraction);
   }
   if (assets.length === 1) {
     return decision('neutral_reference', ['ASSET_WITHOUT_CURRENT_ACTION'], extraction);

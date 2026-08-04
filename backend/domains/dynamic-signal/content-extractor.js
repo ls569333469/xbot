@@ -18,6 +18,41 @@ function normalizeName(value) {
     .toLocaleLowerCase('en-US');
 }
 
+function normalizeApprovedNameMatchKey(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .replace(/[\p{P}\p{Z}\s]+/gu, '');
+}
+
+function approvedNameMatchText(value) {
+  const text = String(value || '');
+  const spans = [];
+  let normalized = '';
+  let offset = 0;
+  for (const character of text) {
+    const start = offset;
+    offset += character.length;
+    const folded = normalizeApprovedNameMatchKey(character);
+    for (const foldedCharacter of folded) {
+      normalized += foldedCharacter;
+      spans.push({ start, end: offset });
+    }
+  }
+  return { normalized, spans };
+}
+
+function isAsciiWordCharacter(value) {
+  return /^[A-Za-z0-9_]$/.test(value || '');
+}
+
+function approvedNameBoundaryMatches(text, matchKey, start) {
+  const before = start > 0 ? text[start - 1] : '';
+  const after = text[start + matchKey.length] || '';
+  return !(isAsciiWordCharacter(matchKey[0]) && isAsciiWordCharacter(before))
+    && !(isAsciiWordCharacter(matchKey.at(-1)) && isAsciiWordCharacter(after));
+}
+
 function trimUrl(value) {
   return String(value || '').replace(/[),.;!?\]}]+$/g, '');
 }
@@ -58,15 +93,22 @@ function insideUrl(term, urls) {
   return urls.some((url) => term.start >= url.start && term.end <= url.end);
 }
 
+function termIdentityValue(term) {
+  return term.type === 'approved_name'
+    ? term.matchKey || normalizeApprovedNameMatchKey(term.normalized)
+    : term.normalized;
+}
+
 function approvedAliasRecords(aliases) {
   return (Array.isArray(aliases) ? aliases : [])
     .map((alias) => typeof alias === 'string' ? { value: alias } : alias)
     .map((alias) => ({
       value: String(alias?.value || alias?.name || '').normalize('NFKC').trim(),
       normalized: normalizeName(alias?.normalized || alias?.value || alias?.name),
+      matchKey: normalizeApprovedNameMatchKey(alias?.normalized || alias?.value || alias?.name),
       assetFamilyId: alias?.assetFamilyId ?? alias?.asset_family_id ?? null
     }))
-    .filter((alias) => alias.value && alias.normalized);
+    .filter((alias) => alias.value && alias.normalized && alias.matchKey);
 }
 
 function extractTextTerms(textValue, source, aliases = []) {
@@ -112,20 +154,27 @@ function extractTextTerms(textValue, source, aliases = []) {
     end: match.index + match[0].length
   })));
 
+  const approvedText = approvedNameMatchText(text);
   for (const alias of approvedAliasRecords(aliases)) {
-    const normalizedText = normalizeName(text);
     let offset = 0;
-    while ((offset = normalizedText.indexOf(alias.normalized, offset)) !== -1) {
+    while ((offset = approvedText.normalized.indexOf(alias.matchKey, offset)) !== -1) {
+      if (!approvedNameBoundaryMatches(approvedText.normalized, alias.matchKey, offset)) {
+        offset += Math.max(1, alias.matchKey.length);
+        continue;
+      }
+      const start = approvedText.spans[offset]?.start ?? 0;
+      const end = approvedText.spans[offset + alias.matchKey.length - 1]?.end ?? start;
       terms.push({
         type: 'approved_name',
-        value: text.slice(offset, offset + alias.value.length),
+        value: text.slice(start, end),
         normalized: alias.normalized,
+        matchKey: alias.matchKey,
         assetFamilyId: alias.assetFamilyId,
-        start: offset,
-        end: offset + alias.value.length,
+        start,
+        end,
         via: 'approved_alias'
       });
-      offset += Math.max(1, alias.normalized.length);
+      offset += Math.max(1, alias.matchKey.length);
     }
   }
 
@@ -137,7 +186,7 @@ function extractTextTerms(textValue, source, aliases = []) {
     }))
     .filter((term, index, all) => all.findIndex((candidate) => (
       candidate.type === term.type
-      && candidate.normalized === term.normalized
+      && termIdentityValue(candidate) === termIdentityValue(term)
       && candidate.source === term.source
       && candidate.start === term.start
     )) === index)
@@ -184,6 +233,8 @@ module.exports = {
   TAG_PATTERN,
   extractContent,
   extractTextTerms,
+  normalizeApprovedNameMatchKey,
   normalizeName,
-  normalizeSymbol
+  normalizeSymbol,
+  termIdentityValue
 };

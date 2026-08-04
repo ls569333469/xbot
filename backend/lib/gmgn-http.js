@@ -199,7 +199,9 @@ async function request(method, path, query = {}, body = null, options = {}) {
     const resetAt = envelope.reset_at
       ? parseResetAt(envelope.reset_at)
       : responseMeta.resetAt;
-    scheduler.observe429(resetAt);
+    scheduler.observe429(resetAt, {
+      minimumCooldownMs: envelope.error === 'RATE_LIMIT_BANNED' ? 5 * 60_000 : 60_000
+    });
     responseMeta.resetAt = resetAt || scheduler.getStatus().resetAt;
   }
 

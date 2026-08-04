@@ -56,11 +56,14 @@ class DynamicLaunchWindowWorker {
     try {
       const claimed = await this.db.query(
          `WITH candidate AS (
-            SELECT id FROM dynamic_launch_windows
-            WHERE ((status = 'pending' AND next_attempt_at <= NOW())
-              OR (status = 'processing' AND lease_expires_at < NOW()))
-              AND expires_at > NOW()
-            ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
+            SELECT launch_window.id FROM dynamic_launch_windows AS launch_window
+            JOIN dynamic_signal_jobs AS job ON job.id = launch_window.dynamic_job_id
+            WHERE ((launch_window.status = 'pending' AND launch_window.next_attempt_at <= NOW())
+              OR (launch_window.status = 'processing' AND launch_window.lease_expires_at < NOW()))
+              AND launch_window.expires_at > NOW()
+              AND job.status = 'rejected'
+            ORDER BY launch_window.created_at ASC
+            FOR UPDATE OF launch_window SKIP LOCKED LIMIT 1
           ), claimed AS (
             UPDATE dynamic_launch_windows AS launch_window SET status = 'processing',
               attempt_count = attempt_count + 1, worker_id = $1,

@@ -1,6 +1,19 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { finalProductionAuthorization } = require('../domains/trade/trade-repository');
+
+test('final submission acceptance scope projects the context hash it validates', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../domains/trade/trade-repository.js'),
+    'utf8'
+  );
+  assert.match(
+    source,
+    /WITH acceptance_scope AS \(\s*SELECT chain, whitelist_id, expires_at, context_hash\s+FROM live_acceptance_scopes/
+  );
+});
 
 test('final production gate accepts an enabled production chain without an acceptance scope', () => {
   assert.deepEqual(finalProductionAuthorization({

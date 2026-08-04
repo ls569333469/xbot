@@ -15,9 +15,10 @@ function errorMessage(error) {
 
 function effectiveMode(policyMode, flags = p20FeatureState()) {
   if (!flags.P20_DYNAMIC_RESOLUTION_ENABLED || !flags.P20_RECORD_ENABLED) return null;
-  if (policyMode === 'live' && flags.P20_LIVE_ENABLED) return 'live';
-  if (['live', 'paper'].includes(policyMode) && flags.P20_PAPER_ENABLED) return 'paper';
-  return 'record';
+  if (policyMode === 'record') return 'record';
+  if (policyMode === 'paper') return flags.P20_PAPER_ENABLED ? 'paper' : null;
+  if (policyMode === 'live') return flags.P20_LIVE_ENABLED ? 'live' : null;
+  return null;
 }
 
 async function enqueueForActivity(activity, providerEventId, executor = db, options = {}) {

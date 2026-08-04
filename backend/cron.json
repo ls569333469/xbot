@@ -30,21 +30,5 @@
     "handler": "./jobs/price-monitor",
     "enabled": false,
     "timeout": 15000
-  },
-  {
-    "id": "order-sync",
-    "name": "Sync Orders",
-    "schedule": "*/30 * * * * *",
-    "handler": "./jobs/order-sync",
-    "enabled": false,
-    "timeout": 30000
-  },
-  {
-    "id": "budget-reset",
-    "name": "Legacy Budget Reset (disabled by P9 ledger)",
-    "schedule": "0 0 * * *",
-    "handler": "./jobs/budget-reset",
-    "enabled": false,
-    "timeout": 30000
   }
 ]

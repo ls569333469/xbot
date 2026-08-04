@@ -28,21 +28,20 @@ export default function DynamicStrategyWorkspacePage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const liveCount = policies.filter((item) => item.mode === 'live' && item.enabled
-    && item.approval_id && item.approval_expires_at && Date.parse(item.approval_expires_at) > Date.now()).length;
+  const liveCount = policies.filter((item) => item.mode === 'live' && item.enabled).length;
   const resolutionRuntime = dynamicResolutionDisplay(runtime);
   const summaryItems: WorkspaceSummaryItem[] = [
     { label: 'KOL 账号', value: kols.length, detail: '可配置账号' },
     { label: '账号策略', value: policies.length, detail: `${policies.filter((item) => item.mode === 'record').length} 条记录 · ${policies.filter((item) => item.mode === 'paper').length} 条模拟` },
     { label: '解析任务', value: resolutionRuntime.shortLabel, detail: resolutionRuntime.detail },
-    { label: '实盘授权', value: liveCount, detail: liveCount ? '账号级授权' : '未开启动态实盘' },
+    { label: '实盘策略', value: liveCount, detail: liveCount ? '随全局 Engine 运行' : '未配置动态实盘' },
   ];
 
   return (
     <StrategyWorkspaceLayout
       eyebrow="动态策略工作区"
       title="动态喊单策略"
-      description="管理账号级匹配规则、解析任务、模拟验收和实盘授权。"
+      description="管理账号级匹配规则、解析任务、模拟交易和实盘配置。"
       status={resolutionRuntime.label}
       statusTone={resolutionRuntime.tone}
       summary={summaryItems}

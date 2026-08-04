@@ -130,9 +130,12 @@ function taxAdjustedPriceImpact(priceImpact, buyTax) {
   };
 }
 
-function assertTargetChainReady(readiness, chainId) {
+function assertTargetChainReady(readiness, chainId, options = {}) {
   const chain = readiness?.chains?.find((item) => item.chain === chainId);
-  if (!chain?.ready) {
+  const targetReady = options.dynamicScope
+    ? Boolean(chain?.infrastructureReady ?? chain?.infrastructure_ready)
+    : Boolean(chain?.ready);
+  if (!targetReady) {
     const blockers = chain?.blockers || ['CHAIN_READINESS_MISSING'];
     const error = new Error(`Live readiness failed for ${chainId}: ${blockers.join(', ')}`);
     error.code = 'LIVE_CHAIN_READINESS_FAILED';
@@ -140,6 +143,10 @@ function assertTargetChainReady(readiness, chainId) {
     throw error;
   }
   return chain;
+}
+
+function boundedEvidenceDeadline(tradeDeadlineAt, now = Date.now()) {
+  return Math.min(Number(tradeDeadlineAt), Number(now) + 1500);
 }
 
 function evaluateRisk(context) {
@@ -532,18 +539,21 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
   trace.mark('claim');
   let gate;
   try {
-    gate = executionGateService.assertReady(options.chainId);
+    gate = executionGateService.assertReady(options.chainId, {
+      dynamicScope: Boolean(options.dynamicScope)
+    });
   } catch (error) {
     if (error.code !== 'EXECUTION_GATE_STALE') throw error;
     const readiness = await readinessService.getSnapshot();
-    gate = executionGateService.assertReady(options.chainId);
+    gate = executionGateService.assertReady(options.chainId, {
+      dynamicScope: Boolean(options.dynamicScope)
+    });
     if (!readiness.readyToArm) throw error;
   }
   trace.mark('gate');
 
   const deadlineAt = Date.now()
     + Math.max(1000, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300) * 1000);
-  const evidenceDeadlineAt = Math.min(deadlineAt, Date.now() + 1500);
   const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
   let attempt = null;
   let swapStarted = false;
@@ -553,6 +563,7 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
       deadlineAt,
       trace,
       captureEvidence: async (provisionalAttempt, context) => {
+        const evidenceDeadlineAt = boundedEvidenceDeadline(deadlineAt);
         const evidenceLease = await gmgnHttp.scheduler.reserveTradeEvidence({
           deadlineAt: evidenceDeadlineAt,
           context: { signalId, kind: 'pre_submit_evidence' }
@@ -569,7 +580,9 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
         }
       }
     });
-    assertTargetChainReady(gate, prepared.chain.id);
+    assertTargetChainReady(gate, prepared.chain.id, {
+      dynamicScope: Boolean(options.dynamicScope)
+    });
     if (!prepared.livePolicy.allowed) {
       const error = new Error(`Live policy rejected signal: ${prepared.livePolicy.blockers.join(', ')}`);
       error.code = prepared.livePolicy.blockers[0] || 'LIVE_POLICY_REJECTED';
@@ -677,7 +690,6 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     error.code = 'LIVE_READINESS_FAILED';
     throw error;
   }
-  assertTargetChainReady(readiness, intent.chain);
   const deadlineAt = new Date(intent.expires_at).getTime();
   const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
   let attempt = null;
@@ -689,6 +701,10 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       forceRefresh: true,
       slippageCap: Number(intent.slippage_cap),
       policyPhase: 'live'
+    });
+    assertTargetChainReady(readiness, intent.chain, {
+      dynamicScope: Boolean(prepared.signal.actor_policy_id
+        && prepared.signal.dynamic_target_id)
     });
     await livePolicy.evaluate(prepared.signal, { throwOnFailure: true });
     if (!prepared.risk.passed) {
@@ -793,6 +809,7 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
 
 module.exports = {
   assertTargetChainReady,
+  boundedEvidenceDeadline,
   buildPrepared,
   derivePriceImpactPct,
   evaluateRisk,

@@ -326,13 +326,29 @@ export interface DynamicPolicy {
   resolver_options: Record<string, unknown>;
   revision: number;
   context_hash: string;
-  approval_id?: string | null;
-  approval_expires_at?: string | null;
+  watch_sync_status?: 'pending' | 'processing' | 'succeeded' | 'failed' | string | null;
+  watch_sync_error?: string | null;
+  watch_synced_at?: string | null;
+  watch_desired_version?: number | null;
 }
 
 export interface DynamicChainBudget {
   budget_per_trade: number;
   daily_budget: number;
+}
+
+export type DynamicPolicyTemplateConfig = Pick<DynamicPolicy,
+  'allowed_chain_ids' | 'allowed_event_types' | 'allowed_term_types' |
+  'approved_aliases' | 'chain_budgets' | 'daily_new_token_limit' |
+  'per_token_buy_limit' | 'slippage' | 'exit_strategy' | 'resolver_options'>;
+
+export interface DynamicPolicyTemplate {
+  id: string;
+  name: string;
+  config: DynamicPolicyTemplateConfig;
+  version: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ActorScreeningResult {

@@ -25,9 +25,6 @@ function policyRow(chainBudgets = { bsc: { budget_per_trade: '0.01', daily_budge
     per_token_buy_limit: 1,
     daily_new_token_limit: 2,
     chain_budgets: chainBudgets,
-    approval_id: 19,
-    approval_revision: 4,
-    approval_context_hash: 'ctx-4',
     target_status: 'active',
     target_chain: 'bsc',
     target_ca: SIGNAL.contract_address,
@@ -35,7 +32,7 @@ function policyRow(chainBudgets = { bsc: { budget_per_trade: '0.01', daily_budge
   };
 }
 
-test('dynamic authorization reads and enforces the native budget for the signal chain', async () => {
+test('dynamic authorization needs no account approval and enforces the native chain budget', async () => {
   const calls = [];
   const executor = {
     async query(sql, params = []) {
@@ -50,6 +47,8 @@ test('dynamic authorization reads and enforces the native budget for the signal 
   const result = await evaluateSignal(SIGNAL, executor, { flags: { P20_LIVE_ENABLED: true } });
   assert.equal(result.allowed, true);
   assert.match(calls[1].sql, /dynamic_policy_usage_daily_by_chain/);
+  assert.match(calls[1].sql, /JOIN trade_signals attempt_signal ON attempt_signal\.id = attempt\.signal_id/);
+  assert.match(calls[1].sql, /attempt_signal\.actor_policy_id = \$1/);
   assert.deepEqual(calls[1].params, [7, 'bsc', SIGNAL.contract_address]);
 });
 
@@ -82,5 +81,14 @@ test('dynamic usage settlement updates the same chain ledger as the event', asyn
   };
   assert.equal(await settleUsage(31, 'released', null, executor), true);
   assert.match(calls[1].sql, /dynamic_policy_usage_daily_by_chain/);
-  assert.equal(calls[1].params.at(-1), 'bsc');
+  assert.match(calls[1].sql, /\$4::numeric/);
+  assert.deepEqual(calls[1].params, [
+    7,
+    'released',
+    '0.01',
+    0.01,
+    '2026-08-02',
+    true,
+    'bsc'
+  ]);
 });

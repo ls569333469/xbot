@@ -86,12 +86,17 @@ export default function SettingsPage() {
   const { toast } = useToast();
 
   const applyEngineStatus = (data: any) => {
-    setIsArmed(Boolean(data?.armed));
+    const armed = Boolean(data?.armed);
+    setIsArmed(armed);
+    if (armed) {
+      setArmChecking(false);
+      setShowArmDialog(false);
+    }
     setEngineMode(data?.mode || 'signal');
     setEngineRuntime(previous => ({
       ...previous,
       ...data,
-      armed: Boolean(data?.armed),
+      armed,
       status: data?.status || (data?.armed ? 'running' : 'stopped'),
       desiredRunning: Boolean(data?.desiredRunning)
     }));
@@ -509,7 +514,7 @@ export default function SettingsPage() {
               <div className="flex gap-sm">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowArmDialog(false)}>返回</button>
                 <button type="button" className="btn btn-primary"
-                  disabled={!armPreparation.summary.readyToArm || !armPreparation.arm_token}
+                  disabled={armChecking || !armPreparation.summary.readyToArm || !armPreparation.arm_token}
                   onClick={confirmArm}>
                   <Shield size={15} /> 确认启动
                 </button>

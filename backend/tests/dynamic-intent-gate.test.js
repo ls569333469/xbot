@@ -20,6 +20,31 @@ test('intent gate treats a tag without action as a neutral reference', () => {
   assert.equal(classify({ text: '$PONS' }).intentClass, 'neutral_reference');
 });
 
+test('intent gate permits an explicitly configured phrase without extra buy language', () => {
+  const result = classify({
+    text: '何必东奔西走.币安全部都有!',
+    approvedAliases: [
+      '何必东奔西走，币安全部都有。',
+      '何必东奔西走 币安全部都有'
+    ]
+  });
+  assert.equal(result.intentClass, 'approved_term_direct');
+  assert.deepEqual(result.reasonCodes, ['APPROVED_TERM_MATCH']);
+  assert.equal(result.canProceedToResolution, true);
+});
+
+test('Chinese risk language still overrides an explicitly configured phrase', () => {
+  const aliases = ['何必东奔西走，币安全部都有。'];
+  assert.equal(classify({
+    text: '不要买：何必东奔西走.币安全部都有!',
+    approvedAliases: aliases
+  }).intentClass, 'negative_or_warning');
+  assert.equal(classify({
+    text: '已卖出 何必东奔西走.币安全部都有!',
+    approvedAliases: aliases
+  }).intentClass, 'sell_or_exit');
+});
+
 test('intent gate hard-rejects security, warning, sell, and historical contexts', () => {
   assert.equal(classify({ text: `Account hacked, CA ${CA}` }).intentClass, 'security_incident');
   assert.equal(classify({ text: 'Avoid $PONS, possible scam' }).intentClass, 'negative_or_warning');

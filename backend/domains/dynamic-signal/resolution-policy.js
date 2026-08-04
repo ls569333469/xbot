@@ -1,5 +1,9 @@
 const { candidateKey, normalizeCandidate } = require('./candidate-index');
-const { normalizeName, normalizeSymbol } = require('./content-extractor');
+const {
+  normalizeApprovedNameMatchKey,
+  normalizeName,
+  normalizeSymbol
+} = require('./content-extractor');
 
 const RESOLUTION_CODES = Object.freeze({
   NOT_FOUND: 'DYNAMIC_CA_NOT_FOUND',
@@ -55,7 +59,8 @@ function termMatches(candidate, extraction) {
         && normalizeSymbol(term.normalized) === candidate.symbol) {
       support.push('SYMBOL_MATCH');
     } else if (term.type === 'approved_name'
-        && normalizeName(term.normalized) === candidate.normalizedName) {
+        && normalizeApprovedNameMatchKey(term.matchKey || term.normalized)
+          === candidate.approvedNameMatchKey) {
       support.push('APPROVED_NAME_MATCH');
     }
   }

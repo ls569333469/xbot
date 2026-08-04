@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  INTERNAL_CAPACITY,
+  INTERNAL_RATE,
   WeightedRateScheduler,
   PRIORITIES,
   endpointWeight,
@@ -9,7 +11,9 @@ const {
 
 test('scheduler reserves quote and swap atomically as seven weight', async () => {
   let now = 1_000_000;
-  const scheduler = new WeightedRateScheduler({ now: () => now, jitter: () => 0 });
+  const scheduler = new WeightedRateScheduler({
+    rate: 14, capacity: 14, now: () => now, jitter: () => 0
+  });
   const lease = await scheduler.reserveTrade();
   assert.equal(lease.remainingWeight, 7);
   assert.equal(scheduler.getStatus().reservedWeight, 7);
@@ -28,7 +32,9 @@ test('scheduler reserves quote and swap atomically as seven weight', async () =>
 });
 
 test('trade evidence uses an independent four-weight lease below critical reconciliation', async () => {
-  const scheduler = new WeightedRateScheduler({ now: () => 1_000_000, jitter: () => 0 });
+  const scheduler = new WeightedRateScheduler({
+    rate: 14, capacity: 14, now: () => 1_000_000, jitter: () => 0
+  });
   const tradeLease = await scheduler.reserveTrade();
   const evidenceLease = await scheduler.reserveTradeEvidence();
   assert.equal(tradeLease.remainingWeight, 7);
@@ -43,13 +49,31 @@ test('trade evidence uses an independent four-weight lease below critical reconc
 
 test('first 429 globally cools and degrades the scheduler', () => {
   const now = 1_000_000;
-  const scheduler = new WeightedRateScheduler({ now: () => now, jitter: () => 0 });
+  const scheduler = new WeightedRateScheduler({
+    rate: 14, capacity: 14, now: () => now, jitter: () => 0
+  });
   scheduler.observe429((now + 120_000) / 1000);
   const status = scheduler.getStatus();
   assert.equal(status.state, 'cooling');
   assert.equal(status.cooldownUntil, now + 120_000);
   assert.equal(status.currentRate, 11);
   assert.equal(parseResetAt((now + 1_000) / 1000, now), now + 1_000);
+});
+
+test('default scheduler paces reads while retaining one atomic trade reservation', () => {
+  const scheduler = new WeightedRateScheduler({ now: () => 1_000_000, jitter: () => 0 });
+  const status = scheduler.getStatus();
+  assert.equal(INTERNAL_RATE, 5);
+  assert.equal(INTERNAL_CAPACITY, 7);
+  assert.equal(status.configuredRate, 5);
+  assert.equal(status.configuredCapacity, 7);
+});
+
+test('account-level rate bans enforce a longer minimum cooldown', () => {
+  const now = 1_000_000;
+  const scheduler = new WeightedRateScheduler({ now: () => now, jitter: () => 0 });
+  scheduler.observe429(null, { minimumCooldownMs: 5 * 60_000 });
+  assert.equal(scheduler.getStatus().cooldownUntil, now + 5 * 60_000);
 });
 
 test('official endpoint weights include read, quote, swap, and strategy writes', () => {

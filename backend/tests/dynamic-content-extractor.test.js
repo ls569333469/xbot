@@ -31,6 +31,32 @@ test('content extractor accepts only approved Chinese aliases without fuzzy segm
   assert.equal(names[0].assetFamilyId, 12);
 });
 
+test('approved Chinese aliases tolerate punctuation, spacing, and width differences', () => {
+  const result = extractContent({
+    text: '何必东奔西走.币安全部都有!',
+    approvedAliases: [
+      '何必东奔西走，币安全部都有。',
+      '何必东奔西走 币安全部都有'
+    ]
+  });
+  const names = result.authorOwnedTerms.filter((term) => term.type === 'approved_name');
+  assert.equal(names.length, 1);
+  assert.equal(names[0].value, '何必东奔西走.币安全部都有');
+  assert.equal(names[0].start, 0);
+  assert.equal(names[0].end, result.actorText.length - 1);
+});
+
+test('approved alias tolerance does not hide actual word changes or ASCII suffixes', () => {
+  const changed = extractContent({
+    text: '何必东奔西走，币安并非都有。',
+    approvedAliases: ['何必东奔西走，币安全部都有。']
+  });
+  assert.equal(changed.authorOwnedTerms.some((term) => term.type === 'approved_name'), false);
+
+  const suffix = extractContent({ text: '$ANSEMX', approvedAliases: ['ANSEM'] });
+  assert.equal(suffix.authorOwnedTerms.some((term) => term.type === 'approved_name'), false);
+});
+
 test('content extractor preserves author and quoted ownership boundaries', () => {
   const result = extractContent({
     eventType: 'quote',

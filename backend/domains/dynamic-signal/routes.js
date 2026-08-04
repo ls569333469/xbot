@@ -1,8 +1,8 @@
 const express = require('express');
 const db = require('../../lib/db');
 const policyService = require('./policy-service');
+const templates = require('./templates');
 const resolutionStore = require('./resolution-store');
-const authorization = require('./dynamic-authorization');
 const { dynamicSignalWorker } = require('./event-worker');
 const { dynamicPaperSessionWorker } = require('./paper-worker');
 const { p20FeatureState } = require('../../lib/p20-features');
@@ -33,15 +33,36 @@ router.get('/policies', async (req, res) => {
   catch (error) { sendError(res, error); }
 });
 
+router.get('/templates', async (_req, res) => {
+  try { res.json({ ok: true, data: await templates.listTemplates() }); }
+  catch (error) { sendError(res, error); }
+});
+
+router.post('/templates', async (req, res) => {
+  try { res.json({ ok: true, data: await templates.createTemplate(req.body) }); }
+  catch (error) { sendError(res, error); }
+});
+
+router.put('/templates/:id', async (req, res) => {
+  try { res.json({ ok: true, data: await templates.updateTemplateTransactional(req.params.id, req.body) }); }
+  catch (error) { sendError(res, error); }
+});
+
+router.delete('/templates/:id', async (req, res) => {
+  try { res.json({ ok: true, data: { deleted: await templates.deleteTemplate(req.params.id) } }); }
+  catch (error) { sendError(res, error); }
+});
+
 router.put('/policies/:kolId', async (req, res) => {
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    const policy = await policyService.upsert(req.params.kolId, req.body, client);
+    await policyService.upsert(req.params.kolId, req.body, client);
     const kolResult = await client.query(
       'SELECT x_handle FROM x_kol_accounts WHERE id = $1', [Number(req.params.kolId)]
     );
     await enqueueWatchSyncForHandles(kolResult.rows.map((row) => row.x_handle), client);
+    const [policy] = await policyService.list({ kol_id: req.params.kolId }, client);
     await client.query('COMMIT');
     res.json({ ok: true, data: policy });
   } catch (error) {
@@ -63,26 +84,6 @@ router.delete('/policies/:id', async (req, res) => {
     await client.query('ROLLBACK');
     sendError(res, error);
   } finally { client.release(); }
-});
-
-router.post('/policies/:id/approve-live', async (req, res) => {
-  const client = await db.pool.connect();
-  try {
-    await client.query('BEGIN');
-    const approval = await authorization.approve(req.params.id, req.body, client);
-    await client.query('COMMIT');
-    res.json({ ok: true, data: approval });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    sendError(res, error);
-  } finally { client.release(); }
-});
-
-router.post('/policies/:id/revoke-live', async (req, res) => {
-  try {
-    await authorization.revoke(req.params.id);
-    res.json({ ok: true, data: { revoked: true } });
-  } catch (error) { sendError(res, error); }
 });
 
 router.get('/resolutions', async (req, res) => {

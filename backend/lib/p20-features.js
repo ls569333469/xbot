@@ -28,11 +28,6 @@ function assertP20ReadOnly(env = process.env) {
 
 function validateP20Runtime(env = process.env) {
   const state = p20FeatureState(env);
-  if (state.P20_LIVE_ENABLED && !state.P20_PAPER_ENABLED) {
-    const error = new Error('P20 live requires the Paper runtime capability to remain enabled');
-    error.code = 'P20_LIVE_REQUIRES_PAPER';
-    throw error;
-  }
   if ((state.P20_PAPER_ENABLED || state.P20_LIVE_ENABLED) && !state.P20_RECORD_ENABLED) {
     const error = new Error('P20 Paper and Live require Record to remain enabled');
     error.code = 'P20_RUNTIME_REQUIRES_RECORD';

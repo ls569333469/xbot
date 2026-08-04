@@ -1,7 +1,19 @@
-const { normalizeName, normalizeSymbol } = require('./content-extractor');
+const {
+  normalizeApprovedNameMatchKey,
+  normalizeName,
+  normalizeSymbol
+} = require('./content-extractor');
 const { normalizeXHandle } = require('../../lib/x-handles');
 
 const CHAIN_IDS = new Set(['sol', 'bsc', 'base', 'eth', 'robinhood']);
+const MAX_CANDIDATE_INDEX_BYTES = 512;
+
+function boundedIndexText(value, normalizer = (input) => String(input || '').trim()) {
+  const normalized = normalizer(value);
+  return normalized && Buffer.byteLength(normalized, 'utf8') <= MAX_CANDIDATE_INDEX_BYTES
+    ? normalized
+    : '';
+}
 
 function normalizeChain(value) {
   const chain = String(value || '').trim().toLowerCase();
@@ -11,7 +23,11 @@ function normalizeChain(value) {
 function normalizeAddress(chainId, value) {
   const address = String(value || '').trim();
   if (!address) return null;
-  return chainId === 'sol' ? address : address.toLowerCase();
+  if (chainId === 'sol') {
+    return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) ? address : null;
+  }
+  const normalized = address.toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(normalized) ? normalized : null;
 }
 
 function candidateKey(candidate) {
@@ -29,22 +45,37 @@ function normalizeCandidate(value = {}) {
     value.contractAddress ?? value.contract_address ?? value.address ?? value.token_address
   );
   if (!chainId || !contractAddress) return null;
+  const name = boundedIndexText(
+    value.name,
+    (input) => String(input || '').normalize('NFKC').trim()
+  );
+  const normalizedName = boundedIndexText(
+    value.normalizedName || name,
+    normalizeName
+  );
   return {
     ...value,
     id: value.id ?? value.variantId ?? value.variant_id ?? null,
     variantId: value.variantId ?? value.variant_id ?? value.id ?? null,
     assetFamilyId: value.assetFamilyId ?? value.asset_family_id ?? null,
-    assetFamilyKey: value.assetFamilyKey ?? value.asset_family_key ?? null,
+    assetFamilyKey: boundedIndexText(
+      value.assetFamilyKey ?? value.asset_family_key,
+      (input) => String(input || '').normalize('NFKC').trim().toLocaleLowerCase('en-US')
+    ) || null,
     chainId,
     contractAddress,
-    symbol: normalizeSymbol(value.symbol),
-    name: String(value.name || '').normalize('NFKC').trim(),
-    normalizedName: normalizeName(value.normalizedName || value.name),
-    launchpad: normalizeName(value.launchpad ?? value.launchpad_platform),
+    symbol: boundedIndexText(value.symbol, normalizeSymbol),
+    name,
+    normalizedName,
+    approvedNameMatchKey: normalizeApprovedNameMatchKey(
+      value.approvedNameMatchKey ?? value.approved_name_match_key ?? normalizedName
+    ),
+    launchpad: boundedIndexText(value.launchpad ?? value.launchpad_platform, normalizeName),
     xHandles: [...new Set(asArray(
       value.xHandles ?? value.x_handles ?? value.officialXHandles ?? value.official_x_handles
     ).map(normalizeXHandle).filter(Boolean))],
-    sourcePostIds: [...new Set(asArray(value.sourcePostIds ?? value.source_post_ids).map(String).filter(Boolean))],
+    sourcePostIds: [...new Set(asArray(value.sourcePostIds ?? value.source_post_ids)
+      .map((item) => boundedIndexText(item)).filter(Boolean))],
     sources: [...new Set(asArray(value.sources ?? value.sourceTypes ?? value.source_types ?? value.source).map(String).filter(Boolean))],
     fetchedAt: value.fetchedAt ?? value.fetched_at ?? null,
     expiresAt: value.expiresAt ?? value.expires_at ?? null
@@ -107,6 +138,7 @@ class CandidateIndex {
     const key = candidateKey(candidate);
     this._add('symbol', candidate.symbol, key);
     this._add('name', candidate.normalizedName, key);
+    this._add('approved_name', candidate.approvedNameMatchKey, key);
     this._add('launchpad', candidate.launchpad, key);
     this._add('chain_ca', key, key);
     for (const handle of candidate.xHandles) this._add('x_handle', handle, key);
@@ -140,7 +172,12 @@ class CandidateIndex {
       } else if (['cashtag', 'hashtag'].includes(term.type)) {
         keys = this._lookupKeys('symbol', normalizeSymbol(term.normalized));
       } else if (term.type === 'approved_name') {
-        keys = this._lookupKeys('name', normalizeName(term.normalized));
+        keys = [...new Set([
+          ...this._lookupKeys('name', normalizeName(term.normalized)),
+          ...this._lookupKeys('approved_name', normalizeApprovedNameMatchKey(
+            term.matchKey || term.normalized
+          ))
+        ])];
       } else if (term.type === 'x_handle') {
         keys = this._lookupKeys('x_handle', normalizeXHandle(term.normalized));
       }
@@ -174,7 +211,9 @@ class CandidateIndex {
 
 module.exports = {
   CHAIN_IDS,
+  MAX_CANDIDATE_INDEX_BYTES,
   CandidateIndex,
+  boundedIndexText,
   candidateKey,
   isFresh,
   mergeCandidate,

@@ -1,5 +1,7 @@
 const db = require('../../lib/db');
-const { CandidateIndex, normalizeCandidate } = require('./candidate-index');
+const {
+  CandidateIndex, boundedIndexText, candidateKey, normalizeCandidate
+} = require('./candidate-index');
 const { normalizeName, normalizeSymbol } = require('./content-extractor');
 
 const DEFAULT_GMGN_CANDIDATE_TTL_MS = 5 * 60_000;
@@ -55,10 +57,7 @@ async function loadIndex(options = {}, executor = db) {
 }
 
 function familyKey(candidate) {
-  const symbol = normalizeSymbol(candidate.symbol);
-  const name = normalizeName(candidate.name);
-  return symbol ? `symbol:${symbol}` : name ? `name:${name}`
-    : `ca:${candidate.chainId}:${candidate.contractAddress}`;
+  return candidate.assetFamilyKey || `variant:${candidateKey(candidate)}`;
 }
 
 async function upsertCandidate(value, sourceType, executor = db, options = {}) {
@@ -70,7 +69,7 @@ async function upsertCandidate(value, sourceType, executor = db, options = {}) {
   const verifiedTtlMs = boundedGmgnCandidateTtlMs();
   const expiresAt = explicitExpiry || (sourceType === 'gmgn_info'
     ? new Date(new Date(fetchedAt).getTime() + verifiedTtlMs) : null);
-  const identity = candidate.assetFamilyKey || familyKey(candidate);
+  const identity = familyKey(candidate);
   const familyResult = await executor.query(
     `INSERT INTO dynamic_asset_families
       (identity_key, canonical_name, canonical_symbol, evidence)
@@ -121,6 +120,7 @@ async function upsertCandidate(value, sourceType, executor = db, options = {}) {
       fetchedAt, expiresAt]
   );
   const variant = variantResult.rows[0];
+  const sourceRef = boundedIndexText(options.sourceRef) || null;
   const keys = [
     ['chain_ca', `${candidate.chainId}:${candidate.contractAddress}`],
     ['symbol', normalizeSymbol(candidate.symbol)],
@@ -137,7 +137,7 @@ async function upsertCandidate(value, sourceType, executor = db, options = {}) {
        ON CONFLICT (variant_id, key_type, normalized_key, source_type, (COALESCE(source_ref, '')))
        DO UPDATE SET field_available = true, fetched_at = EXCLUDED.fetched_at,
          expires_at = EXCLUDED.expires_at`,
-      [variant.id, keyType, key, sourceType, options.sourceRef || null, fetchedAt, expiresAt]
+      [variant.id, keyType, key, sourceType, sourceRef, fetchedAt, expiresAt]
     );
   }
   return variant;

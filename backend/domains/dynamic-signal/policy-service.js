@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const db = require('../../lib/db');
 const { normalizeXHandle } = require('../../lib/x-handles');
+const { normalizeApprovedNameMatchKey } = require('./content-extractor');
 const {
   clonePreset,
   normalizeExitStrategy
@@ -102,18 +103,28 @@ function normalizeApprovedAliases(value) {
     throw error;
   }
   const aliases = [];
-  const seen = new Set();
-  for (const raw of value) {
+  const seen = new Map();
+  for (const [index, raw] of value.entries()) {
     const name = String(typeof raw === 'string' ? raw : raw?.name ?? raw?.value ?? '')
-      .normalize('NFKC').trim().replace(/\s+/g, ' ');
+      .trim().replace(/\s+/g, ' ');
     if (!name || name.length > 80) {
       const error = new Error('Dynamic policy aliases must contain 1-80 characters');
       error.code = 'DYNAMIC_POLICY_INVALID';
       throw error;
     }
-    const key = name.toLocaleLowerCase('en-US');
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const key = normalizeApprovedNameMatchKey(name);
+    if (!key) {
+      const error = new Error(`Dynamic policy alias at line ${index + 1} has no matchable characters`);
+      error.code = 'DYNAMIC_POLICY_INVALID';
+      throw error;
+    }
+    const firstLine = seen.get(key);
+    if (firstLine !== undefined) {
+      const error = new Error(`Dynamic policy alias at line ${index + 1} duplicates line ${firstLine} after punctuation normalization`);
+      error.code = 'DYNAMIC_POLICY_ALIAS_DUPLICATE';
+      throw error;
+    }
+    seen.set(key, index + 1);
     aliases.push(typeof raw === 'string' ? name : { ...raw, name });
   }
   return aliases;
@@ -202,16 +213,14 @@ async function list(filters = {}, executor = db) {
   }
   const result = await executor.query(
     `SELECT policy.*, kol.x_handle, kol.display_name,
-            approval.id AS approval_id, approval.expires_at AS approval_expires_at,
-            approval.policy_revision AS approval_policy_revision,
-            approval.context_hash AS approval_context_hash
+            watch.status AS watch_sync_status,
+            watch.last_error AS watch_sync_error,
+            watch.synced_at AS watch_synced_at,
+            watch.desired_version AS watch_desired_version
      FROM x_actor_dynamic_policies AS policy
      JOIN x_kol_accounts AS kol ON kol.id = policy.kol_id
-     LEFT JOIN LATERAL (
-       SELECT * FROM dynamic_live_approvals
-       WHERE actor_policy_id = policy.id AND status = 'active' AND expires_at > NOW()
-       ORDER BY id DESC LIMIT 1
-     ) approval ON true
+     LEFT JOIN x_watch_sync_outbox AS watch
+       ON watch.actor_handle = lower(regexp_replace(kol.x_handle, '^@+', ''))
      ${where}
      ORDER BY policy.updated_at DESC`,
     params
@@ -231,8 +240,9 @@ async function getById(id, executor = db, options = {}) {
 }
 
 async function upsert(kolId, input = {}, executor = db) {
+  await executor.query('SELECT pg_advisory_xact_lock(20, $1::int)', [Number(kolId)]);
   const existingResult = await executor.query(
-    'SELECT * FROM x_actor_dynamic_policies WHERE kol_id = $1', [Number(kolId)]
+    'SELECT * FROM x_actor_dynamic_policies WHERE kol_id = $1 FOR UPDATE', [Number(kolId)]
   );
   const current = existingResult.rows[0] || {};
   const config = normalizePolicyInput(input, current);
@@ -273,8 +283,53 @@ async function upsert(kolId, input = {}, executor = db) {
   );
   if (changed && current.id) {
     await executor.query(
-      `UPDATE dynamic_live_approvals SET status = 'revoked', revoked_at = NOW()
-       WHERE actor_policy_id = $1 AND status = 'active'`, [current.id]
+      `UPDATE trade_signals SET status = 'signal_only',
+         reject_reason = 'DYNAMIC_POLICY_CHANGED', updated_at = NOW()
+       WHERE actor_policy_id = $1 AND actor_policy_revision <> $2
+         AND status IN('recorded','pending','approved')`,
+      [Number(current.id), revision]
+    );
+    await executor.query(
+      `UPDATE ca_whitelist SET status = 'archived', updated_at = NOW()
+       WHERE actor_policy_id = $1 AND actor_policy_revision <> $2
+         AND source = 'dynamic_keyword' AND status = 'active'`,
+      [Number(current.id), revision]
+    );
+    await executor.query(
+      `UPDATE whitelist_activation_outbox SET status = 'failed',
+         locked_at = NULL, last_error_code = 'DYNAMIC_POLICY_CHANGED',
+         last_error_detail = 'Superseded by a newer dynamic policy revision',
+         completed_at = NOW(), updated_at = NOW()
+       WHERE whitelist_id IN (
+         SELECT id FROM ca_whitelist
+         WHERE actor_policy_id = $1 AND actor_policy_revision <> $2
+           AND source = 'dynamic_keyword'
+       ) AND status IN('pending','processing')`,
+      [Number(current.id), revision]
+    );
+    await executor.query(
+      `UPDATE dynamic_targets SET status = 'paused', updated_at = NOW()
+       WHERE actor_policy_id = $1 AND actor_policy_revision <> $2
+         AND status = 'active'`,
+      [Number(current.id), revision]
+    );
+    await executor.query(
+      `UPDATE dynamic_launch_windows SET status = 'failed',
+         last_error = 'DYNAMIC_POLICY_CHANGED', lease_expires_at = NULL,
+         locked_at = NULL, updated_at = NOW()
+       WHERE dynamic_job_id IN (
+         SELECT id FROM dynamic_signal_jobs
+         WHERE actor_policy_id = $1 AND policy_revision <> $2
+       ) AND status IN('pending','processing')`,
+      [Number(current.id), revision]
+    );
+    await executor.query(
+      `UPDATE dynamic_signal_jobs SET status = 'cancelled',
+         failure_code = 'DYNAMIC_POLICY_CHANGED', completed_at = NOW(),
+         lease_expires_at = NULL, locked_at = NULL, updated_at = NOW()
+       WHERE actor_policy_id = $1 AND policy_revision <> $2
+         AND status IN('pending','processing')`,
+      [Number(current.id), revision]
     );
   }
   return result.rows[0];
@@ -291,12 +346,27 @@ async function remove(id, executor = db) {
     [Number(id), config.context_hash]
   );
   await executor.query(
-    `UPDATE dynamic_live_approvals SET status = 'revoked', revoked_at = NOW()
+    `UPDATE dynamic_targets SET status = 'paused', updated_at = NOW()
      WHERE actor_policy_id = $1 AND status = 'active'`, [Number(id)]
   );
   await executor.query(
-    `UPDATE dynamic_targets SET status = 'paused', updated_at = NOW()
-     WHERE actor_policy_id = $1 AND status = 'active'`, [Number(id)]
+    `UPDATE ca_whitelist SET status = 'archived', updated_at = NOW()
+     WHERE actor_policy_id = $1 AND source = 'dynamic_keyword'
+       AND status = 'active'`, [Number(id)]
+  );
+  await executor.query(
+    `UPDATE whitelist_activation_outbox SET status = 'failed',
+       locked_at = NULL, last_error_code = 'DYNAMIC_POLICY_REMOVED',
+       last_error_detail = 'Dynamic policy was removed', completed_at = NOW(), updated_at = NOW()
+     WHERE whitelist_id IN (
+       SELECT id FROM ca_whitelist
+       WHERE actor_policy_id = $1 AND source = 'dynamic_keyword'
+     ) AND status IN('pending','processing')`, [Number(id)]
+  );
+  await executor.query(
+    `UPDATE trade_signals SET status = 'signal_only',
+       reject_reason = 'DYNAMIC_POLICY_REMOVED', updated_at = NOW()
+     WHERE actor_policy_id = $1 AND status IN('recorded','pending','approved')`, [Number(id)]
   );
   await executor.query(
     `UPDATE dynamic_signal_jobs SET status = 'cancelled',

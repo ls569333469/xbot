@@ -40,8 +40,8 @@ function modeLabel(mode: DynamicPolicy['mode']) {
 
 function policyStatus(policy: DynamicPolicy) {
   if (policy.mode === 'paused' || !policy.enabled) return '已暂停';
-  if (policy.mode === 'live') return policy.approval_id ? '已授权' : '待授权';
-  if (policy.mode === 'paper') return '待验收';
+  if (policy.mode === 'live') return '实盘运行';
+  if (policy.mode === 'paper') return '模拟运行';
   return '已启用';
 }
 
@@ -131,8 +131,7 @@ export default function StrategyCenterPage() {
     return unconfiguredKols.find((item) => String(item.id) === selectedDynamicKey.slice(4)) || null;
   }, [selectedDynamicKey, unconfiguredKols]);
   const paperCount = policies.filter((item) => item.mode === 'paper').length;
-  const liveCount = policies.filter((item) => item.mode === 'live' && item.enabled
-    && item.approval_id && item.approval_expires_at && Date.parse(item.approval_expires_at) > Date.now()).length;
+  const liveCount = policies.filter((item) => item.mode === 'live' && item.enabled).length;
   const selectedActors = selectedFixed
     ? new Set([
       ...(selectedFixed.selected_actor_handles || []),
@@ -161,8 +160,8 @@ export default function StrategyCenterPage() {
         <div><span>全部策略</span><strong>{fixedEntries.length + policies.length}</strong><small>固定 {fixedEntries.length} · 动态 {policies.length}</small></div>
         <div><span>固定目标</span><strong>{fixedEntries.length}</strong><small>CA、项目和生态关系</small></div>
         <div><span>动态账号</span><strong>{policies.length}</strong><small>已配置 {policies.length} · 待配置 {unconfiguredKols.length}</small></div>
-        <div><span>模拟验收</span><strong>{paperCount}</strong><small>修改后需重新验收</small></div>
-        <div><span>实盘授权</span><strong className={liveCount ? 'danger' : ''}>{liveCount}</strong><small>{liveCount ? '动态策略已授权' : '未开启动态实盘'}</small></div>
+        <div><span>模拟策略</span><strong>{paperCount}</strong><small>仅产生模拟交易</small></div>
+        <div><span>实盘策略</span><strong className={liveCount ? 'danger' : ''}>{liveCount}</strong><small>{liveCount ? '随全局 Engine 运行' : '未配置动态实盘'}</small></div>
       </section>
 
       <section className="strategy-center-shell">
@@ -200,7 +199,7 @@ export default function StrategyCenterPage() {
 
         {tab === 'dynamic' && <section className="strategy-center-view">
           <div className="strategy-center-view-head"><div><h2>动态喊单策略</h2><p>账号发帖后才解析 CA，动态解析结果不会修改固定 CA / 项目策略。</p></div><Link className="btn btn-primary" to="/strategies/dynamic"><Layers3 size={16} />进入动态策略工作区</Link></div>
-          <div className="strategy-center-runtime"><span>解析任务：{resolutionRuntime.shortLabel}</span><span>模拟任务：{paperRuntime.shortLabel}</span><span>动态策略：{policies.length} 条</span><span>待配置账号：{unconfiguredKols.length} 个</span><span>实盘授权：{liveCount} 条</span></div>
+          <div className="strategy-center-runtime"><span>解析任务：{resolutionRuntime.shortLabel}</span><span>模拟任务：{paperRuntime.shortLabel}</span><span>动态策略：{policies.length} 条</span><span>待配置账号：{unconfiguredKols.length} 个</span><span>实盘策略：{liveCount} 条</span></div>
           {loading ? <div className="p16-empty-line">加载动态策略中...</div> : <div className="strategy-center-split">
             <div className="strategy-center-list">
               <div className="strategy-center-list-head"><strong>动态账号列表</strong><span>{policies.length} 已配置 · {unconfiguredKols.length} 待配置</span></div>
@@ -216,7 +215,7 @@ export default function StrategyCenterPage() {
               {selectedPolicy ? <>
                 <div className="strategy-center-detail-head"><div><span className="strategy-center-eyebrow">账号级策略</span><h3>@{selectedPolicy.x_handle.replace(/^@+/, '')}</h3><p>{selectedPolicy.display_name || '动态喊单账号'} · 版本 {selectedPolicy.revision}</p></div><span className={`strategy-center-badge ${selectedPolicy.enabled ? 'active' : ''}`}>{policyStatus(selectedPolicy)}</span></div>
                 <div className="strategy-center-detail-grid"><div><span>允许链</span><strong>{policyChains(selectedPolicy)}</strong></div><div><span>匹配词条</span><strong>{policyTerms(selectedPolicy)}</strong></div><div><span>运行阶段</span><strong>{modeLabel(selectedPolicy.mode)}</strong></div><div><span>按链预算</span><strong>{policyBudgetSummary(selectedPolicy)}</strong></div><div className="wide"><span>安全边界</span><strong>先逐帖解析和验收，再由账号级策略决定是否进入交易链路。</strong></div></div>
-                <div className="strategy-center-detail-note"><ShieldCheck size={16} /><span>动态策略只在独立工作区编辑、保存、验收和授权，不会覆盖固定 CA、项目关系或生态互动策略。</span></div>
+                <div className="strategy-center-detail-note"><ShieldCheck size={16} /><span>动态策略只在独立工作区编辑和保存；实盘策略随全局 Engine 运行，不会覆盖固定 CA、项目关系或生态互动策略。</span></div>
                 <div className="strategy-center-detail-actions"><Link className="btn btn-primary" to={`/strategies/dynamic?kolId=${selectedPolicy.kol_id}`}>进入工作区 <ArrowRight size={15} /></Link></div>
               </> : selectedUnconfiguredKol ? <>
                 <div className="strategy-center-detail-head"><div><span className="strategy-center-eyebrow">待配置账号</span><h3>@{selectedUnconfiguredKol.x_handle.replace(/^@+/, '')}</h3><p>{selectedUnconfiguredKol.display_name || '动态喊单账号'} · KOL 账号已保存</p></div><span className="strategy-center-badge pending">待配置</span></div>
@@ -232,7 +231,7 @@ export default function StrategyCenterPage() {
           <div className="strategy-center-view-head"><div><h2>新增策略</h2><p>后续增加新的触发逻辑时，从这里选择策略类型，再进入对应工作区。</p></div><span className="strategy-center-info"><Check size={15} />统一创建入口</span></div>
           <div className="strategy-center-new-grid">
             <button type="button" className={`strategy-center-new-card ${newType === 'fixed' ? 'selected' : ''}`} onClick={() => setNewType('fixed')}><span className="strategy-center-new-icon">CA</span><strong>固定 CA / 项目策略</strong><p>已知 CA、项目账号、生态互动和未发币项目监控。</p><small>当前可用 · 进入固定工作区</small></button>
-            <button type="button" className={`strategy-center-new-card ${newType === 'dynamic' ? 'selected' : ''}`} onClick={() => setNewType('dynamic')}><span className="strategy-center-new-icon">X</span><strong>动态喊单策略</strong><p>账号发帖后匹配 CA、代币符号或话题标签，再经过解析和模拟验收。</p><small>当前可用 · 进入动态工作区</small></button>
+            <button type="button" className={`strategy-center-new-card ${newType === 'dynamic' ? 'selected' : ''}`} onClick={() => setNewType('dynamic')}><span className="strategy-center-new-icon">X</span><strong>动态喊单策略</strong><p>账号发帖后匹配 CA、代币符号或话题标签，再按所选运行阶段处理。</p><small>当前可用 · 进入动态工作区</small></button>
             <button type="button" className={`strategy-center-new-card disabled ${newType === 'future' ? 'selected' : ''}`} onClick={() => setNewType('future')}><span className="strategy-center-new-icon">+</span><strong>后续扩展策略</strong><p>为链上事件、钱包行为或其他数据源预留统一入口。</p><small>暂未实现，需要单独评审</small></button>
           </div>
           <div className="strategy-center-new-footer"><span>策略类型确定后不直接转换，改变语义请复制为新策略并保留历史版本。</span><button type="button" className="btn btn-primary" onClick={continueNew}>继续配置 <ArrowRight size={15} /></button></div>

@@ -18,6 +18,7 @@ const { CHAIN_REGISTRY } = require('../../lib/chain-config');
 const { tradeRetryOrchestrator } = require('./trade-retry-orchestrator');
 const liveApproval = require('./live-approval-service');
 const { executionGateService } = require('./execution-gate-service');
+const { p20FeatureState } = require('../../lib/p20-features');
 
 const REQUIRED_MIGRATION = '027_p19_low_latency_execution.sql';
 const TRANSIENT_BLOCKERS = new Set([
@@ -53,6 +54,42 @@ const CHAINS = Object.keys(CHAIN_REGISTRY);
 
 function enabled(value) {
   return String(value || 'false').toLowerCase() === 'true';
+}
+
+function dynamicLivePolicyState(rows = [], flags = p20FeatureState()) {
+  const runtimeEnabled = Boolean(
+    flags.P20_DYNAMIC_RESOLUTION_ENABLED
+    && flags.P20_RECORD_ENABLED
+    && flags.P20_LIVE_ENABLED
+  );
+  const valid = (rows || []).filter((row) => {
+    const chains = Array.isArray(row.allowed_chain_ids) ? row.allowed_chain_ids : [];
+    const budgets = row.chain_budgets && typeof row.chain_budgets === 'object'
+      ? row.chain_budgets : {};
+    return chains.length > 0
+      && Number(row.daily_new_token_limit) > 0
+      && Number(row.slippage) > 0
+      && chains.every((chain) => {
+        const budget = budgets[chain];
+        return Number(budget?.budget_per_trade) > 0
+          && Number(budget?.daily_budget) >= Number(budget?.budget_per_trade);
+      });
+  });
+  const active = runtimeEnabled ? valid : [];
+  const chains = [...new Set(active.flatMap((row) => row.allowed_chain_ids || []))];
+  const maxTradeByChain = Object.fromEntries(chains.map((chain) => [
+    chain,
+    Math.max(...active.map((row) => Number(row.chain_budgets?.[chain]?.budget_per_trade || 0)))
+  ]));
+  return {
+    configured: active.length > 0,
+    runtimeEnabled,
+    configuredRows: rows.length,
+    validRows: valid.length,
+    invalidRows: rows.length - valid.length,
+    chains,
+    maxTradeByChain
+  };
 }
 
 function jsonb(value) {
@@ -499,7 +536,22 @@ async function getSnapshot(options = {}) {
     };
   }
 
-  const policy = await livePolicy.getPolicy();
+  const p20Features = p20FeatureState();
+  const [policy, dynamicPolicyResult] = await Promise.all([
+    livePolicy.getPolicy(),
+    db.query(
+      `SELECT policy.id, policy.allowed_chain_ids, policy.chain_budgets,
+              policy.daily_new_token_limit, policy.slippage
+       FROM x_actor_dynamic_policies AS policy
+       JOIN x_kol_accounts AS kol ON kol.id = policy.kol_id AND kol.enabled = true
+       WHERE policy.enabled = true AND policy.mode = 'live'`
+    )
+  ]);
+  const dynamicPolicy = dynamicLivePolicyState(dynamicPolicyResult.rows, p20Features);
+  const executionPolicy = {
+    ...policy,
+    chains: [...new Set([...policy.chains, ...dynamicPolicy.chains])]
+  };
   const [chainResult, uncertainResult, unprotectedResult, rate429Result, outboxResult,
     reconcilerStatus, chainConfigResult, invalidWhitelistResult, whitelistResult,
     relationResult, latestEvidenceResult, latencyResult, tradeEvidenceResult,
@@ -688,6 +740,7 @@ async function getSnapshot(options = {}) {
     emergencyStop,
     xProvider,
     keyExclusive,
+    p20Features,
     credentials: hashSnapshot({
       apiKey: process.env.GMGN_API_KEY || '',
       privateKey: process.env.GMGN_PRIVATE_KEY || ''
@@ -700,11 +753,11 @@ async function getSnapshot(options = {}) {
     }]))
   });
   const ingestionHeartbeat = await latestHeartbeat(['ingestion', 'all']).catch(() => null);
-  const probes = options.probe ? await probeChains(policy, chainRows) : {};
+  const probes = options.probe ? await probeChains(executionPolicy, chainRows) : {};
   const contractProbes = options.probe ? await probeContracts(whitelistResult.rows) : {};
-  const rpcProbes = options.probe ? await probePolicyRpcs(policy, probes) : {};
+  const rpcProbes = options.probe ? await probePolicyRpcs(executionPolicy, probes) : {};
   if (options.probe) await applyRpcBalanceFallback(probes, rpcProbes);
-  const strategyProbes = options.probe ? await probeStrategies(policy, probes) : {};
+  const strategyProbes = options.probe ? await probeStrategies(executionPolicy, probes) : {};
   const contractEvidence = options.probe
     ? await persistContractProbeEvidence(
       policy,
@@ -855,19 +908,24 @@ async function getSnapshot(options = {}) {
       blockers.push('CHAIN_GAS_RESERVE_MISSING');
     }
     const limits = chainConfigs[chain] || {};
-    if (options.probe && policy.chains.includes(chain)) {
+    if (options.probe && executionPolicy.chains.includes(chain)) {
       const nativeBalance = probes[chain]?.nativeBalance;
       const maximumWhitelistTrade = whitelistResult.rows
         .filter((whitelist) => whitelist.chain_id === chain)
         .reduce((maximum, whitelist) => Math.max(maximum, Number(whitelist.budget_per_trade || 0)), 0);
-      const requiredBalance = maximumWhitelistTrade + minimumGasReserveValue + feeReserveValue;
+      const maximumTrade = Math.max(
+        maximumWhitelistTrade,
+        Number(dynamicPolicy.maxTradeByChain[chain] || 0)
+      );
+      const requiredBalance = maximumTrade + minimumGasReserveValue + feeReserveValue;
       if (!Number.isFinite(nativeBalance)) blockers.push('CHAIN_NATIVE_BALANCE_UNKNOWN');
       else if (nativeBalance < requiredBalance) blockers.push('CHAIN_NATIVE_BALANCE_INSUFFICIENT');
     }
     if (options.probe && probes[chain] && !probes[chain].ok) blockers.push(probes[chain].error);
-    if (options.probe && policy.chains.includes(chain) && !rpcProbes[chain]?.ok) {
+    if (options.probe && executionPolicy.chains.includes(chain) && !rpcProbes[chain]?.ok) {
       blockers.push(rpcProbes[chain]?.error || 'CHAIN_RPC_UNAVAILABLE');
     }
+    const infrastructureReady = blockers.length === 0;
     return {
       ...row,
       implemented,
@@ -884,12 +942,14 @@ async function getSnapshot(options = {}) {
       contract_evidence: evidence ? { ...evidence, stale: !evidenceCurrent } : null,
       rpc_probe: rpcProbes[chain] || null,
       policy_enabled: policy.chains.includes(chain),
+      dynamic_policy_enabled: dynamicPolicy.chains.includes(chain),
       trade_evidence: tradeEvidenceByChain.get(chain) || normalizeTradeEvidence(),
       failure_circuit: failureCircuit,
       limits: executionSettings[chain] || {},
       blockers,
       advisories,
-      ready: blockers.length === 0 && policy.chains.includes(chain)
+      infrastructure_ready: infrastructureReady,
+      ready: infrastructureReady && policy.chains.includes(chain)
     };
   });
 
@@ -919,10 +979,17 @@ async function getSnapshot(options = {}) {
   if (Number(uncertainResult.rows[0].count) > 0) blockers.push('UNRESOLVED_TRADE_ATTEMPTS');
   if (Number(quarantineResult.rows[0].count) > 0) advisories.push('WALLET_QUARANTINE_ACTIVE');
   if (Number(unprotectedResult.rows[0].count) > 0) blockers.push('UNPROTECTED_LIVE_POSITIONS');
-  if (!Array.isArray(policy.providers) || policy.providers.length === 0
-      || !Array.isArray(policy.eventTypes) || policy.eventTypes.length === 0
-      || !Array.isArray(policy.whitelistIds) || policy.whitelistIds.length === 0) {
+  const fixedPolicyConfigured = Array.isArray(policy.providers) && policy.providers.length > 0
+    && Array.isArray(policy.eventTypes) && policy.eventTypes.length > 0
+    && Array.isArray(policy.whitelistIds) && policy.whitelistIds.length > 0;
+  if (!fixedPolicyConfigured && !dynamicPolicy.configured) {
     blockers.push('LIVE_POLICY_EMPTY');
+  }
+  if (!fixedPolicyConfigured && dynamicPolicy.configuredRows > 0 && !dynamicPolicy.runtimeEnabled) {
+    blockers.push('P20_LIVE_DISABLED');
+  }
+  if (dynamicPolicy.runtimeEnabled && dynamicPolicy.invalidRows > 0) {
+    blockers.push('DYNAMIC_POLICY_CONFIG_INVALID');
   }
   if (whitelistResult.rows.length !== policy.whitelistIds.length) {
     blockers.push('LIVE_POLICY_WHITELIST_MISSING');
@@ -936,7 +1003,11 @@ async function getSnapshot(options = {}) {
   }
   if (policy.whitelistIds.length > 0 && !latencySlo.passed) advisories.push('FAST_PATH_SLO_NOT_VERIFIED');
   if (!alertsVerified) advisories.push('TRADE_ALERTS_NOT_VERIFIED');
-  if (!chains.some((chain) => chain.ready)) blockers.push('NO_LIVE_CHAIN_READY');
+  const fixedChainReady = chains.some((chain) => chain.ready);
+  const dynamicChainReady = chains.some(
+    (chain) => chain.dynamic_policy_enabled && chain.infrastructure_ready
+  );
+  if (!fixedChainReady && !dynamicChainReady) blockers.push('NO_LIVE_CHAIN_READY');
   if (Number(invalidWhitelistResult.rows[0].count) > 0) blockers.push('WHITELIST_HARD_LIMIT_INVALID');
   if (!reconcilerStatus.running) blockers.push('RECONCILER_NOT_RUNNING');
   if (reconcilerStatus.lastError) blockers.push('RECONCILER_ERROR');
@@ -994,6 +1065,7 @@ async function getSnapshot(options = {}) {
       } : null
     },
     policy,
+    dynamicPolicy,
     relations: relationResult.rows.map((row) => ({
       id: Number(row.id),
       whitelistId: Number(row.whitelist_id),
@@ -1183,6 +1255,7 @@ module.exports = {
   TRANSIENT_BLOCKERS,
   applyRpcBalanceFallback,
   assertReadyToArm,
+  dynamicLivePolicyState,
   getSnapshot,
   getLatestSnapshot,
   schedulerReadiness,

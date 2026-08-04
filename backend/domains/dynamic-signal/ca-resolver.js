@@ -8,9 +8,10 @@ const {
 } = require('./candidate-index');
 const { RESOLUTION_CODES, applyResolutionPolicy } = require('./resolution-policy');
 
-const RESOLVER_REVISION = 'p20.1-resolver-v1';
+const RESOLVER_REVISION = 'p20.1-resolver-v2';
 const DEFAULT_MAX_CANDIDATES = 25;
 const DEFAULT_VERIFY_CONCURRENCY = 4;
+const DEFAULT_MARKET_DOMINANCE_MIN_RATIO = 2;
 
 function filterResolutionTerms(extraction, allowedTermTypes) {
   if (!Array.isArray(allowedTermTypes)) return extraction;
@@ -182,6 +183,7 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
     allowedChains,
     minLiquidityUsd: input.minLiquidityUsd,
     marketDominanceMinRatio: input.marketDominanceMinRatio
+      ?? DEFAULT_MARKET_DOMINANCE_MIN_RATIO
   });
   const failureCode = policy.failureCode === RESOLUTION_CODES.PROVIDER_UNKNOWN && firstProviderFailure
     ? providerFailureCode(firstProviderFailure)
@@ -204,6 +206,7 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
 
 module.exports = {
   DEFAULT_MAX_CANDIDATES,
+  DEFAULT_MARKET_DOMINANCE_MIN_RATIO,
   DEFAULT_VERIFY_CONCURRENCY,
   RESOLVER_REVISION,
   mapConcurrent,

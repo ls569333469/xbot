@@ -54,6 +54,10 @@ function submittedOrderStatus(status) {
   return status;
 }
 
+function usesWhitelistLifetimeBudget(signal) {
+  return !(signal?.actor_policy_id && signal?.dynamic_target_id);
+}
+
 async function recordUnusedFeeRelease(executor, reservation, intentId, attemptId, reason) {
   const unusedFee = unusedFeeEnvelope(reservation);
   if (unusedFee <= 0) return null;
@@ -348,7 +352,8 @@ async function createBuyAttempt(prepared) {
     const committed = Number(whitelist.spent_budget || 0);
     const reservedPrincipal = Number(activeReservations.rows[0].principal_total || 0);
     if (!Number.isFinite(principal) || principal <= 0
-        || committed + reservedPrincipal + principal > Number(whitelist.total_budget)) {
+        || (usesWhitelistLifetimeBudget(signal)
+          && committed + reservedPrincipal + principal > Number(whitelist.total_budget))) {
       const error = new Error('Whitelist lifetime budget exceeded');
       error.code = 'WHITELIST_BUDGET_EXCEEDED';
       throw error;
@@ -514,7 +519,7 @@ async function beginBuySubmission(attemptId, options = {}) {
 
     const authorizationResult = await client.query(
       `WITH acceptance_scope AS (
-         SELECT chain, whitelist_id, expires_at
+         SELECT chain, whitelist_id, expires_at, context_hash
          FROM live_acceptance_scopes
          WHERE status = 'active'
          ORDER BY id DESC LIMIT 1
@@ -3020,6 +3025,7 @@ module.exports = {
   principalUsdCost,
   strategyLegAmountRaw,
   submittedOrderStatus,
+  usesWhitelistLifetimeBudget,
   transitionAttempt,
   touchAttemptReconciliation,
   updateOrderAfterQuery,

@@ -54,7 +54,10 @@ async function main() {
       '029_p20_runtime_dynamic_signal_pipeline.sql',
       '030_p20_runtime_launch_window_lease_columns.sql',
       '031_p20_runtime_schema_index_repair.sql',
-      '032_p20_dynamic_chain_budget_matrix.sql']]
+      '032_p20_dynamic_chain_budget_matrix.sql',
+      '033_p20_dynamic_policy_templates.sql',
+      '034_p20_approved_term_intent_and_index_bounds.sql',
+      '035_p20_split_implicit_asset_families.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -63,6 +66,9 @@ async function main() {
   if (!migrations.has('030_p20_runtime_launch_window_lease_columns.sql')) throw new Error('Migration 030 is not applied');
   if (!migrations.has('031_p20_runtime_schema_index_repair.sql')) throw new Error('Migration 031 is not applied');
   if (!migrations.has('032_p20_dynamic_chain_budget_matrix.sql')) throw new Error('Migration 032 is not applied');
+  if (!migrations.has('033_p20_dynamic_policy_templates.sql')) throw new Error('Migration 033 is not applied');
+  if (!migrations.has('034_p20_approved_term_intent_and_index_bounds.sql')) throw new Error('Migration 034 is not applied');
+  if (!migrations.has('035_p20_split_implicit_asset_families.sql')) throw new Error('Migration 035 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',

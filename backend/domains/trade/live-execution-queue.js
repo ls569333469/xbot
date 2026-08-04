@@ -278,7 +278,11 @@ class LiveExecutionQueue {
       const result = await this.execution.executeAutomatic(
         item.signalId,
         '6551-live-worker',
-        { chainId: signal.chain_id, traceId: signal.trace_id }
+        {
+          chainId: signal.chain_id,
+          traceId: signal.trace_id,
+          dynamicScope: Boolean(signal.actor_policy_id && signal.dynamic_target_id)
+        }
       );
       this.recordSuccess();
       this.lastExecutionAt = new Date();

@@ -4,7 +4,7 @@ import {
   ChainId, ChainConfig, TradeAttempt, TradeAttemptDetails, TradeRuntimePolicy,
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
   RuntimePolicyDetailPage, RuntimeSummary, DynamicPolicy, DynamicResolution,
-  DynamicSignalStatus, DynamicPaperSession, ActorScreeningRun
+  DynamicSignalStatus, DynamicPaperSession, ActorScreeningRun, DynamicPolicyTemplate
 } from './types';
 
 const configuredApiBase = import.meta.env.VITE_API_URL;
@@ -225,13 +225,17 @@ export const api = {
   dynamicSignal: {
     status: () => fetchApi<ApiResponse<DynamicSignalStatus>>('/api/dynamic-signal/status'),
     policies: (params?: Record<string, string>) => fetchApi<ApiResponse<DynamicPolicy[]>>(`/api/dynamic-signal/policies${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
+    templates: {
+      list: () => fetchApi<ApiResponse<DynamicPolicyTemplate[]>>('/api/dynamic-signal/templates'),
+      create: (data: { name: string; config: Partial<DynamicPolicyTemplate['config']> }) => fetchApi<ApiResponse<DynamicPolicyTemplate>>('/api/dynamic-signal/templates', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: { name?: string; config?: Partial<DynamicPolicyTemplate['config']> }) => fetchApi<ApiResponse<DynamicPolicyTemplate>>(`/api/dynamic-signal/templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      remove: (id: string) => fetchApi<ApiResponse<{ deleted: boolean }>>(`/api/dynamic-signal/templates/${id}`, { method: 'DELETE' }),
+    },
     savePolicy: (kolId: string, data: Partial<DynamicPolicy>) => fetchApi<ApiResponse<DynamicPolicy>>(`/api/dynamic-signal/policies/${kolId}`, { method: 'PUT', body: JSON.stringify(data) }),
     removePolicy: (id: string) => fetchApi<ApiResponse<{ deleted: boolean }>>(`/api/dynamic-signal/policies/${id}`, { method: 'DELETE' }),
     resolutions: (params?: Record<string, string>) => fetchApi<ApiResponse<DynamicResolution[]>>(`/api/dynamic-signal/resolutions${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
     resolution: (id: string) => fetchApi<ApiResponse<DynamicResolution>>(`/api/dynamic-signal/resolutions/${id}`),
     paperSessions: (params?: Record<string, string>) => fetchApi<ApiResponse<DynamicPaperSession[]>>(`/api/dynamic-signal/paper-sessions${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
-    approveLive: (id: string, data: { confirmation: 'APPROVE P20 DYNAMIC LIVE'; duration_minutes?: number; approval_note?: string; approved_by?: string }) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/dynamic-signal/policies/${id}/approve-live`, { method: 'POST', body: JSON.stringify(data) }),
-    revokeLive: (id: string) => fetchApi<ApiResponse<{ revoked: boolean }>>(`/api/dynamic-signal/policies/${id}/revoke-live`, { method: 'POST', body: '{}' }),
   },
 
   actorScreening: {

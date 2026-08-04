@@ -1,6 +1,6 @@
 # P20 动态策略测试与运行时升级方案
 
-版本：v1.8。范围：Node 20 基线验收、P20 动态策略测试、方案 A 多链资金矩阵、Node 24 运行时升级回归、GitHub 隐私检查和受控服务器上传。必须先完成 Node 20 基线与 P20 测试，再单独升级 Node 24；两阶段都通过后才允许上传服务器。不启用动态实盘，不执行真实 Swap。
+版本：v2.1。范围：Node 20 历史基线、P20 动态策略测试、方案 A 四步向导与完整模板、多链资金矩阵、批准词条容错与多候选市场主导规则、Node 24 运行时回归、GitHub 隐私检查和受控服务器上传。Paper 与 Live 分别验证，Live 不再依赖 7 天 Paper 或账号短时授权。
 
 ## 1. 测试目标
 
@@ -17,7 +17,7 @@
   -> 审计、失败重试、预算和离场策略回写
 ```
 
-Live 只验证安全门和阻断条件，不执行 Swap。P20 必须完成至少 7 天 Paper 运行并人工核对后，才能另行审核单账号小额 Live。
+Live 测试必须使用明确的小额逐链预算，并一次性验证从事件、解析、门禁、真实 Swap、持仓到离场的完整闭环。Paper 是可选模拟模式，不是 Live 技术前置条件。
 
 ## 2. 测试前置
 
@@ -47,11 +47,11 @@ P20_LIVE_ENABLED=false
 2. `npm.cmd run build`：前端构建通过。
 3. `npm.cmd run lint`：前端检查通过。
 4. `npm.cmd run test:integration`：专用测试库迁移和集成测试通过。
-5. `npm.cmd run audit:schema:test`：确认 Migration 027、028、029、030、031、P20 表、列和唯一索引完整。
+5. `npm.cmd run audit:schema:test`：确认 Migration 027-035、P20 表、列、约束和唯一索引完整。
 6. 查询 P20 Feature Flag，确认 `P20_LIVE_ENABLED=false`。
 7. 查询动态 Worker、6551 Watch、GMGN 限流和数据库 Migration 状态，确认没有遗留 `processing` 锁或失败任务。
 8. 确认 `P20_GMGN_CANDIDATE_TTL_MS` 使用受控短时缓存；测试环境不得将核验候选配置为永久有效。
-9. Schema audit 必须包含 Migration 032、`x_actor_dynamic_policies.chain_budgets` 和 `dynamic_policy_usage_daily_by_chain`。
+9. Schema audit 必须包含 Migration 032、033、034、035、`x_actor_dynamic_policies.chain_budgets`、动态策略模板、`approved_term_direct`、候选索引字段字节约束和隐式 Asset Family 拆分。
 
 ## 3. 阶段一：策略保存和 Watch 同步
 
@@ -70,14 +70,25 @@ P20_LIVE_ENABLED=false
 - 禁用或暂停策略后，若没有其他业务依赖，Watch 需求会被撤销或降级。
 - 不创建 CA 白名单、不创建交易 Signal、不创建 Paper Position。
 
-### 3.1 方案 A 多链资金矩阵
+### 3.1 方案 A 四步向导、完整模板与多链资金矩阵
 
 1. 在同一个账号策略中启用 Solana、BSC 和 Base，分别填写 SOL、BNB、ETH 的单笔金额与每日上限；不填写 USD。
 2. 保存后重新读取策略，确认 `chain_budgets` 逐链保留，旧的 `budget_per_trade`/`daily_budget` 只作为兼容派生值，不出现在正式编辑器中。
-3. 切换到 EVM 链模板、Solana 单链模板和仅记录模板，确认模板只改变允许链与资金矩阵，不改变账号、词条、离场策略、授权或 Paper 状态。
-4. 在 Paper/Live 模式下分别验证：单笔为 0、每日上限小于单笔、某一已启用链缺预算时保存被拒绝；Record 模式允许 0 预算但不能创建交易。
-5. 用同一账号分别解析 BSC 和 Solana 的唯一 CA，确认授权预占、每日统计、结算和 `config_snapshot` 使用各自链预算，不读取另一条链金额。
-6. 全选多链后只注入一个 BSC 目标，确认只创建一个目标和一笔授权预占，不因允许链数量增加而重复买入。
+3. 创建一份完整动态策略模板，包含内容类型、词条类型、批准名称、`resolver_options`、允许链、逐链预算、限额、滑点和离场策略；在另一个账号草稿应用该模板，确认上述字段全部应用。
+4. 应用模板前后核对 X 账号、Record/Paper/Live 阶段和启用状态，确认三者不被模板覆盖；Watch 和全局 Engine 状态也不得进入模板快照。
+5. 修改一条链金额和一个词条后，确认页面显示相对模板来源的“链上资金、词条与解析”差异；执行“恢复来源配置”后，所有模板字段同时恢复，账号、阶段和启用状态保持不变。
+6. 保存账号策略后重新读取，确认模板内容和版本不变；再显式执行“更新所选模板”，确认模板版本递增，其他账号已保存策略不被反向改写。
+7. 修改并保存账号策略产生新 Policy Revision 后，确认旧 Revision 的待处理任务失败关闭，新事件使用新 Revision；已有仓位仍保留离场能力。
+8. 在 Paper/Live 模式下分别验证：单笔为 0、每日上限小于单笔、某一已启用链缺预算时保存被拒绝；Record 模式允许 0 预算但不能创建交易。
+9. 用同一账号分别解析 BSC 和 Solana 的唯一 CA，确认授权预占、每日统计、结算和 `config_snapshot` 使用各自链预算，不读取另一条链金额。
+10. 将策略设为 Live 但关闭 `P20_LIVE_ENABLED`，确认不创建 Paper Job；将策略设为 Paper 但关闭 `P20_PAPER_ENABLED`，确认不退化为 Record。
+11. 连续并发保存同一账号策略，确认 Revision 单调递增且没有两个不同配置共享同一 Revision。
+12. 修改策略后确认旧 Job、Launch Window、未提交 Signal、Dynamic Target 和兼容白名单载体立即失效；已有仓位仍可按建仓快照离场。
+13. 在没有固定 CA 实盘策略、但动态 Live 策略完整有效时，确认全局就绪度可以由动态策略独立满足；固定与动态授权不得互相放宽。
+14. 跨自然日重复验证同一动态策略预算，确认动态日预算按 `dynamic_policy_usage_daily_by_chain` 重置，不受兼容白名单历史 `spent_budget/total_budget` 累计值阻断。
+15. 保存策略后分别覆盖 Watch `pending/processing/succeeded/failed`，确认 API 和页面显示真实同步状态，不能把“Revision 已保存”显示成“Watch 已生效”。
+10. 全选多链后只注入一个 BSC 目标，确认只创建一个目标和一笔授权预占，不因允许链数量增加而重复买入。
+11. 在桌面和窄屏分别走完四步，确认资金矩阵、模板详情和底部操作不被裁切，核心表单不依赖横向滚动。
 
 ## 4. 阶段二：确定性解析样例
 
@@ -91,18 +102,22 @@ P20_LIVE_ENABLED=false
 | `$ANSEM` 与 `$ANSEMX` | 只能精确匹配前者，不能前缀命中后者 |
 | `#PONS` | 作为 Hashtag 证据单独记录 |
 | 中文完整项目名或已批准别名 | 只按完整短语/批准别名匹配，不做模糊分词 |
+| `何必东奔西走，币安全部都有。` 与 `何必东奔西走.币安全部都有!` | 内部忽略标点、空格和全半角差异，命中同一批准词条并得到 `approved_term_direct` |
+| 批准词条中的汉字、英文单词或词序变化 | 不得容错命中，不进入候选解析 |
+| 同一资产配置两条仅标点不同的别名 | 提取后按同一资产去重，不得得到 `multi_asset_ambiguous` |
 | 裸英文普通词 `LIT`、`INDEX` | 不得仅凭裸词触发 |
 | Quote 中只有被引用账号的 CA | `quoted_only`，不得归因给当前账号 |
 | Retweet | `quoted_only` 或拒绝，不得使用转发内容作为作者喊单 |
 | 多个资产同时出现 | `multi_asset_ambiguous`，不得自动选择 |
 | `sold`、`avoid`、`hack`、历史回顾、比较列表 | Intent Gate 拒绝，不进入交易 |
-| 同名原盘和社区重启盘同时存在 | `ambiguous_variant`，不得按最高市值猜 CA |
+| 同名原盘和社区重启盘同时存在 | 仅当 KOL `>=3`、同一候选市值/流动性双第一且默认均领先次名 `2x` 时返回 `MARKET_DOMINANT_VARIANT`；否则 `ambiguous_variant` |
+| 任一候选缺 KOL，或市值/流动性冠军不同，或任一领先不足 `2x` | `ambiguous_variant`，不得选择 |
 | GMGN 字段未知、超时、429 | 明确失败关闭，不降级为旧 CA 猜测 |
 | GMGN Token Info 返回的地址与请求 CA 不一致 | `GMGN_ADDRESS_MISMATCH`，候选必须失败关闭，不得选中或写入已核验缓存 |
 | 策略仅允许 Cashtag，帖子只含完整 CA | 不得走直接 CA 路径，不调用候选验证 |
 | 策略仅允许完整 CA，帖子只含 `$PONS` | 不得使用 Symbol 候选，不调用候选验证 |
 
-重点核对 `$ANSEM` 这类边界：大小写应等价，符号必须存在，且 Token 边界必须完整。
+重点核对两类边界：`$ANSEM` 大小写应等价，符号必须存在且 Token 边界完整；批准中文词条只能容忍标点、空格和全半角差异，不能容忍真实文字变化。所有批准词条样例还要叠加“不要买、已卖、清仓、攻击、历史回顾、比较列表”等中文风险语义，确认 Intent Gate 优先拒绝。
 
 ## 5. 阶段三：Record 回放
 
@@ -150,11 +165,11 @@ P20_LIVE_ENABLED=false
 5. 模拟仓位的对应链原生币预算、入场价、数量、离场策略快照正确写入。
 6. 同链同 CA 已有 Paper 仓位时，重复买入按策略限制拒绝或合并。
 7. Paper 失败会写入 Evaluation 的 `failure_code` 和结果快照，不影响其他账号策略。
-8. 把测试库中的 Session 结束时间移到过去，只验证到期 Worker 能收尾；这不能替代生产环境连续 7 天 Paper 验收。
+8. 把测试库中的 Session 结束时间移到过去，验证到期 Worker 能收尾；该 Session 只用于模拟结果观察，不控制 Live 权限。
 
-### 正式 7 天验收的 Revision 规则
+### Paper 与 Live 的 Revision 规则
 
-明天只做 Paper 烟雾测试，不伪造 7 天生产验收。后续正式验收时，应先保存最终的 `live` 模式、链、事件、词条、金额、滑点和离场策略，同时保持：
+Paper 测试使用 `paper` 策略并保持 Live 关闭：
 
 ```text
 P20_CANDIDATE_INDEX_ENABLED=true
@@ -163,7 +178,7 @@ P20_PAPER_ENABLED=true
 P20_LIVE_ENABLED=false
 ```
 
-此时 `live` Policy 会按同一 Revision 降级执行 Paper。连续 7 天完成后才能申请短时 Live Approval；任何配置修改都会产生新 Revision，必须重新验收。
+需要测试 Live 时，将目标策略明确保存为 `live + enabled`，开启 `P20_LIVE_ENABLED` 并启动全局 Engine。任何配置修改都会产生新 Revision；旧任务不能按新配置执行，新事件直接使用新 Revision，无需再次创建账号授权。
 
 ## 7. 阶段五：安全门和故障注入
 
@@ -171,8 +186,7 @@ P20_LIVE_ENABLED=false
 
 - 全局 `P20_LIVE_ENABLED=false`。
 - 动态策略被禁用、暂停或 revision 改变。
-- 未完成 7 天 Paper Session。
-- 没有有效的动态 Live Approval、context hash 不一致或授权过期。
+- 策略不是 `live + enabled`，或 context hash / revision 不一致。
 - 动态 CA 的 Watch 尚未同步，或 Activation 状态为 `syncing`/`sync_failed`。
 - RPC、GMGN quote、Token 可交易性或离场策略校验失败。
 - 6551 Watch Apply 关闭但动态 Live 需要新增/修改 Watch。
@@ -193,7 +207,7 @@ P20_LIVE_ENABLED=false
 - 无重复 Job、Resolution、Dynamic Target、Paper Session 或 Evaluation。
 - 所有失败记录可读错误码和错误消息。
 - 动态策略保存、Watch 同步、Activation Outbox 和 revision 失效链路闭环。
-- 前端“配置为实盘”和“已获得授权”严格分开，未授权策略不得计入实盘授权数量。
+- 前端将 `live + enabled` 计为实盘策略，并明确提示仍需 P20 Live 能力和全局 Engine；不再展示账号短时授权。
 
 ### 立即停止条件
 
@@ -230,7 +244,7 @@ P20_LIVE_ENABLED=false
 4. 提交并推送经过测试的唯一 Commit，记录 Commit SHA；服务器只能部署该 Commit，不允许上传未提交目录覆盖。
 5. 关闭新买入安全门，等待 `pending/submitting` 真实订单归零；确认已有持仓、离场订单和资金账本状态后再停止服务进程。
 6. 核对服务器已通过 Node 24 阶段的 Node `24.11.x`、npm `11.6.x`、PostgreSQL 和依赖安装方式；使用锁文件安装，不在服务器临时改动主版本。
-7. 执行 Migration 028、029、030、031、032，然后在服务器运行 `npm run audit:schema:production`；该命令只读审计生产 Schema，不修改数据。
+7. 按顺序执行 Migration 028、029、030、031、032、033、034、035，然后在服务器运行 `npm run audit:schema:production`；该命令只读审计生产 Schema，不修改数据。
 8. 后端健康检查通过后再发布前端，并核对静态资源和 API 版本来自同一 Commit。
 
 ## 11. 服务器上传后验证
@@ -252,12 +266,12 @@ P20_LIVE_ENABLED=false
 1. 检查 `/api/health`、登录、策略中心、固定策略工作区、动态策略工作区和 Settings 加载；不得出现 5xx、无限加载或未捕获前端错误。
 2. 检查原固定 CA、项目关系、生态互动、6551 Watch、持仓、离场、预算和对账数据未变化。
 3. 检查 P20 Worker 状态为已启动但因 Feature Flag 关闭而不取任务；数据库无遗留 `processing` Job。
-4. 检查 Migration 029、030、031 的动态表为空或仅含明确迁移数据，`ca_whitelist.source` 无 `NULL`，关键唯一索引存在。
+4. 检查 Migration 029-035 的动态表为空或仅含明确迁移数据，`ca_whitelist.source` 无 `NULL`，策略模板表、Intent 约束、候选索引字节约束、隐式 Family 拆分和关键唯一索引存在。
 5. 检查服务器日志不输出 API Key、私钥、Authorization、管理员密码或完整 Provider 响应。
 6. 只在上述检查全部通过且用户再次批准后，按顺序启用 Candidate Index、Dynamic Resolution、Record；先绑定一个测试账号做服务器 Record 回放，仍保持 Paper/Live 关闭。
 7. Record 验收通过后才能另行批准服务器 Paper；动态 Live 不属于明天的部署范围。
 
-回退原则：发现应用错误时立即关闭全部 P20 Flag，并回退到部署前 Commit；Migration 029、030、031 为向前兼容增量表、字段和索引，不在故障现场直接执行破坏性降级 SQL。若固定策略或真实交易链路受影响，立即关闭新买入安全门并保留对账与离场能力，完成数据核对后再恢复。
+回退原则：发现应用错误时立即关闭全部 P20 Flag，并回退到部署前 Commit；Migration 029-035 为向前兼容的表、字段、约束、索引和动态候选关系整理，不在故障现场直接执行破坏性降级 SQL。若固定策略或真实交易链路受影响，立即关闭新买入安全门并保留对账与离场能力，完成数据核对后再恢复。
 
 ## 12. 本轮代码核对补充
 
@@ -268,11 +282,12 @@ P20_LIVE_ENABLED=false
 - 上线窗口只允许把仍为 `rejected` 的动态 Job 重新排队；策略删除或 revision 变化后，Job 保持 `cancelled`，不得被窗口 Worker 复活。
 - 动态解析任务在 GMGN 慢响应期间必须续租；租约丢失时不得写入 Resolution、Target、Signal 或覆盖新 Worker 的错误状态。
 - `gmgn_info` 候选快照默认 5 分钟过期，过期后必须重新验证；Provider 返回不同 CA 时必须记录 `GMGN_ADDRESS_MISMATCH`。
-- Schema audit 必须同时确认 Migration 027、028、029、030、031、032，以及动态上线窗口租约字段、按链预算列和 P20 关键索引。
+- Schema audit 必须同时确认 Migration 027-035，以及动态上线窗口租约字段、按链预算列、策略模板、`approved_term_direct`、隐式 Family 拆分和 P20 关键索引约束。
+- Provider 候选预热注入超过 `512 bytes` 的名称、符号、Launchpad 或来源引用时，必须跳过异常索引值并继续保留合法 CA；不得再次出现 PostgreSQL B-tree “索引行需要 9664 字节”类整批失败。
 
 对应 Node 20 基线回归结果（2026-08-02）：完整后端单元测试 `338/338`、定向 P20/GMGN 测试 `31/31`、前端 lint/build、后端语法检查和 `git diff --check` 均通过；独立测试库集成测试 `36/36` 通过，Schema audit 输出 `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`。期间发现旧测试库已登记 `029` 但缺少动态上线窗口租约字段和 Paper/动态信号唯一索引，已补充幂等迁移 `030`、`031` 并验证通过。
 
-Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量单测、P20/GMGN 定向测试、数据库集成测试和 Schema audit 通过；该记录属于当时的专用测试库环境，不能替代本次发布前复核。当前工作区复核结果（2026-08-03）为：Node `24.11.1`、npm `11.6.2`；后端全量单测 `348/348`；前端 lint/build 通过；受影响后端文件语法检查通过；`git diff --check` 通过（仅有换行符提示）。本次专用测试库集成测试为 `36/37`，唯一失败是旧 P12 `SKIP LOCKED` 隔离测试，P20 集成项通过；Schema audit 输出 `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`；Record smoke 通过并确认 `signalCount=0`、`targetCount=0`；Paper smoke 通过并确认 `swapCallCount=0`。`origin/main` 当前仍是上一份基线提交，工作区存在未提交修改；生产服务器尚未升级或开启 P20 Live。
+Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量单测、P20/GMGN 定向测试、数据库集成测试和 Schema audit 通过；该记录属于当时的专用测试库环境，不能替代本次发布前复核。当前发布前复核结果（2026-08-04）为：Node `24.11.1`、npm `11.6.2`；后端全量单测 `368/368`；独立 PostgreSQL 集成测试 `37/37`；前端 lint/build、`git diff --check`、环境检查和生产只读 Schema audit 全部通过。完整迁移链已在一次性测试库应用至 Migration 035，测试后数据库已删除。生产服务器尚未部署，本轮发布必须以最终 Git commit 为准。
 
 ## 13. Node 24 本地运行时实测记录（2026-08-02）
 
@@ -294,14 +309,14 @@ Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量�
 
 执行 `npm run test:p20:paper-smoke`。脚本使用受控 Token 价格和 BSC 钱包原生币价格夹具，同时覆盖 `gmgnHttp.swap()` 计数器。
 
-结果：成功创建唯一 Resolution、Dynamic Target、Paper Signal、7 天 Paper Session、Evaluation 和 `execution_mode=paper` 的模拟仓位；单笔金额、入场快照和离场策略快照一致；`swapCallCount=0`。前端正确显示 Paper 策略和“7 天模拟运行中”。
+结果：成功创建唯一 Resolution、Dynamic Target、Paper Signal、Paper Session、Evaluation 和 `execution_mode=paper` 的模拟仓位；单笔金额、入场快照和离场策略快照一致；`swapCallCount=0`。前端正确显示 Paper 策略为模拟运行。
 
 ### 故障与 Live 安全门
 
 - 重复事件、候选歧义、Provider 地址错配、超时、Worker 租约、策略 revision 失效、Session 幂等和上线窗口接管测试全部通过。
-- 把 Paper 策略保存为目标 Live 配置后，revision 从 1 变为 2；旧 Paper Session 不再计入当前 revision 验收。
-- Live 授权接口返回 `DYNAMIC_PAPER_ACCEPTANCE_REQUIRED`，HTTP 400；`approval_id` 和 `approval_expires_at` 均为空，前端授权按钮保持禁用。
-- 本轮只验证拒绝路径，没有开启 `P20_LIVE_ENABLED`，没有执行真实 Swap。
+- 把 Paper 策略保存为目标 Live 配置后，revision 从 1 变为 2；旧 Revision 的待处理任务被拒绝。
+- 不存在 Live Approval/Revoke 接口；无账号授权记录时，只要 Live Feature、策略、目标、预算、持仓、时效和全局 Engine 条件通过，动态实盘门禁允许执行。
+- Live 测试必须记录真实 Swap 的交易哈希、成交状态、持仓和离场结果；失败时记录明确 blocker。
 
 ### 历史最终回归记录（2026-08-02）
 
@@ -312,23 +327,23 @@ Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量�
 - 新增烟雾脚本、动态上线窗口和前端运行状态文件的 Node/TypeScript 语法检查通过，`git diff --check` 通过。
 - 测试结束后必须恢复全部 P20 Feature Flag 为 `false`；服务器部署和 P20 生产启用仍需单独批准。
 
-### 当前复核结论（2026-08-03）
+### 当前复核结论（2026-08-04）
 
 - P20 代码、前端方案 A、统一 API、按链预算、CA 解析失败关闭、租约保护和 Live 安全门已接入当前工作区。
-- 本地 Node `24.11.1` / npm `11.6.2`；后端 `348/348` 通过，前端 lint/build 通过。
-- 专用测试库 Schema audit、Record smoke、Paper smoke 通过；Paper 未调用真实 Swap。
-- 全量集成套件仍为 `36/37`，旧 P12 测试红灯必须在发布前修复或隔离；它不改变 P20 相关测试结果，但不能忽略。
-- 7 天 Paper 是运行时验收，不是 smoke 测试。当前尚未完成，因此 P20 Live 仍不可开启。
+- 本地 Node `24.11.1` / npm `11.6.2`；后端 `368/368`、独立 PostgreSQL 集成测试 `37/37`、前端 lint/build 全部通过。
+- 生产只读 Schema audit、环境检查和 Migration 000-035 空库执行通过；测试库完成后已删除。
+- 动态累计买入按 Actor Policy 隔离；没有明确 `assetFamilyKey` 的同名/同 Symbol CA 保持独立，历史隐式 Family 由 Migration 035 拆分。
+- Paper smoke 已验证不调用 Swap；动态 Live 是否开启由当前发布计划和明确的小额实盘配置决定，不再等待 7 天 Paper。
 
 ## 14. 当前发布门与服务器部署清单
 
-截至 2026-08-03，P20 代码可以进入“服务器冷部署准备”，但还不能直接进入动态实盘。发布前必须补齐以下门槛：
+P20 代码可以进入服务器冷部署和小额动态实盘准备。发布前必须补齐以下门槛：
 
 1. 使用名称包含 `test` 且不等于生产库的专用 PostgreSQL 测试库，设置 `XBOT_TEST_DB_NAME`，重跑 `npm.cmd run test:integration`、`npm.cmd run audit:schema:test`、`npm.cmd run test:p20:record-smoke` 和 `npm.cmd run test:p20:paper-smoke`。
-2. 校验 Migration `027`、`028`、`029`、`030`、`031`、`032`，特别是 `chain_budgets`、`dynamic_policy_usage_daily_by_chain`、动态解析唯一索引和上线窗口租约字段。
+2. 校验 Migration `027`-`035`，特别是 `chain_budgets`、`dynamic_policy_usage_daily_by_chain`、动态策略模板、`approved_term_direct`、候选索引字段字节约束、隐式 Family 拆分、动态解析唯一索引和上线窗口租约字段。
 3. 记录本次发布 commit；当前工作区未提交修改不能直接当作服务器版本，也不能只依据 `origin/main` 判断本轮已上传。
 4. 服务器冷部署时保持 `P20_CANDIDATE_INDEX_ENABLED=false`、`P20_DYNAMIC_RESOLUTION_ENABLED=false`、`P20_RECORD_ENABLED=false`、`P20_PAPER_ENABLED=false`、`P20_LIVE_ENABLED=false`，并先验证固定 CA、持仓、Settings、WebSocket 和 TGBOT 不受影响。
-5. 冷部署完成且固定链路冒烟通过后，按 `Candidate Index -> Dynamic Resolution -> Record -> Paper` 的顺序分阶段开启；动态 Live 必须等同一 revision 完成至少 7 天 Paper 和人工核对后，另行单账号、小金额、单链授权。
+5. 冷部署完成且固定链路冒烟通过后，按 `Candidate Index -> Dynamic Resolution -> Record` 开启；需要模拟时启用 Paper，需要实盘时配置单账号小额逐链预算、开启 P20 Live 并启动全局 Engine，不再创建账号短时授权。
 6. 不上传 `.env`、API Key、GMGN 私钥、OPENNEWS_TOKEN、ADMIN_TOKEN、数据库密码、日志或数据库 dump；生产秘密只存在服务器 `/opt/xbot/backend/.env`，权限保持 `0600`。
 
-以上任一项未完成，状态都应标记为“代码完成、发布未完成”，不能标记为“P20 已可实盘”。
+以上任一项未完成，状态都应标记为“代码完成、发布未完成”；全部完成后方可标记为“P20 小额实盘已就绪”。

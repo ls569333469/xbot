@@ -39,6 +39,79 @@ test('resolver verifies and resolves one exact symbol candidate without creating
   assert.equal(result.canTrade, false);
 });
 
+test('resolver handles a configured Chinese phrase with punctuation differences', async () => {
+  const result = await resolveDynamicSignal({
+    text: '何必东奔西走.币安全部都有!',
+    approvedAliases: ['何必东奔西走，币安全部都有。'],
+    allowedChains: ['bsc'],
+    allowedTermTypes: ['approved_name']
+  }, {
+    candidateIndex: new CandidateIndex([{
+      chain: 'bsc', address: CA,
+      name: '何必东奔西走 币安全部都有', symbol: '币有'
+    }]),
+    verifyCandidate: verified
+  });
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.intent.intentClass, 'approved_term_direct');
+  assert.equal(result.selectedCandidate.contractAddress, CA);
+  assert.ok(result.selectedCandidate.supportReasonCodes.includes('APPROVED_NAME_MATCH'));
+  assert.equal(result.canTrade, false);
+});
+
+test('resolver defaults to the KOL-qualified market and liquidity dominance rule', async () => {
+  const dominant = {
+    chain: 'bsc', address: CA,
+    name: '何必东奔西走 币安全部都有', symbol: '币有',
+    renownedWallets: 72, marketCapUsd: 11_000_000, liquidityUsd: 400_000
+  };
+  const copy = {
+    chain: 'bsc', address: '0xe9337dde3dd9e97f1f45a56412767ce5098e7777',
+    name: '何必东奔西走 币安全部都有', symbol: '币有',
+    renownedWallets: 20, marketCapUsd: 250_000, liquidityUsd: 80_000
+  };
+  const result = await resolveDynamicSignal({
+    text: '何必东奔西走.币安全部都有!',
+    approvedAliases: ['何必东奔西走，币安全部都有。'],
+    allowedChains: ['bsc'],
+    allowedTermTypes: ['approved_name']
+  }, {
+    candidateIndex: new CandidateIndex([dominant, copy]),
+    verifyCandidate: async (candidate) => ({
+      ...candidate,
+      providerAddress: candidate.contractAddress,
+      providerStatus: 'verified',
+      tradableStatus: 'tradable'
+    })
+  });
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.selectedCandidate.contractAddress, CA);
+  assert.deepEqual(result.reasonCodes, ['MARKET_DOMINANT_VARIANT']);
+});
+
+test('resolver keeps near-tied approved-name candidates ambiguous by default', async () => {
+  const values = [
+    { chain: 'bsc', address: CA, marketCapUsd: 1_000_000, liquidityUsd: 400_000 },
+    { chain: 'bsc', address: '0xe9337dde3dd9e97f1f45a56412767ce5098e7777', marketCapUsd: 800_000, liquidityUsd: 300_000 }
+  ].map((candidate) => ({
+    ...candidate,
+    name: '何必东奔西走 币安全部都有',
+    symbol: '币有',
+    renownedWallets: 5
+  }));
+  const result = await resolveDynamicSignal({
+    text: '何必东奔西走.币安全部都有!',
+    approvedAliases: ['何必东奔西走，币安全部都有。'],
+    allowedChains: ['bsc'],
+    allowedTermTypes: ['approved_name']
+  }, {
+    candidateIndex: new CandidateIndex(values),
+    verifyCandidate: verified
+  });
+  assert.equal(result.status, 'ambiguous');
+  assert.equal(result.failureCode, RESOLUTION_CODES.AMBIGUOUS);
+});
+
 test('resolver uses a direct EVM CA only when exactly one EVM chain is allowed', async () => {
   const exact = await resolveDynamicSignal({ text: CA, allowedChains: ['robinhood'] }, {
     candidateIndex: new CandidateIndex(),

@@ -1,14 +1,14 @@
 # P20 高权重账号动态关键词信号与 CA 解析方案
 
-> 版本：v4.8。状态：P20.0-P20.2 代码已完成，P20.3-P20.5 已实现安全门与运行时契约，P20 API 已按当前实现统一；方案 A 多链资金矩阵已接入正式动态策略工作区，Paper 验收尚未完成。动态候选已补充短时过期、Provider CA 精确回显校验、解析任务租约所有权保护和动态上线窗口租约保护。更新日期：2026-08-03。
+> 版本：v5.2。状态：P20.0-P20.6 运行时和正式工作区已实现；方案 A 四步向导、单一完整策略模板和多链资金矩阵已接入。动态实盘采用统一门禁：P20 实盘能力开启、账号策略为 `live + enabled`、全局 Engine 已启动时直接执行，不再要求同 Revision 7 天 Paper 或账号 30 分钟授权。运行阶段严格匹配，不允许 Live 静默降级为 Paper；动态策略可以独立满足全局就绪度，不要求固定 CA 策略同时开启。动态候选仍执行短时过期、Provider CA 精确回显、租约保护、批准词条标点容错和有界候选索引。更新日期：2026-08-04。
 >
-> 本文定义技术方案、实施顺序、前端职责和验收标准。当前已实现 Candidate Index、Asset Family/Variant、Resolver、Intent Gate、GMGN 只读接口、6551 动态任务入队、账号级运行策略、Paper/Live 安全门和 Migration 028-032；当前已补齐 Dynamic Resolution 详情读取、前端 API 封装、策略中心统一入口、固定/动态统一工作区和方案 A 多链资金矩阵，所有运行时开关默认关闭，尚未部署生产或完成 Paper 实盘验收。GMGN 核验快照默认按 `P20_GMGN_CANDIDATE_TTL_MS` 使用短时缓存，非法 TTL 回退安全默认值并限制上下界，Token Info 地址错配失败关闭，动态 Job 和动态上线窗口的租约续期与所有权回写已纳入运行时契约。
+> 本文定义技术方案、实施顺序、前端职责和验收标准。当前已实现 Candidate Index、Asset Family/Variant、Resolver、Intent Gate、GMGN 只读接口、6551 动态任务入队、账号级运行策略、Paper/Live 运行时和 Migration 028-035；已补齐 Dynamic Resolution 详情读取、策略中心统一入口、固定/动态统一工作区、方案 A 多链资金矩阵和账号策略模板。GMGN 核验快照默认按 `P20_GMGN_CANDIDATE_TTL_MS` 使用短时缓存，非法 TTL 回退安全默认值并限制上下界，Token Info 地址错配失败关闭。批准词条匹配在内部忽略 Unicode 标点、空格和全半角差异，但保留用户原文用于显示和审计；进入解析不等于通过实盘策略、预算、持仓、时效和 Engine 门禁。
 >
 > 生产服务器版本是后续实施、测试和实盘验收的唯一基线；GitHub 用于版本备份，本地工作区仅用于开发、测试和备份。实施前必须重新核对三者提交号并检查密钥、数据库、日志和运行数据不会进入 Git。
 >
 > 明日测试与服务器上传步骤以 [P20_dynamic_strategy_test_plan.md](./P20_dynamic_strategy_test_plan.md) 为准；测试不通过时不得上传服务器，上传后所有 P20 运行时开关仍保持关闭。
 
-> 发布前复核结论（2026-08-03）：当前本地 Node `24.11.1` / npm `11.6.2`，后端单元测试 `348/348`、前端 lint/build、受影响后端语法检查和 Schema audit 通过；专用测试库集成测试为 `36/37`，唯一失败是未修改的旧 P12 `SKIP LOCKED` 隔离测试，P20 集成项全部通过；Record smoke 和 Paper smoke 通过，Paper 的 `swapCallCount=0`。工作区仍有未提交的 P20 修改，`origin/main` 只代表上一份已提交基线，不能视为本次工作区已上传或服务器已部署。正式服务器发布前必须处理或隔离 P12 测试红灯，再核对 commit、Migration 032 与生产配置。
+> 发布前复核结论（2026-08-04）：当前本地 Node `24.11.1` / npm `11.6.2`，后端单元测试 `368/368`、独立 PostgreSQL 集成测试 `37/37`、前端 lint/build、环境检查、生产只读 Schema audit 和 `git diff --check` 均通过。Migration 035 已在空测试库完整迁移链和本地生产 Schema 中验证；方案 A 登录态页面无控制台错误或横向溢出。动态累计买入按 Actor Policy 隔离，同名/同 Symbol 候选没有明确 `assetFamilyKey` 时保持独立。服务器尚未部署，本轮发布必须以最终 Git commit 为唯一版本。
 
 ## 1. 最终目标
 
@@ -126,12 +126,12 @@ BSC 单次 Trenches 返回：
 
 | 帖子上下文 | 结果 |
 |---|---|
-| 只有“币有”或 `$币有` | 两个真实版本均合理，`ambiguous_variant`，不自动交易 |
+| 只有“币有”或 `$币有` | 先应用市场主导规则；只有同一候选满足 KOL、双指标冠军和默认 `2x` 领先门槛时才选中，否则保持 `ambiguous_variant` |
 | 含 Flap、重启、新盘、对应平台 URL | 选择 Flap 重启盘 `0xe933...7777` |
 | 含 Four.meme、原盘或完整原 CA | 选择原盘 `0xd0bc...4444` |
 | 含完整新 CA | 精确选择新盘 |
 
-该案例证明 P20 必须保存“资产家族”和“具体版本”，不能把所有同名候选压缩成一个 Token，也不能按最高流动性、最高 KOL 数或最早创建时间机械选取。
+该案例证明 P20 必须保存“资产家族”和“具体版本”，不能把所有同名候选压缩成一个 Token，也不能只按最高流动性、最高 KOL 数或最早创建时间机械选取。本轮真实候选快照中，社区重启盘同时取得市值与流动性第一，且两项均超过次名 `2x`，因此可由 `MARKET_DOMINANT_VARIANT` 确定；市场数据变化后若不再满足门槛，必须重新回到歧义状态。
 
 ## 3. 核心数据模型
 
@@ -141,6 +141,8 @@ BSC 单次 Trenches 返回：
 2. **Asset Family**：同一叙事或项目族，例如“币有”。
 3. **Asset Variant**：原盘、跨链版本、迁移盘、社区重启盘等具体 `chain + CA`。
 4. **Resolution Candidate**：本次事件中可能对应的 Asset Variant，包含事件证据、市场证据和风险证据。
+
+Asset Family 不能只由同名或同 Symbol 自动建立。只有 Provider/研究证据明确提供同一 `assetFamilyKey` 时，原盘、重启盘或跨链版本才能归入同一 Family；没有明确关系时，每个 `chain + CA` 使用独立 Family。名称和 Symbol 只负责产生候选，不能把两个无关 CA 自动视为同一项目。
 
 ### 3.2 唯一候选的准确含义
 
@@ -154,7 +156,7 @@ BSC 单次 Trenches 返回：
   -> 最终只剩一个满足授权门槛的 Asset Variant
 ```
 
-如果两个真实版本都满足条件但帖子没有说明版本，结果必须是 `ambiguous_variant`，不得按市场热度猜测。
+如果两个真实版本都满足基础条件且帖子没有说明版本，只有满足第 7.3.1 节全部市场主导条件时才允许收敛；任何字段未知、双指标冠军不同或领先幅度不足，都必须返回 `ambiguous_variant`。
 
 ## 4. 总体架构
 
@@ -202,6 +204,8 @@ flowchart LR
 - `$PONS` 与 `#PONS` 是两个显式 Tag 入口，均可产生 `PONS` observed term。
 - 裸英文词默认不进入实盘，避免 `LIT`、`INDEX`、`CASH` 等普通词误报。
 - 中文项目名没有 `$`/`#` 时，只允许完整短语或已批准别名，不做模糊分词、拼音或语义猜测。
+- 已批准词条保存和显示用户原文；内部匹配键执行 NFKC 归一化，并忽略 Unicode 标点、空格和全半角差异。因此 `何必东奔西走，币安全部都有。` 可命中 `何必东奔西走.币安全部都有!`，但汉字、英文单词或顺序发生变化时不得命中。
+- 仅标点或空格不同的多个已批准别名按同一资产身份去重，不能误判为多资产；ASCII 词条仍执行完整单词边界，`ANSEM` 不得命中 `ANSEMX`。
 - Retweet 必须在本地检查顶层 `retweetedStatus/isRetweet`，不能只相信 Provider 的 `includeRetweets=false`。
 - Quote 与 Reply 必须保存作者正文和引用正文的边界，不能把被引用者的 CA 错归给当前 Actor。
 
@@ -213,6 +217,7 @@ CA 解析正确不等于交易方向正确。每条事件必须先通过本地�
 buy_direct
 launch_direct
 full_ca_solo
+approved_term_direct
 neutral_reference
 comparison_or_list
 historical_review
@@ -224,7 +229,7 @@ multi_asset_ambiguous
 unknown
 ```
 
-初始 Live 只允许 `buy_direct`、`launch_direct`，以及“Actor 原文包含唯一完整 CA/平台 URL且没有任何拒绝语义”的 `full_ca_solo`。完整 CA 是最高优先级强锚点，允许正文同时包含普通中性文字；其余状态全部降级为 Research/Record；Paper 可以采集但必须保留原状态。
+可以进入动态解析的状态为 `buy_direct`、`launch_direct`、`full_ca_solo` 和 `approved_term_direct`。完整 CA 是最高优先级强锚点，允许正文同时包含普通中性文字；`approved_term_direct` 只适用于当前账号策略中已经保存的完整批准词条。进入解析后仍必须通过唯一 CA、账号模式、Feature Flag、Revision/context hash、预算、持仓和 Engine 等全部安全门；其余 Intent 状态只记录研究结果。
 
 判定顺序必须固定：
 
@@ -233,8 +238,8 @@ unknown
 3. 初始 Live 一条帖子只允许一个主资产；出现多个不同资产词条时一律 `multi_asset_ambiguous`，不按词频或市值选一个。
 4. Retweet 初始 Live 禁止；Quote/Reply 只有 Actor 自己的新增正文同时包含允许的正向动作和主资产时才可继续。
 5. 否定作用域必须覆盖 `not/no/never/don't/avoid/scam/hack/sold/exit` 及经人工审核的中文等价词；命中拒绝词后不得被普通正向词抵消。
-6. 纯 Cashtag、纯 Hashtag、裸项目名不能自动等同买入；可在 Record/Paper 统计后，按 Actor 单独批准例外。完整 CA 单独成帖是唯一初始例外，但仍需通过账号安全状态、可交易性和资金门。
-7. 规则词典、事件类型和 Actor 例外都必须有 revision；修改后使相关 Live Approval 失效。
+6. 未配置的纯 Cashtag、纯 Hashtag或裸项目名不能自动等同买入；账号策略中明确保存的完整批准词条可得到 `approved_term_direct`，完整 CA 单独成帖可得到 `full_ca_solo`。两者都只是解析资格，安全、否定、卖出、历史、比较和多资产语义仍优先拒绝，且后续所有 CA、策略和资金门必须继续通过。
+7. 规则词典、事件类型和 Actor 例外都必须有 revision；修改后旧 Revision 的待处理任务失败关闭。
 
 必须保存 `intent_class`、`intent_reason_codes[]`、`intent_rule_revision`、`author_owned_terms[]`、`quoted_terms[]` 和拒绝命中的文本位置，供回放和最终下单前复核。
 
@@ -328,11 +333,12 @@ GMGN metadata 中的 X、Website 和描述由 Token 创建者控制，只能作�
 
 ```text
 1. 应用允许链、可交易性和明确上下文过滤
-2. 只保留 wallet_tags_stat.renowned_wallets >= 3 的候选
+2. 只保留 wallet_tags_stat.renowned_wallets >= 3，且市值、流动性均为已知正数的候选
 3. 分别按当前 market_cap 和 liquidity 降序排列
-4. 只有同一个 CA 同时位列两项第一时，才得到 market_dominant_variant
-5. holder_count 第一作为额外一致性证据
-6. 两项冠军不同、字段 unknown 或正文与冠军冲突时，继续返回歧义
+4. 只有同一个 CA 同时位列两项第一，且两项相对各自次名均达到默认 2x 领先时，才得到 market_dominant_variant
+5. 如果过滤后只剩一个满足全部已知字段与 KOL 门槛的候选，可以直接视为市场主导候选；任一原始候选缺少 KOL 字段时仍失败关闭
+6. holder_count 第一只作为额外一致性证据，不参与当前硬门
+7. 两项冠军不同、字段 unknown、领先不足或正文与冠军冲突时，继续返回歧义
 ```
 
 本轮四组样本按该规则均选择了人工核验的版本：
@@ -350,7 +356,7 @@ GMGN metadata 中的 X、Website 和描述由 Token 创建者控制，只能作�
 - `active_kol_buyers` 是当前仍主动持仓的有效 KOL，用于交易热度和风险；
 - 二者不能互换。本轮四个赢家的 `active_kol_buyers` 为 `4 / 0 / 9 / 2`，若错误地设置“有效 KOL >= 3”身份门槛，会误杀 JUGGERNAUT 和 UNI；
 - 市场主导规则不能覆盖完整 CA、明确平台、项目账号或账号安全状态；`$PUMP` 当前热榜单候选与正文语义冲突，仍必须拒绝；
-- 市值和流动性的最小领先倍数必须通过更大样本校准，未达到领先要求时继续 `DYNAMIC_CA_AMBIGUOUS_VARIANT`。
+- 市值和流动性的最小领先倍数默认均为 `2x`；该参数必须版本化并继续用更大样本校准，未达到领先要求时继续 `DYNAMIC_CA_AMBIGUOUS_VARIANT`。
 
 ### 7.4 硬拒绝条件
 
@@ -449,7 +455,7 @@ repeat_buy_policy / cooldown
 
 只有用户显式批准为 `live` 的账号级策略才能为未知 Token 提供资金授权。Actor Profile、Grok 画像、历史胜率和自动创建的 Target 均不能替代该授权。
 
-### 9.1 方案 A：多链资金矩阵（唯一正式交互）
+### 9.1 方案 A：四步向导、完整模板与多链资金矩阵（唯一正式交互）
 
 动态策略仍然是**一条账号级策略**，但交易预算必须按允许链分别保存，不再使用 USD 换算，也不把一条账号策略拆成多条链策略：
 
@@ -464,9 +470,35 @@ repeat_buy_policy / cooldown
 
 保存契约为 `chain_budgets`，每个已启用链必须有 `budget_per_trade` 和 `daily_budget`。Paper/Live 下两者都必须大于 0，且 `daily_budget >= budget_per_trade`；Record 可以保存 0 预算，因为它只记录不交易。解析得到唯一 `chain_id + contract_address` 后，只读取该链预算；全选多链不会对同一目标重复买入。
 
-前端只提供一个矩阵编辑器和内置交易配置模板：模板只填充允许链与各链资金，不保存 X 账号、词条、实盘授权或 Paper 验收状态。固定 CA 和动态策略均使用同一套 `StrategyEditor` 与离场策略编译器。曾经评审过的其他配置交互不属于正式产品能力，不保留为可切换页面或运行时分支。
+动态策略只允许存在一层模板。`DynamicPolicyTemplate` 是完整的策略配置来源，包含监听内容类型、允许词条类型、批准项目名/别名、`resolver_options`、允许链、逐链原生币预算、每日新币上限、单币累计买入上限、滑点和离场策略。模板不保存 X 账号、Record/Paper/Live 阶段、启用状态、Policy Revision、Watch 状态或全局 Engine 状态。
 
-每次修改链预算、允许链或离场策略都会进入 `revision/context_hash`，自动撤销旧的 Live Approval，并要求重新完成同 Revision 的 Paper 验收。
+正式编辑流程为：
+
+```text
+选择一个完整模板来源
+  -> 将模板完整配置应用到当前草稿
+  -> 保留当前账号、运行阶段和启用状态
+  -> 四步向导中继续编辑全部字段
+  -> 显示相对配置来源的差异
+  -> 可一键恢复来源完整配置
+  -> 保存账号策略，不修改模板
+  -> 只有显式“更新所选模板”才生成模板新版本
+```
+
+四步依次是“账号与模板、词条与解析、资金与离场、确认并保存”。第一页必须展示模板包含的内容摘要和完整详情，不能只显示模板名称；资金矩阵只负责允许链和逐链金额编辑，不再包含第二个模板下拉框或硬编码的 EVM/Solana/小额模板。固定 CA 和动态策略继续共用 `StrategyEditor` 与离场策略编译器。曾经评审过的其他配置交互不属于正式产品能力，不保留为可切换页面或运行时分支。
+
+该收口复用现有 `dynamic-signal/templates` 与 Policy API，不新增交易 API、数据库迁移或运行时执行分支。前端读取、应用、保存和更新模板时必须原样保留 `resolver_options`，不得因表单未展示其内部字段而写回空对象。
+
+每次修改链预算、允许链或离场策略都会进入 `revision/context_hash`；旧 Revision 的待处理任务必须失败关闭，新事件按新 Revision 处理。
+
+#### 运行时兼容边界审计
+
+- `record`、`paper`、`live`、`paused` 必须与各自 Feature Flag 严格匹配；任何阶段关闭时都停止接收该阶段新任务，不得静默改成其他阶段。
+- 同一账号的策略保存使用事务级串行锁；Revision 递增后立即取消旧 Job、Launch Window 和未提交 Signal，并归档旧 Dynamic Target 的兼容白名单载体。
+- 固定 CA 与动态策略共享 Engine、GMGN、RPC、钱包和最终提交门禁，但两种策略授权相互独立；任意一条具备完整授权的策略链路都可满足“存在可执行策略”，动态策略不依赖固定 CA 非空。
+- 动态日预算只由 `dynamic_policy_usage_daily_by_chain` 授权和结算。兼容 `ca_whitelist.total_budget` 仅用于复用交易数据结构，不得再次作为动态策略生命周期预算门禁。
+- 策略保存响应必须返回 6551 Watch Outbox 的 `pending/processing/succeeded/failed` 状态；“Policy 已热更新”和“Watch 已同步”是两个独立状态。
+- Migration 中的 `dynamic_live_approvals`、`last_approved_revision` 和旧标量预算字段属于历史结构。运行代码不得读取它们进行当前授权，但在生产数据确认和独立清理 Migration 完成前不物理删除。
 
 ## 10. 动态 Target 物化
 
@@ -496,7 +528,7 @@ expires_at
 - 当前 `uq_whitelist_ca_chain_active` 会阻止不同 Actor 对同一 CA 物化，不能直接沿用。新约束必须分别保证“手工活跃记录按 `chain + CA` 唯一”和“动态活跃记录按 `actor_policy + chain + CA` 唯一”，且不能破坏已有手工记录；
 - 同一钱包、同一 `chain + CA` 的 Active Intent 和已开仓检查必须跨 `whitelist_id` 执行。不同 Actor 命中同一 Token 时默认合并/拒绝重复买入，只有显式重复买入策略才可追加；
 - 资金、重复买入、每日总额和离场模板以不可变的 `trade_template_snapshot + actor_policy_revision` 为准，不能让后来修改的兼容白名单行重写历史 Signal；
-- 动态兼容行不得要求新建 6551 Watch 或 P16 Relation。P17 Activation、Readiness 和 Live Approval 必须增加 Dynamic Policy 分支，不能因没有 Relation 被永久卡在 `syncing`；
+- 动态兼容行不得要求新建 6551 Watch 或 P16 Relation。P17 Activation 与 Readiness 必须增加 Dynamic Policy 分支，不能因没有 Relation 被永久卡在 `syncing`；
 - 自动物化记录不能出现在普通手工白名单中造成误解，应显示为“动态关键词标的”；
 - 记录过期不等于自动卖出，持仓仍由已绑定离场策略管理；
 - 删除或暂停 Actor Policy 必须阻止新的动态买入，但不能破坏已有仓位对账和离场。
@@ -539,6 +571,19 @@ actor_policy_revision
 trade_template_snapshot
 ```
 
+### 11.3 已实现 Migration
+
+- `028_p20_readonly_dynamic_resolution.sql`：只读候选、资产家族与解析审计基础结构；
+- `029_p20_runtime_dynamic_signal_pipeline.sql`：动态策略、任务、目标、Paper/Live 运行时结构；
+- `030_p20_runtime_launch_window_lease_columns.sql`：动态上线窗口租约字段；
+- `031_p20_runtime_schema_index_repair.sql`：运行时索引与幂等修复；
+- `032_p20_dynamic_chain_budget_matrix.sql`：按链原生币预算矩阵；
+- `033_p20_dynamic_policy_templates.sql`：账号动态策略模板；
+- `034_p20_approved_term_intent_and_index_bounds.sql`：`approved_term_direct` 枚举与候选索引字段字节上限。
+- `035_p20_split_implicit_asset_families.sql`：拆分历史按同名、同 Symbol 或旧 CA fallback 自动合并的 Family，保留明确 `assetFamilyKey` 关系。
+
+Migration 034 同时要求应用层把 Provider 名称、符号、Launchpad、来源引用等索引文本限制在 `512 bytes` 内，并在数据库层设置 `1024 bytes` 最终约束。异常超长元数据只能跳过该索引值，合法 `chain + CA` 仍可保留，单条脏数据不得回滚整批候选预热。Migration 035 只整理 P20 候选 Family/Variant 关系，不修改固定 CA、Signal、Attempt、Order、Position 或资金账本。
+
 最终资金提交前必须重新检查：
 
 - Actor Policy 仍为 Live；
@@ -557,7 +602,7 @@ backend/domains/dynamic-signal/content-extractor.js
 backend/domains/dynamic-signal/intent-gate.js
 backend/domains/dynamic-signal/candidate-index.js
 backend/domains/dynamic-signal/gmgn-market-source.js
-backend/domains/dynamic-signal/asset-family-service.js
+backend/domains/dynamic-signal/candidate-repository.js
 backend/domains/dynamic-signal/ca-resolver.js
 backend/domains/dynamic-signal/resolution-policy.js
 backend/domains/dynamic-signal/dynamic-target-service.js
@@ -576,7 +621,7 @@ backend/domains/actor-screening/*
 - `signal/queries.js`：持久化动态解析证据；
 - `signal/live-policy.js`：加入 Actor Dynamic Policy；
 - `trade-repository.js`：提交前复核动态授权；
-- `system/routes.js`：展示第三类实盘授权证据；
+- `system/routes.js`：展示全局 Engine 和 P20 实盘能力证据；
 - Provider usage、日志和监控：记录 GMGN 权重、缓存命中率和各阶段延迟。
 
 ## 13. 延迟与 GMGN 成本设计
@@ -674,7 +719,7 @@ P20 不新增买入、Quote、Swap、资金准备或离场 API。交易仍复用
 
 - 统一使用 `/api/<domain>` 前缀；P20 的 domain 固定为 `dynamic-signal` 和 `actor-screening`。
 - 资源集合使用复数名词，列表使用 `GET`，创建使用 `POST`，更新使用 `PUT`，删除使用 `DELETE`。
-- 只有有明确副作用且无法表达为资源更新的操作才使用动作后缀，例如 `approve-live`、`revoke-live`、`retry`。
+- 只有有明确副作用且无法表达为资源更新的操作才使用动作后缀，例如 `retry`。
 - 成功响应统一为 `{ ok: true, data }`；失败响应统一为 `{ ok: false, error, code }`。前端只依赖稳定 `code`，不解析错误文案。
 - 字段统一使用 `snake_case`；列表过滤通过 query 参数传递；详情路径使用 `/:id`。
 - 不为旧路径增加同义别名。迁移调用方时以本节 canonical path 为准，避免同一个操作存在两套入口。
@@ -687,8 +732,6 @@ GET    /api/dynamic-signal/status
 GET    /api/dynamic-signal/policies?kol_id=:kolId
 PUT    /api/dynamic-signal/policies/:kolId
 DELETE /api/dynamic-signal/policies/:id
-POST   /api/dynamic-signal/policies/:id/approve-live
-POST   /api/dynamic-signal/policies/:id/revoke-live
 GET    /api/dynamic-signal/resolutions?actor_policy_id=:id&status=:status&limit=:n
 GET    /api/dynamic-signal/resolutions/:id
 GET    /api/dynamic-signal/paper-sessions?actor_policy_id=:id
@@ -742,9 +785,9 @@ GET  /api/dynamic-signal/asset-families/:id
 #### 16.3.1 页面职责
 
 1. **系统总览 `/`**：展示交易引擎、资金、持仓、交易结果、链路健康、6551/GMGN 状态和安全告警。它回答“系统现在是否正常”，不承载策略编辑。
-2. **策略总览 `/strategies`**：展示全部策略、固定目标、动态账号、模拟验收、实盘授权和最近策略异常。它回答“策略现在如何配置”，只读展示摘要，不直接保存策略。
+2. **策略总览 `/strategies`**：展示全部策略、固定目标、动态账号、模拟策略、实盘策略和最近策略异常。它回答“策略现在如何配置”，只读展示摘要，不直接保存策略。
 3. **固定策略工作区 `/strategies/fixed`**：承载原 `/whitelist` 的全部固定 CA、未发币监控、快速投研、生态账号、项目账号和策略编辑能力。`/whitelist` 保留为兼容入口，进入同一个固定策略工作区，不再维护第二套页面语义。
-4. **动态策略工作区 `/strategies/dynamic`**：承载账号级 Dynamic Policy、词条匹配、解析阶段、账号清洗、模拟验收和实盘授权。它复用现有 `P20Operations` 的业务能力，但不以内嵌编辑器形式出现在策略总览中。
+4. **动态策略工作区 `/strategies/dynamic`**：承载账号级 Dynamic Policy、词条匹配、解析阶段、账号清洗、模拟交易和实盘配置。它复用现有 `P20Operations` 的业务能力，但不以内嵌编辑器形式出现在策略总览中。
 5. **KOL 页面 `/kol`**：只负责账号身份、6551 核验、生态分类标签和账号基础管理；不重复放完整动态策略编辑器。
 6. **Signal 页面**：负责原始帖子、解析证据、候选 CA、拒绝原因、最终交易结果和延迟链路；不修改策略配置。
 7. **Settings 页面**：负责全局 Feature Flag、Worker 健康、6551/GMGN 限流、数据库和 Live 安全门；不复制账号级策略。
@@ -755,7 +798,7 @@ GET  /api/dynamic-signal/asset-families/:id
 
 ```text
 策略中心
-  全部策略 / 固定目标 / 动态账号 / 模拟验收 / 实盘授权
+  全部策略 / 固定目标 / 动态账号 / 模拟策略 / 实盘策略
 
   固定 CA / 项目策略              动态喊单策略
   策略数量                       账号策略数量
@@ -767,7 +810,7 @@ GET  /api/dynamic-signal/asset-families/:id
 
 - 总览中的列表、详情和统计只读；不会在这里出现 `P20Operations` 或固定策略表单；
 - 两个“进入工作区”按钮的位置、样式、文案结构和返回方式一致；
-- 进入工作区后才允许创建、编辑、保存、删除、暂停、验收或授权；
+- 进入工作区后才允许创建、编辑、保存、删除、暂停或启用；
 - “进入工作区”是编辑权限和操作副作用的边界，不代表复制策略、重新创建 Watch 或新增交易链路；
 - “新增策略”只负责选择策略类型，选择后进入对应工作区，不在策略中心内展开第二套编辑器；
 - 无数据、加载中、错误、权限不足和保存中的状态必须在两个策略模块使用同一套组件和文案语义。
@@ -793,9 +836,9 @@ GET  /api/dynamic-signal/asset-families/:id
 
 - 进入某条策略后，列表选择、详情展示、表单编辑和保存反馈的结构一致；
 - 表单修改产生 dirty 状态，离开工作区或切换策略前必须提示未保存变更；
-- 保存成功生成新的策略 Revision，并显示“需要重新验收”或“已保持授权”的明确结果；
-- 保存不自动开启真实交易；Live 授权、全局安全门和模拟验收继续由后端独立控制；
-- 删除、暂停、授权、重试等有副作用的操作必须使用统一确认、进行中、成功、失败和可重试状态；
+- 保存成功生成新的策略 Revision，并明确显示当前运行阶段和生效条件；
+- 保存不自动启动全局 Engine；`live + enabled` 策略在全局真实交易运行时直接参与实盘；
+- 删除、暂停、启用、重试等有副作用的操作必须使用统一确认、进行中、成功、失败和可重试状态；
 - 桌面端使用双栏，窄屏降为“列表 → 详情/编辑”单列，不使用横向溢出承载核心表单；
 - 页面可见文案以中文为主，链名称、账号、CA、API 路径和内部策略标识保留原文。Record、Paper、Live 在界面显示为“记录、模拟、实盘”。
 
@@ -813,7 +856,7 @@ frontend/src/pages/strategy/FixedStrategyWorkspacePage.tsx
 frontend/src/pages/strategy/DynamicStrategyWorkspacePage.tsx
   复用 P20Operations 的动态业务能力
 frontend/src/pages/strategy/DynamicTradeConfigMatrix.tsx
-  方案 A 的允许链、原生币金额、每日上限和内置资金模板
+  方案 A 的允许链、原生币金额和每日上限；不再拥有内部模板层
 frontend/src/pages/WhitelistPage.tsx
   被固定策略工作区复用，/whitelist 作为兼容入口
 ```
@@ -827,8 +870,10 @@ API 继续复用现有标准封装：固定策略使用 `api.whitelist.*`，动�
 3. 将 `P20Operations` 移入动态工作区，策略总览只保留动态摘要；
 4. 重做策略中心为对称的固定/动态总览模块；
 5. 统一空状态、加载状态、错误、未保存、保存成功、验收中和授权失败的组件；
-6. 已完成桌面端和移动端视觉检查，并接入正式 React 页面；方案 A 是唯一正式动态交易配置交互；
-7. 已完成路由、API、权限和实盘安全门回归；P20 本轮只增加按链预算契约，不改变 P19 Quote/Swap/Exit 执行接口。
+6. 动态策略编辑器已统一为“账号与模板、词条与解析、资金与离场、确认并保存”四步向导；模板摘要、来源差异、恢复来源、另存新模板和显式更新模板均在同一流程完成；
+7. 已移除资金矩阵内部的第二套模板层，动态模板现在只表示一份完整策略配置，账号策略保存不会隐式修改模板；
+8. 已接入正式 React 页面并完成响应式样式与构建检查；方案 A 是唯一正式动态交易配置交互，管理员登录态下的桌面/窄屏截图验收在部署前补做；
+9. 路由和 API 继续复用现有契约；P20 本轮不改变 P19 Quote/Swap/Exit 执行接口，也不新增 Migration。
 
 Signal 页面显示：
 
@@ -844,7 +889,7 @@ Signal 页面通过 `GET /api/system/signals` 读取现有信号，通过 `GET /
 
 Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流和 Live 安全门；账号级策略不复制到 Settings。固定 CA / 项目策略区域负责固定目标和项目关系，动态 Target 仅显示只读来源和 Resolution 链接。
 
-现有 `xbot-strategy-center-preview.html` 和 `xbot-strategy-center-entry-consistency-preview.html` 均属于探索性预览，不是正式路由实现；其中若出现固定策略模拟工作区，不得视为新页面或新业务能力。正式 React 路由以本节的统一壳层为准，并以当前 `/whitelist` 作为固定策略业务能力来源。综合运营预览仍保留在 `xbot-p20-unified-operations-preview.html`，但不作为第二套正式策略入口。
+已删除被正式 React 路由替代的策略中心和动态配置探索性预览。正式交互以统一工作区壳层、当前 `/whitelist` 固定策略能力和方案 A 动态四步向导为准。综合运营预览仍保留在 `xbot-p20-unified-operations-preview.html`，但不作为第二套正式策略入口。
 
 用户不得在前端看到“GMGN 认为这是唯一正确 CA”这种误导文案。应显示“基于本次帖子上下文解析为该版本”。
 
@@ -858,10 +903,14 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - LIT：普通英文词禁止裸词实盘；
 - 币有原盘：Four.meme + 原 CA；
 - 币有社区重启盘：Flap + 新 CA；
-- 币有纯关键词：两个真实版本，必须 `ambiguous_variant`；
+- 币有纯关键词：市场快照满足 KOL `>=3`、同一候选市值/流动性双第一且默认均领先 `2x` 时选择市场主导版本；任一条件不满足时必须 `ambiguous_variant`；
+- 批准词条 `何必东奔西走，币安全部都有。`：句号、逗号、空格和全半角变体均命中同一资产；汉字变化、词序变化不得命中；
+- 两条仅标点不同的批准词条同时配置时，提取结果必须按同一资产去重，不得得到 `multi_asset_ambiguous`；
+- 批准词条单独出现且无拒绝语义：得到 `approved_term_direct` 并进入 CA 解析，但 Record/Paper/Live 与资金安全门保持不变；
 - metadata 引用旧 CA：建立版本关系，不能自动判假；
 - 假 Token 复制名称/X/网站：没有事件强锚点时不得胜出；
 - Provider 字段缺失：保存 `unknown`，不得当作 0；
+- Provider 返回异常超长名称、符号或来源字段：跳过超长索引值但保留合法 CA，整批预热不得因 PostgreSQL B-tree 行大小限制失败；
 - Holder 纯转入：不得计为有效主动买家；
 - Bundler 较高的 Flap Token：进入平台相关风险，不得自动判假。
 - “I sold $TOKEN”“avoid $TOKEN”“account hacked, CA ...”：Intent Gate 必须硬拒绝；
@@ -916,27 +965,26 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - 已实现账号级 Dynamic Policy、按链 `chain_budgets`、Dynamic Target、动态白名单兼容载体、同链同 CA 跨白名单持仓检查和 Paper Worker；
 - 按链每日预算使用 `dynamic_policy_usage_daily_by_chain`，授权预占、实际结算和释放不能回退到旧的账号级统计表；
 - Paper 复用 `paper-engine`，不会调用 `gmgnHttp.swap()`；
-- 已实现 Paper Session/Evaluation、独立到期收尾 Worker 与 7 天完成门；
-- 最终 7 天验收必须先保存“目标 Live 配置”，保持全局 `P20_LIVE_ENABLED=false`、`P20_PAPER_ENABLED=true`，由运行时将该 Live Policy 降级为同 Revision Paper；不能先用 `paper` Revision 跑完再切换 `live`，因为切换会生成新 Revision 并使旧验收失效；
-- 连续运行至少 7 天并完成人工核对仍是验收要求，未完成前不得启用 Live。
+- 已实现 Paper Session/Evaluation 和独立到期收尾 Worker；Paper 用于可选模拟与参数观察，不再是 Live 的技术前置条件；
+- `paper` 策略始终只产生模拟仓位，不调用真实 Swap；切换为 `live` 会生成新 Revision 并按新配置直接进入实盘判断。
 
 ### P20.4 单账号 Live 灰度
 
 - 已实现单账号 Dynamic Policy、revision/context hash、按链每日预算、每日新 Token/单币限制、最终下单前动态复核和自动失效；
-- Live API 还要求 `APPROVE P20 DYNAMIC LIVE`、当前 revision/context hash 和已完成至少 7 天 Paper Session；
-- 全局 `P20_LIVE_ENABLED` 默认关闭，且不自动 Arm、不自动部署、不自动启动实盘。
+- Live 不再使用账号短时授权 API；必须同时满足 `P20_LIVE_ENABLED=true`、策略 `live + enabled`、当前 revision/context hash 一致、逐链预算/持仓/时效检查通过和全局 Engine 已启动；
+- 保存策略不自动 Arm、不自动部署、不自动启动全局实盘。
 
 ### P20.5 扩大范围
 
-- Policy 的链、事件类型、词条类型、每链金额和离场策略全部纳入 revision；修改后旧 Live Approval 自动撤销；
+- Policy 的链、事件类型、词条类型、每链金额和离场策略全部纳入 revision；修改后旧任务因 revision/context hash 不一致失败关闭，新事件使用新 Revision；
 - 中文批准名称、新盘和跨链候选仍须单独完成样本验证后再晋级；
 - 不得把动态 Target 当作普通 Relation 绕过最终资金提交门。
 
 ### P20.6 API 与工具收口
 
-- 已完成：canonical P20 路由、统一响应约定、解析详情接口、Paper Session 读取、Live Approval/Revoke 前端封装。
+- 已完成：canonical P20 路由、统一响应约定、解析详情接口和 Paper Session 读取；已退休重复的 Live Approval/Revoke 接口。
 - 已完成：账号清洗 1-50 个账号、6551 采样、Intent/CA 解析、GMGN Kline 回测、逐账号结果和失败重试。
-- 已完成：策略中心统一入口、中文化布局、固定策略工作区和动态策略工作区已接入正式 React 页面；动态工作区已补齐事件类型、项目别名、滑点、解析记录、模拟验收、实盘授权/撤销和安全归档；Signals 解析详情和 Settings 状态面板仍按各自页面职责维护，不在本轮新增重复策略入口。
+- 已完成：策略中心统一入口、中文化布局、固定策略工作区和动态策略工作区已接入正式 React 页面；动态工作区已补齐事件类型、项目别名、滑点、解析记录、模拟交易、直接实盘配置和安全归档；Signals 解析详情和 Settings 状态面板仍按各自页面职责维护。
 - 新增设计约束：后续策略只能从策略中心的“新增策略”进入；新类型必须先补齐策略标识、触发字段、API 契约、执行适配器、审计记录和测试，再从占位状态切换为可用。
 - 未实现且保持隐藏：resolve preview、Candidate Index 状态诊断、Asset Family 详情诊断。它们需要明确产品需求后再单独评审，不能因为文档列过就当作已完成。
 - 不变：P20 不新增交易接口，不复制 P19 的资金和订单 API，不增加同义路由，不改变 P16 固定 CA 与生态互动语义。
@@ -950,12 +998,13 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - 禁用的词条类型不会参与 Candidate Index、直接 CA 路径或最终候选选择；
 - 完整 CA 可走最快精确路径；
 - Rank/Hot 缺失时不会伪造“无此 Token”；
-- 原盘和社区重启盘可以同时存在于一个 Asset Family；
-- 币有纯关键词不会自动选原盘或重启盘；
+- 只有明确 `assetFamilyKey` 证据存在时，原盘和社区重启盘才可以同时存在于一个 Asset Family；
+- 币有纯关键词只有在市场主导规则全部满足时才选择当前主导版本，否则不自动选原盘或重启盘；
 - Flap/Four.meme 上下文能选择对应版本；
 - 每个失败都有用户可读原因和逐候选证据。
 - 动态策略允许多链时，每条链的预算独立保存、独立限额和独立结算；同一目标不会因多链勾选而重复买入。
 - 比较、历史、卖出、否定、安全事件和多资产正文即使解析到正确 CA 也不能进入 Live。
+- 已配置批准词条可忽略标点、空格和全半角差异进入解析；真实文字变化不得容错，等价别名不得重复计为多资产。
 
 ### 19.2 安全
 
@@ -966,7 +1015,7 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - 最终提交前按解析出的 `chain_id` 再次核验该链 `chain_budgets`，缺失时失败关闭；
 - 最终提交前再次核验 Intent Revision、Dynamic Resolution、Dynamic Target 和 `chain + CA` 一致性；
 - 旧 P16 直接 CA 与生态互动线路语义不变；
-- 删除动态策略采用审计保留的停用归档，撤销 Live Approval、取消未完成 Job、暂停 Dynamic Target，但不破坏已有仓位对账和离场；
+- 删除动态策略采用审计保留的停用归档，取消未完成 Job、暂停 Dynamic Target，但不破坏已有仓位对账和离场；
 - 不上传任何 API Key、私钥、`.env` 或生产数据。
 
 ### 19.3 性能与稳定性
@@ -990,24 +1039,24 @@ Settings 页面只显示全局 Feature Flag、Worker 健康、6551/GMGN 限流�
 - 各类关键词从 Record/Paper 晋级 Live 的最小样本量；
 - 账号级单笔金额、每日新 Token 数和累计预算。
 
-这些值必须通过账号清洗工具和至少 7 天 Paper 数据校准。任何阈值调整都要版本化，并使受影响的 Live Approval 失效。
+这些值应通过账号清洗工具、历史回测和按需 Paper 数据校准。任何阈值调整都要版本化，使旧 Revision 任务失败关闭。
 
 另外，当前公开 GMGN Rank/Hot/Trenches 只是有限候选源，不具备任意 Symbol 全量搜索能力。P20.1 必须把 Provider 抽象和 `candidate_coverage` 指标做好；在新增可靠搜索源或长期索引前，漏检属于可接受的失败关闭，错误猜测 CA 不可接受。
 
 ## 21. 审核结论
 
-P20 v4.7 的核心不是“为关键词提前绑定一个 CA”，而是：
+P20 v4.9 的核心不是“为关键词提前绑定一个 CA”，而是：
 
 ```text
 先清洗账号
   -> 对每次帖子提取确定性线索
-  -> 逐帖确认这是当前、单一资产的买入意图
+  -> 逐帖确认这是当前、单一资产的买入意图，或命中该账号已批准的完整词条
   -> 用本地候选缓存和 GMGN 快速核验建立 Asset Family / Variant
   -> 只在当次事件唯一指向一个可交易版本时继续
    -> 由账号级 Dynamic Policy 按链原生币预算矩阵和离场策略授权
   -> 复用 P19 完成交易
 ```
 
-GMGN 能显著加快身份、平台、池子、安全和市场参与核验，但不能单独回答所有“正确 CA”问题。尤其在原盘与社区重启盘同时真实存在时，正确答案必须来自帖子上下文；上下文不足时，不交易本身就是正确结果。
+GMGN 能显著加快身份、平台、池子、安全和市场参与核验，但不能单独回答所有“正确 CA”问题。尤其在原盘与社区重启盘同时真实存在时，优先使用帖子中的完整 CA、平台和项目上下文；没有强上下文时，只在同一候选满足 KOL 门槛、市值与流动性双第一且默认均领先 `2x` 的严格市场主导条件下收敛，否则不交易本身就是正确结果。
 
-最终实施结论：P20.0-P20.6 的运行时代码、安全合同和正式 React 策略工作区已实现，但所有运行时开关默认关闭；P20.3 的 Paper 仍须真实运行至少 7 天并人工核对，之后才可另行审核 P20.4 单账号小额 Live。代码完成不等于交易验收完成。
+最终实施结论：P20.0-P20.6 的运行时代码、安全合同和正式 React 策略工作区已实现。Paper 是可选模拟模式；动态实盘统一由 P20 Live 能力、账号策略 `live + enabled`、Revision/目标/预算/持仓门禁和全局 Engine 控制，不再重复要求 7 天 Paper 或 30 分钟账号授权。

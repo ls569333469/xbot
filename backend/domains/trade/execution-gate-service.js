@@ -25,6 +25,7 @@ class ExecutionGateService {
       chains: (readiness.chains || []).map((chain) => ({
         chain: chain.chain,
         ready: Boolean(chain.ready),
+        infrastructureReady: Boolean(chain.infrastructure_ready),
         blockers: [...new Set(chain.blockers || [])]
       }))
     };
@@ -36,7 +37,7 @@ class ExecutionGateService {
     return { ...this.current, ageMs: Math.max(0, Date.now() - this.current.capturedAtMs) };
   }
 
-  assertReady(chain) {
+  assertReady(chain, options = {}) {
     const snapshot = this.getSnapshot();
     if (!snapshot || snapshot.ageMs > this.maxAgeMs) {
       const error = new Error('Execution gate snapshot is missing or stale');
@@ -63,7 +64,10 @@ class ExecutionGateService {
       throw error;
     }
     const target = snapshot.chains.find((item) => item.chain === chain);
-    if (!target?.ready) {
+    const targetReady = options.dynamicScope
+      ? target?.infrastructureReady
+      : target?.ready;
+    if (!targetReady) {
       const error = new Error(`Execution gate rejected ${chain}`);
       error.code = 'LIVE_CHAIN_READINESS_FAILED';
       error.details = target || { chain, blockers: ['CHAIN_READINESS_MISSING'] };
