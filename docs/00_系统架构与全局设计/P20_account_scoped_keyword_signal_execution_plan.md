@@ -1,6 +1,6 @@
 # P20 高权重账号动态关键词信号与 CA 解析方案
 
-> 版本：v5.2。状态：P20.0-P20.6 运行时和正式工作区已实现；方案 A 四步向导、单一完整策略模板和多链资金矩阵已接入。动态实盘采用统一门禁：P20 实盘能力开启、账号策略为 `live + enabled`、全局 Engine 已启动时直接执行，不再要求同 Revision 7 天 Paper 或账号 30 分钟授权。运行阶段严格匹配，不允许 Live 静默降级为 Paper；动态策略可以独立满足全局就绪度，不要求固定 CA 策略同时开启。动态候选仍执行短时过期、Provider CA 精确回显、租约保护、批准词条标点容错和有界候选索引。更新日期：2026-08-04。
+> 版本：v5.3。状态：P20.0-P20.6 运行时和正式工作区已实现；方案 A 四步向导、单一完整策略模板和多链资金矩阵已接入。动态实盘采用统一门禁：P20 实盘能力开启、账号策略为 `live + enabled`、全局 Engine 已启动时直接执行，不再要求同 Revision 7 天 Paper 或账号 30 分钟授权。运行阶段严格匹配，不允许 Live 静默降级为 Paper；动态策略可以独立满足全局就绪度，不要求固定 CA 策略同时开启。动态候选仍执行短时过期、Provider CA 精确回显、租约保护、批准词条标点容错和有界候选索引。瞬态 Provider/采集故障只暂停等待并自动恢复，非瞬态安全故障继续硬停止。更新日期：2026-08-05。
 >
 > 本文定义技术方案、实施顺序、前端职责和验收标准。当前已实现 Candidate Index、Asset Family/Variant、Resolver、Intent Gate、GMGN 只读接口、6551 动态任务入队、账号级运行策略、Paper/Live 运行时和 Migration 028-035；已补齐 Dynamic Resolution 详情读取、策略中心统一入口、固定/动态统一工作区、方案 A 多链资金矩阵和账号策略模板。GMGN 核验快照默认按 `P20_GMGN_CANDIDATE_TTL_MS` 使用短时缓存，非法 TTL 回退安全默认值并限制上下界，Token Info 地址错配失败关闭。批准词条匹配在内部忽略 Unicode 标点、空格和全半角差异，但保留用户原文用于显示和审计；进入解析不等于通过实盘策略、预算、持仓、时效和 Engine 门禁。
 >
@@ -8,7 +8,9 @@
 >
 > 明日测试与服务器上传步骤以 [P20_dynamic_strategy_test_plan.md](./P20_dynamic_strategy_test_plan.md) 为准；测试不通过时不得上传服务器，上传后所有 P20 运行时开关仍保持关闭。
 
-> 发布前复核结论（2026-08-04）：当前本地 Node `24.11.1` / npm `11.6.2`，后端单元测试 `368/368`、独立 PostgreSQL 集成测试 `37/37`、前端 lint/build、环境检查、生产只读 Schema audit 和 `git diff --check` 均通过。Migration 035 已在空测试库完整迁移链和本地生产 Schema 中验证；方案 A 登录态页面无控制台错误或横向溢出。动态累计买入按 Actor Policy 隔离，同名/同 Symbol 候选没有明确 `assetFamilyKey` 时保持独立。服务器尚未部署，本轮发布必须以最终 Git commit 为唯一版本。
+> 发布前复核结论（2026-08-05）：当前本地 Node `24.11.1` / npm `11.6.2`，后端单元测试 `370/370`、独立 PostgreSQL 集成测试 `37/37`、前端 lint/build、环境检查、测试 Schema audit 和 `git diff --check` 均通过。Migration 035 已在空测试库完整迁移链中验证；Record 冒烟没有创建 Signal/Target，Paper 冒烟创建模拟仓位且 `swapCallCount=0`，瞬态暂停、周期提醒、三次健康检查恢复和重启后继续等待均有自动化覆盖。动态累计买入按 Actor Policy 隔离，同名/同 Symbol 候选没有明确 `assetFamilyKey` 时保持独立。服务器尚未部署，本轮发布必须以最终 Git commit 为唯一版本。
+
+> 生产差异复核（2026-08-05）：服务器仍为 Node `20.20.1` / npm `10.8.2`、Migration `027`，尚未部署 P20。服务器 `2026-08-03` 因 GMGN 账户级 `429` 先进入瞬态暂停，旧逻辑等待 60 秒后升级为 `TRANSIENT_READINESS_TIMEOUT`。本地与服务器 GMGN 凭据指纹一致，双方请求共享账户额度；服务端 cache warmer 与本地测试均可能贡献流量。Intent `#24` 的 PostgreSQL `42703` 来自旧版最终门禁 CTE 漏选 `context_hash`，当前代码已修复。两笔失败均已释放预算且没有生成 Provider Order。
 
 ## 1. 最终目标
 

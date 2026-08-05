@@ -221,6 +221,14 @@ async function restoreDesiredState(snapshotProvider, options = {}) {
       const retryable = blockers.length > 0
         && blockers.every((blocker) => retryableBlockers.has(blocker));
       if (!retryable || attempt === maxAttempts) {
+        if (retryable && options.pauseOnRetryableExhaustion) {
+          await pauseTransient({
+            operator: options.operator || 'readiness-monitor',
+            reason: 'TRANSIENT_READINESS_FAILURE',
+            details: { blockers, snapshot_hash: snapshot.snapshotHash }
+          });
+          return { status: 'paused_transient', snapshot };
+        }
         await setFaulted({
           reason: 'READINESS_FAILED_ON_RESTART',
           details: { blockers, snapshot_hash: snapshot.snapshotHash }

@@ -78,6 +78,26 @@ test('readiness monitor automatically faults critical blockers', async () => {
   assert.deepEqual(alerts[0].blockers, ['MIGRATION_NOT_CURRENT']);
 });
 
+test('readiness monitor treats undersized trade capacity as a critical configuration error', async () => {
+  let faulted = 0;
+  const monitor = new ReadinessMonitor({
+    engine: {
+      getArmed: () => true,
+      getStatus: () => ({ status: 'running', desiredRunning: true }),
+      setFaulted: async () => { faulted += 1; }
+    },
+    snapshotProvider: async () => ({
+      readyToArm: false,
+      blockers: ['GMGN_TRADE_WEIGHT_UNAVAILABLE'],
+      snapshotHash: 'snapshot-misconfigured'
+    }),
+    onDisarm: async () => {}
+  });
+
+  assert.equal((await monitor.checkOnce()).status, 'disarmed');
+  assert.equal(faulted, 1);
+});
+
 test('readiness monitor requires three healthy checks before transient recovery', async () => {
   let recovered = 0;
   const recoveredEvents = [];
@@ -104,6 +124,45 @@ test('readiness monitor requires three healthy checks before transient recovery'
   assert.equal((await monitor.checkOnce()).status, 'resumed');
   assert.equal(recovered, 1);
   assert.equal(recoveredEvents.length, 1);
+});
+
+test('readiness monitor reminds but never faults while a transient blocker persists', async () => {
+  let now = Date.parse('2026-08-05T00:01:00.000Z');
+  let faulted = 0;
+  const reminders = [];
+  const monitor = new ReadinessMonitor({
+    engine: {
+      getArmed: () => false,
+      getStatus: () => ({
+        status: 'paused_transient',
+        desiredRunning: true,
+        transientStartedAt: '2026-08-05T00:00:00.000Z'
+      }),
+      setFaulted: async () => { faulted += 1; }
+    },
+    snapshotProvider: async () => ({
+      readyToArm: false,
+      blockers: ['GMGN_RECENT_429'],
+      snapshotHash: 'snapshot-cooling'
+    }),
+    onDisarm: async () => {},
+    onReminder: async (details) => reminders.push(details),
+    transientReminderMs: 60_000,
+    now: () => now
+  });
+
+  const first = await monitor.checkOnce();
+  assert.equal(first.status, 'paused_transient');
+  assert.equal(first.reminder, true);
+  assert.equal(reminders.length, 1);
+  assert.equal(faulted, 0);
+
+  now += 30_000;
+  assert.equal((await monitor.checkOnce()).reminder, false);
+  now += 30_000;
+  assert.equal((await monitor.checkOnce()).reminder, true);
+  assert.equal(reminders.length, 2);
+  assert.equal(faulted, 0);
 });
 
 test('readiness monitor does nothing while the new-order gate is locked', async () => {

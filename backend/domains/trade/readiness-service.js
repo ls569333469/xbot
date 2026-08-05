@@ -24,7 +24,6 @@ const REQUIRED_MIGRATION = '027_p19_low_latency_execution.sql';
 const TRANSIENT_BLOCKERS = new Set([
   'X_6551_INGESTION_UNHEALTHY',
   'GMGN_SCHEDULER_NOT_HEALTHY',
-  'GMGN_TRADE_WEIGHT_UNAVAILABLE',
   'GMGN_RECENT_429',
   'FAST_PATH_WARMER_SYSTEM_FAILURE'
 ]);
@@ -1133,9 +1132,21 @@ class ReadinessMonitor {
         [details]
       );
     });
+    this.onReminder = options.onReminder || (async (details) => {
+      await db.query(
+        `INSERT INTO notification_outbox(topic, aggregate_type, aggregate_id, payload)
+         VALUES ('trade.transient_pause_reminder', 'system', 'readiness', $1)`,
+        [details]
+      );
+    });
     this.intervalMs = Math.max(500, Number(options.intervalMs || 1000));
     this.recoveryHealthyChecks = Math.max(1, Number(options.recoveryHealthyChecks || 3));
-    this.transientTimeoutMs = Math.max(1000, Number(options.transientTimeoutMs || 60_000));
+    this.transientReminderMs = Math.max(
+      1000,
+      Number(options.transientReminderMs || options.transientTimeoutMs || 5 * 60_000)
+    );
+    this.now = options.now || (() => Date.now());
+    this.lastTransientReminderAt = null;
     this.healthyCount = 0;
     this.timer = null;
     this.lastError = null;
@@ -1159,6 +1170,7 @@ class ReadinessMonitor {
         }
         await this.engine.recoverTransient(snapshot);
         this.healthyCount = 0;
+        this.lastTransientReminderAt = null;
         await this.onRecover({
           reason: 'TRANSIENT_READINESS_RECOVERED',
           snapshot_hash: snapshot.snapshotHash || null,
@@ -1171,20 +1183,22 @@ class ReadinessMonitor {
       const transientOnly = blockers.length > 0
         && blockers.every((blocker) => TRANSIENT_BLOCKERS.has(blocker));
       if (transientOnly) {
+        const now = this.now();
         const startedAt = engineStatus.transientStartedAt
           ? new Date(engineStatus.transientStartedAt).getTime()
-          : Date.now();
-        if (transientPaused && Date.now() - startedAt >= this.transientTimeoutMs) {
-          await this.engine.setFaulted({
-            reason: 'TRANSIENT_READINESS_TIMEOUT',
-            details: { blockers, snapshot_hash: snapshot.snapshotHash }
-          });
-          await this.onDisarm({
-            reason: 'TRANSIENT_READINESS_TIMEOUT', blockers,
+          : now;
+        const reminderDue = transientPaused
+          && now - startedAt >= this.transientReminderMs
+          && (this.lastTransientReminderAt === null
+            || now - this.lastTransientReminderAt >= this.transientReminderMs);
+        if (reminderDue) {
+          this.lastTransientReminderAt = now;
+          await this.onReminder({
+            reason: 'TRANSIENT_READINESS_WAITING', blockers,
+            paused_since: new Date(startedAt),
             snapshot_hash: snapshot.snapshotHash || null,
             generated_at: snapshot.generatedAt || new Date()
           });
-          return { status: 'fault_protected', snapshot };
         }
         if (!transientPaused) {
           await this.engine.pauseTransient({
@@ -1196,9 +1210,11 @@ class ReadinessMonitor {
             snapshot_hash: snapshot.snapshotHash || null,
             generated_at: snapshot.generatedAt || new Date()
           });
+          this.lastTransientReminderAt = now;
         }
-        return { status: 'paused_transient', snapshot };
+        return { status: 'paused_transient', reminder: reminderDue, snapshot };
       }
+      this.lastTransientReminderAt = null;
       if (typeof this.engine.setFaulted === 'function') {
         await this.engine.setFaulted({
           reason: 'READINESS_FAILED',

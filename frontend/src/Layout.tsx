@@ -1,6 +1,7 @@
 import React, { FormEvent, useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useToast } from './components/ui/ToastContext';
 import { api, clearAdminToken, getAuthToken, setAdminToken, validateAdminToken } from './lib/api';
 import { Activity, Eye, EyeOff, History, KeyRound, LayoutDashboard, List, LogIn, Settings, ShieldAlert, ShieldCheck, TrendingUp, Users, Wifi, WifiOff } from 'lucide-react';
 
@@ -69,9 +70,12 @@ function AuthenticationScreen({ checking, initialError }: { checking: boolean; i
 
 export default function Layout() {
   const { isConnected, lastEvent } = useWebSocket();
+  const { toast } = useToast();
   const [authState, setAuthState] = useState<AuthState>(() => getAuthToken() ? 'checking' : 'signed_out');
   const [authError, setAuthError] = useState('');
-  const [engineStatus, setEngineStatus] = useState<'stopped' | 'recovering' | 'running' | 'fault_protected'>('stopped');
+  const [engineStatus, setEngineStatus] = useState<
+    'stopped' | 'recovering' | 'running' | 'paused_transient' | 'fault_protected'
+  >('stopped');
   const location = useLocation();
 
   useEffect(() => {
@@ -124,11 +128,28 @@ export default function Layout() {
   useEffect(() => {
     if (lastEvent?.type === 'engine:status') {
       const status = lastEvent.payload.status;
-      if (['stopped', 'recovering', 'running', 'fault_protected'].includes(status)) {
+      if (['stopped', 'recovering', 'running', 'paused_transient', 'fault_protected'].includes(status)) {
         setEngineStatus(status);
       }
     }
   }, [lastEvent]);
+
+  useEffect(() => {
+    if (lastEvent?.type !== 'trade:alert') return;
+    const topic = lastEvent.payload?.topic;
+    const reason = lastEvent.payload?.payload?.reason;
+    if (topic === 'trade.auto_disarmed') {
+      if (reason === 'TRANSIENT_READINESS_FAILURE') {
+        toast('外部服务短暂异常，新买入已暂停并等待自动恢复', 'warning');
+      } else {
+        toast('交易安全门禁失败，新买入已停止，请检查系统状态', 'error');
+      }
+    } else if (topic === 'trade.transient_pause_reminder') {
+      toast('外部服务仍未恢复，新买入继续暂停，持仓保护正常运行', 'warning');
+    } else if (topic === 'trade.auto_resumed') {
+      toast('外部服务已恢复，真实交易已自动继续', 'success');
+    }
+  }, [lastEvent, toast]);
 
   const engineRunning = engineStatus === 'running';
   const engineFaulted = engineStatus === 'fault_protected';
@@ -136,6 +157,8 @@ export default function Layout() {
     ? '真实交易运行中'
     : engineFaulted
       ? '故障保护'
+      : engineStatus === 'paused_transient'
+        ? '暂停等待恢复'
       : engineStatus === 'recovering'
         ? '正在恢复'
         : '已停止';

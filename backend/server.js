@@ -17,7 +17,8 @@ const { reconciler } = require('./domains/trade/reconciliation-service');
 const { tradeRetryOrchestrator } = require('./domains/trade/trade-retry-orchestrator');
 const {
   getSnapshot: getReadinessSnapshot,
-  monitor: readinessMonitor
+  monitor: readinessMonitor,
+  TRANSIENT_BLOCKERS
 } = require('./domains/trade/readiness-service');
 const { outboxWorker } = require('./jobs/notification-outbox');
 const { cacheWarmer } = require('./jobs/gmgn-cache-warmup');
@@ -290,7 +291,8 @@ async function startServer() {
       {
         maxAttempts: 16,
         retryDelayMs: 1000,
-        retryableBlockers: ['X_6551_INGESTION_UNHEALTHY']
+        retryableBlockers: [...TRANSIENT_BLOCKERS],
+        pauseOnRetryableExhaustion: true
       }
     );
     logger.info('engine-state', `Startup recovery result: ${recovery.status}`);

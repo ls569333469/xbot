@@ -1,6 +1,6 @@
 # P20 动态策略测试与运行时升级方案
 
-版本：v2.1。范围：Node 20 历史基线、P20 动态策略测试、方案 A 四步向导与完整模板、多链资金矩阵、批准词条容错与多候选市场主导规则、Node 24 运行时回归、GitHub 隐私检查和受控服务器上传。Paper 与 Live 分别验证，Live 不再依赖 7 天 Paper 或账号短时授权。
+版本：v2.2。范围：Node 20 历史基线、P20 动态策略测试、方案 A 四步向导与完整模板、多链资金矩阵、批准词条容错与多候选市场主导规则、Node 24 运行时回归、瞬态故障自动恢复、GitHub 隐私检查和受控服务器上传。Paper 与 Live 分别验证，Live 不再依赖 7 天 Paper 或账号短时授权。
 
 ## 1. 测试目标
 
@@ -228,9 +228,9 @@ P20_LIVE_ENABLED=false
 ### 服务器升级
 
 1. 记录服务器当前 Node/npm、Commit、Migration、systemd 状态、交易状态和服务路径 `/usr/bin/node`。
-2. 服务器创建私有 Release 和数据库快照；快照不得进入 GitHub。
+2. 服务器创建私有 Release 和数据库快照；快照不得进入 GitHub。部署前必须显式停止新买入，把 `desired_running` 置为 `false`，避免服务重启自动恢复。
 3. 停止新买入，等待 `pending/submitting` 订单归零，确认持仓、离场任务和对账状态后再重启服务。
-4. 先仅升级 Node 24/npm 11，服务器 P20 Flag 全部保持 `false`，完成 `/api/health`、登录、固定策略、持仓、Settings、WebSocket 和 TGBOT 路由冒烟测试。
+4. 为 XBOT 安装隔离的 `/opt/node-v24.11.1` 与 npm 11，不替换系统 `/usr/bin/node`；服务器 P20 Flag 全部保持 `false`，完成 `/api/health`、登录、固定策略、持仓、Settings、WebSocket 和 TGBOT 路由冒烟测试。
 5. Node 24 服务器冒烟通过后，再部署已测试的唯一 Commit；不能在服务器临时修改代码或依赖。
 6. 发现运行时异常时回退 `/usr/bin/node`、systemd Release 和依赖目录，恢复服务后核对交易账本。
 
@@ -287,7 +287,7 @@ P20_LIVE_ENABLED=false
 
 对应 Node 20 基线回归结果（2026-08-02）：完整后端单元测试 `338/338`、定向 P20/GMGN 测试 `31/31`、前端 lint/build、后端语法检查和 `git diff --check` 均通过；独立测试库集成测试 `36/36` 通过，Schema audit 输出 `SCHEMA_AUDIT_OK=xbot_p20_runtime_test;MODE=test`。期间发现旧测试库已登记 `029` 但缺少动态上线窗口租约字段和 Paper/动态信号唯一索引，已补充幂等迁移 `030`、`031` 并验证通过。
 
-Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量单测、P20/GMGN 定向测试、数据库集成测试和 Schema audit 通过；该记录属于当时的专用测试库环境，不能替代本次发布前复核。当前发布前复核结果（2026-08-04）为：Node `24.11.1`、npm `11.6.2`；后端全量单测 `368/368`；独立 PostgreSQL 集成测试 `37/37`；前端 lint/build、`git diff --check`、环境检查和生产只读 Schema audit 全部通过。完整迁移链已在一次性测试库应用至 Migration 035，测试后数据库已删除。生产服务器尚未部署，本轮发布必须以最终 Git commit 为准。
+Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量单测、P20/GMGN 定向测试、数据库集成测试和 Schema audit 通过；该记录属于当时的专用测试库环境，不能替代本次发布前复核。当前发布前复核结果（2026-08-05）为：Node `24.11.1`、npm `11.6.2`；后端全量单测 `370/370`；独立 PostgreSQL 集成测试 `37/37`；前端 lint/build、`git diff --check`、环境检查和测试 Schema audit 全部通过。完整迁移链已在一次性测试库应用至 Migration 035；Record 冒烟得到 `signalCount=0`、`targetCount=0`，Paper 冒烟得到 `swapCallCount=0`。生产服务器尚未部署，本轮发布必须以最终 Git commit 为准。
 
 ## 13. Node 24 本地运行时实测记录（2026-08-02）
 
@@ -327,13 +327,14 @@ Node 24 阶段历史回归结果（2026-08-02）：此前记录过后端全量�
 - 新增烟雾脚本、动态上线窗口和前端运行状态文件的 Node/TypeScript 语法检查通过，`git diff --check` 通过。
 - 测试结束后必须恢复全部 P20 Feature Flag 为 `false`；服务器部署和 P20 生产启用仍需单独批准。
 
-### 当前复核结论（2026-08-04）
+### 当前复核结论（2026-08-05）
 
 - P20 代码、前端方案 A、统一 API、按链预算、CA 解析失败关闭、租约保护和 Live 安全门已接入当前工作区。
-- 本地 Node `24.11.1` / npm `11.6.2`；后端 `368/368`、独立 PostgreSQL 集成测试 `37/37`、前端 lint/build 全部通过。
+- 本地 Node `24.11.1` / npm `11.6.2`；后端 `370/370`、独立 PostgreSQL 集成测试 `37/37`、前端 lint/build 全部通过。
 - 生产只读 Schema audit、环境检查和 Migration 000-035 空库执行通过；测试库完成后已删除。
 - 动态累计买入按 Actor Policy 隔离；没有明确 `assetFamilyKey` 的同名/同 Symbol CA 保持独立，历史隐式 Family 由 Migration 035 拆分。
 - Paper smoke 已验证不调用 Swap；动态 Live 是否开启由当前发布计划和明确的小额实盘配置决定，不再等待 7 天 Paper。
+- GMGN `429`、GMGN 调度器冷却、6551 短暂断流和快速缓存临时异常只进入 `paused_transient`；每 5 分钟提醒一次，连续三次健康检查通过后自动恢复。Migration、配置指纹、交易权重、未保护持仓等硬故障仍进入 `fault_protected`。
 
 ## 14. 当前发布门与服务器部署清单
 

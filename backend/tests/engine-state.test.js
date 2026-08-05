@@ -71,6 +71,23 @@ test('live engine persists intent, restores matching configuration, and faults o
     assert.equal(engine.getStatus().lastErrorDetails, null);
 
     await engine.setFaulted({ reason: 'RESTART' });
+    const waiting = await engine.restoreDesiredState(async () => ({
+      readyToArm: false,
+      blockers: ['GMGN_RECENT_429'],
+      snapshotHash: 'startup-cooling',
+      configurationFingerprint: 'config-1'
+    }), {
+      maxAttempts: 2,
+      retryDelayMs: 1,
+      retryableBlockers: ['GMGN_RECENT_429'],
+      pauseOnRetryableExhaustion: true,
+      sleep: async () => {}
+    });
+    assert.equal(waiting.status, 'paused_transient');
+    assert.equal(engine.getStatus().status, 'paused_transient');
+    assert.equal(engine.getStatus().desiredRunning, true);
+
+    await engine.setFaulted({ reason: 'RESTART' });
     const drifted = await engine.restoreDesiredState(async () => ({
       ...readiness,
       snapshotHash: 'snapshot-2',

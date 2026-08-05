@@ -10,7 +10,8 @@ User=xbot
 Group=xbot
 WorkingDirectory=/opt/xbot/backend
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/node /opt/xbot/backend/scripts/supervisor.js
+Environment=PATH=/opt/node-v24.11.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/opt/node-v24.11.1/bin/node /opt/xbot/backend/scripts/supervisor.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=30
