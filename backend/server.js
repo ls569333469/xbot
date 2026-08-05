@@ -5,10 +5,13 @@ const helmet = require('helmet');
 const http = require('http');
 const WebSocket = require('ws');
 const cron = require('node-cron');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const logger = require('./lib/logger');
+const {
+  authorizeWebSocketRequest,
+  selectWebSocketProtocol
+} = require('./lib/websocket-auth');
 const { getProcessRole, roleCapabilities } = require('./lib/process-role');
 const { legacyShadowEnabled, legacyXProvidersEnabled } = require('./lib/legacy-features');
 const { consumer: x6551Consumer } = require('./domains/x-monitor/6551/wss-consumer');
@@ -50,14 +53,9 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({
   server,
   path: '/ws',
+  handleProtocols: selectWebSocketProtocol,
   verifyClient: ({ req }, done) => {
-    const expected = String(process.env.ADMIN_TOKEN || '');
-    const actual = new URL(req.url, 'http://localhost').searchParams.get('token') || '';
-    const expectedBuffer = Buffer.from(expected);
-    const actualBuffer = Buffer.from(actual);
-    const authorized = expectedBuffer.length > 0
-      && expectedBuffer.length === actualBuffer.length
-      && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+    const authorized = authorizeWebSocketRequest(req, process.env.ADMIN_TOKEN);
     done(authorized, authorized ? undefined : 401, authorized ? undefined : 'Unauthorized');
   }
 });

@@ -2,6 +2,18 @@ import React, { useState, useEffect, useCallback, useRef, ReactNode } from 'reac
 import { getAuthToken } from '../lib/api';
 import { WebSocketContext, WebSocketStatus, WsEvent } from './WebSocketContext';
 
+function encodeWebSocketToken(token: string) {
+  const bytes = new TextEncoder().encode(token);
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return window.btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
 export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<WebSocketStatus>('disconnected');
   const [lastEvent, setLastEvent] = useState<WsEvent | null>(null);
@@ -18,14 +30,13 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const token = encodeURIComponent(authToken);
       const configuredPath = import.meta.env.VITE_WS_PATH;
       const mountedPath = `${import.meta.env.BASE_URL}ws`.replace(/\/+/g, '/');
       const wsPath = configuredPath || mountedPath;
       const normalizedPath = wsPath.startsWith('/') ? wsPath : `/${wsPath}`;
-      const wsUrl = `${protocol}//${window.location.host}${normalizedPath}?token=${token}`;
+      const wsUrl = `${protocol}//${window.location.host}${normalizedPath}`;
       setStatus('connecting');
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, ['xbot-auth', encodeWebSocketToken(authToken)]);
 
       ws.onopen = () => {
         setStatus('connected');
