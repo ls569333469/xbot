@@ -110,6 +110,14 @@ function schedulerAllowsResearch(status = researchAccess.scheduler.getStatus(), 
     .some(([priority, count]) => Number(priority) < 4 && Number(count) > 0);
 }
 
+function engineAllowsResearch(engine = engineState) {
+  const status = engine.getStatus?.() || {};
+  if (engine.getArmed?.() === true) return false;
+  if (status.desiredRunning === true) return false;
+  return !['recovering', 'running', 'paused_transient', 'fault_protected']
+    .includes(String(status.status || '').toLowerCase());
+}
+
 async function refreshJob(jobId, executor = db) {
   const result = await executor.query(
     `WITH counts AS (
@@ -322,6 +330,7 @@ class ResearchQueue {
 
   async runOnce() {
     if (this.running) return 0;
+    if (!engineAllowsResearch(this.engine)) return 0;
     if (!schedulerAllowsResearch(undefined, {
       liveArmed: this.engine.getArmed?.() === true
     })) return 0;
@@ -366,6 +375,7 @@ module.exports = {
   cancelResearchJob,
   claimItems,
   createResearchJob,
+  engineAllowsResearch,
   getResearchJob,
   jobStatusFromCounts,
   normalizeAddresses,

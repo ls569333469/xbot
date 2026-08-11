@@ -87,21 +87,13 @@ class DynamicSignalWorker {
         executionMode: context.mode,
         ...(context.resolver_options || {})
       }, {
-        candidateIndex,
-        verificationOptions: {
-          requestOptions: {
-            requestContext: {
-              source: 'p20_dynamic_verify',
-              processRole: process.env.XBOT_PROCESS_ROLE || 'all',
-              policyId: context.actor_policy_id,
-              context: { dynamic_job_id: Number(job.id) }
-            }
-          }
-        }
+        candidateIndex
       });
       if (result.status === 'resolved' && result.selectedCandidate) {
           const selectedRow = await candidateRepository.upsertCandidate(
-            result.selectedCandidate, context.mode === 'live' ? 'tweet_ca' : 'gmgn_info', this.db,
+            result.selectedCandidate,
+            result.selectedCandidate.localEventCa ? 'tweet_ca' : 'candidate_index',
+            this.db,
           { sourceRef: context.tweet_id || context.provider_event_id }
         );
         const selected = {

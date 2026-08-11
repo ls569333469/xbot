@@ -6,11 +6,25 @@ function argumentRole(args = process.argv.slice(2)) {
 }
 
 function getProcessRole(options = {}) {
-  const role = argumentRole(options.args)
-    || String(options.envRole ?? process.env.XBOT_PROCESS_ROLE ?? 'all').trim().toLowerCase();
+  const argument = argumentRole(options.args);
+  const configured = String(options.envRole ?? process.env.XBOT_PROCESS_ROLE ?? '')
+    .trim().toLowerCase();
+  const production = String(options.nodeEnv ?? process.env.NODE_ENV ?? '')
+    .trim().toLowerCase() === 'production';
+  if (production && !argument && !configured) {
+    const error = new Error('Production requires an explicit XBOT process role');
+    error.code = 'PROCESS_ROLE_REQUIRED';
+    throw error;
+  }
+  const role = argument || configured || 'all';
   if (!PROCESS_ROLES.has(role)) {
     const error = new Error(`XBOT process role is invalid: ${role || '(empty)'}`);
     error.code = 'PROCESS_ROLE_INVALID';
+    throw error;
+  }
+  if (production && role === 'all') {
+    const error = new Error('Production cannot run the combined all process role');
+    error.code = 'PROCESS_ROLE_ALL_FORBIDDEN';
     throw error;
   }
   return role;

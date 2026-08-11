@@ -184,7 +184,9 @@ router.get('/provider-audit', async (req, res) => {
       ok: true,
       data: await providerAudit.getAuditSummary({
         hours: req.query.hours,
-        limit: req.query.limit
+        limit: req.query.limit,
+        since: req.query.since,
+        until: req.query.until
       })
     });
   } catch (error) {

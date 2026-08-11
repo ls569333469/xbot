@@ -4,14 +4,16 @@ const {
   parseArgs,
   strategyLabel,
   strategyPredicate,
-  verifyEvidence
+  strategyForSignal,
+  verifyEvidence,
+  verifyGlobalAudit
 } = require('../scripts/run-p25-live-acceptance');
 
-test('P25 runner defaults to dynamic then follow and clamps polling controls', () => {
+test('P26 manual runner defaults to fixed, dynamic, then follow and clamps polling controls', () => {
   assert.deepEqual(parseArgs([]), {
     timeoutSeconds: 900,
     pollMs: 1000,
-    strategies: ['dynamic', 'follow']
+    strategies: ['fixed', 'dynamic', 'follow']
   });
   assert.deepEqual(parseArgs([
     '--timeout-seconds=10', '--poll-ms=100', '--strategies=follow,dynamic,unknown'
@@ -22,11 +24,39 @@ test('P25 runner defaults to dynamic then follow and clamps polling controls', (
   });
 });
 
+test('P26 global GMGN acceptance fails on 429, unknown, unauthorized, or duplicate swap calls', () => {
+  assert.equal(verifyGlobalAudit({
+    audit_truncated: false,
+    rate_limited_count: 0,
+    unknown_requests: [],
+    unauthorized_buy_requests: [],
+    missing_swap_attempts: [],
+    invalid_swap_sessions: [],
+    duplicate_swap_attempts: []
+  }).passed, true);
+  const failed = verifyGlobalAudit({
+    audit_truncated: true,
+    rate_limited_count: 1,
+    unknown_requests: [{}],
+    unauthorized_buy_requests: [{}],
+    missing_swap_attempts: [{}],
+    invalid_swap_sessions: [{}],
+    duplicate_swap_attempts: [{}]
+  });
+  assert.equal(failed.passed, false);
+  assert.match(failed.errors.join(','), /TRUNCATED.*429.*UNKNOWN.*UNAUTHORIZED.*ATTEMPT_MISSING.*SESSION_INVALID.*DUPLICATE/s);
+});
+
 test('P25 runner selects only real live strategy signals', () => {
+  assert.match(strategyPredicate('fixed'), /actor_policy_id IS NULL.*follow_discovery_policy_id IS NULL/);
   assert.match(strategyPredicate('dynamic'), /actor_policy_id/);
   assert.match(strategyPredicate('follow'), /follow_discovery_policy_id/);
+  assert.equal(strategyLabel('fixed'), 'Fixed CA');
   assert.equal(strategyLabel('dynamic'), 'P20 dynamic');
   assert.equal(strategyLabel('follow'), 'P21 follow discovery');
+  assert.equal(strategyForSignal({}), 'fixed');
+  assert.equal(strategyForSignal({ actor_policy_id: 1 }), 'dynamic');
+  assert.equal(strategyForSignal({ follow_discovery_policy_id: 2 }), 'follow');
 });
 
 test('P25 runner requires one complete provider execution and settlement path', () => {
@@ -75,6 +105,6 @@ test('P25 runner requires one complete provider execution and settlement path', 
     ...boundedPolling,
     provider: [...boundedPolling.provider, { ...boundedPolling.provider[1] }]
   };
-  assert.equal(verifyEvidence(excessivePolling, 'test-scope').passed, false);
-  assert.match(verifyEvidence(excessivePolling, 'test-scope').errors.join(','), /ORDER_QUERY/);
+  assert.equal(verifyEvidence(excessivePolling, 'test-scope').passed, true);
+  assert.match(verifyEvidence(excessivePolling, 'test-scope').warnings.join(','), /ORDER_QUERY/);
 });

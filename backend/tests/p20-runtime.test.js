@@ -12,7 +12,6 @@ const {
 const { validateP20Runtime } = require('../lib/p20-features');
 const { normalizeKline } = require('../lib/gmgn-adapter');
 const { DynamicSignalWorker } = require('../domains/dynamic-signal/event-worker');
-const { DynamicLaunchWindowWorker } = require('../jobs/dynamic-launch-window');
 const { DynamicPaperSessionWorker } = require('../domains/dynamic-signal/paper-worker');
 const { ensureSession } = require('../domains/dynamic-signal/paper-worker');
 const {
@@ -336,8 +335,6 @@ test('saving a changed dynamic policy locks its revision and cancels stale queue
   assert.equal(saved.revision, 7);
   assert.match(calls[0].sql, /pg_advisory_xact_lock/);
   assert.match(calls[1].sql, /FOR UPDATE/);
-  const launchCancellation = calls.find((item) => item.sql.includes('UPDATE dynamic_launch_windows'));
-  assert.deepEqual(launchCancellation.params, [9, 7]);
   assert.ok(calls.some((item) => item.sql.includes("reject_reason = 'DYNAMIC_POLICY_CHANGED'")));
   assert.ok(calls.some((item) => item.sql.includes("source = 'dynamic_keyword'")
     && item.sql.includes("status = 'archived'")));
@@ -353,7 +350,7 @@ test('GMGN Kline adapter preserves only timestamped price rows', () => {
   assert.equal(rows[1].close, 1.8);
 });
 
-test('P20 workers do not claim queued work while the runtime is disabled', async () => {
+test('P20 worker does not claim queued work while the runtime is disabled', async () => {
   const rejectingDb = {
     query: async () => { throw new Error('disabled worker touched the database'); },
     pool: { connect: async () => { throw new Error('disabled worker claimed a connection'); } }
@@ -362,12 +359,7 @@ test('P20 workers do not claim queued work while the runtime is disabled', async
     db: rejectingDb,
     getFeatureState: () => DISABLED_RUNTIME
   });
-  const launch = new DynamicLaunchWindowWorker({
-    db: rejectingDb,
-    getFeatureState: () => DISABLED_RUNTIME
-  });
   assert.deepEqual(await dynamic.runOnce(), { status: 'skipped', reason: 'p20_disabled' });
-  assert.deepEqual(await launch.runOnce(), { status: 'skipped', reason: 'p20_disabled' });
 });
 
 test('dynamic worker cancels a job when its policy revision is stale', async () => {
@@ -451,87 +443,6 @@ test('paper session creation is idempotent when another worker wins the insert r
   const session = await ensureSession(7, 2, executor);
   assert.equal(session.id, 44);
   assert.match(calls[1], /ON CONFLICT \(actor_policy_id, policy_revision\) WHERE status = 'running'/);
-});
-
-test('P20 launch window cancels stale live work before any market request', async () => {
-  const queries = [];
-  const worker = new DynamicLaunchWindowWorker({
-    db: {
-      query: async (sql) => {
-        queries.push(sql);
-        if (sql.includes('WITH candidate AS')) {
-          return { rows: [{ id: 11, dynamic_job_id: 22, job_mode: 'live' }] };
-        }
-        if (sql.includes('UPDATE dynamic_launch_windows')) return { rowCount: 1, rows: [{ id: 11 }] };
-        if (sql.includes('UPDATE dynamic_signal_jobs')) return { rows: [{ id: 22 }] };
-        return { rows: [] };
-      }
-    },
-    getFeatureState: () => ({
-      P20_DYNAMIC_RESOLUTION_ENABLED: true,
-      P20_RECORD_ENABLED: true,
-      P20_PAPER_ENABLED: true,
-      P20_LIVE_ENABLED: false
-    })
-  });
-  assert.deepEqual(await worker.runOnce(), {
-    status: 'cancelled', reason: 'runtime_mode_changed', windowId: 11
-  });
-  assert.equal(queries.length, 3);
-  assert.ok(queries.some((sql) => sql.includes('DYNAMIC_RUNTIME_MODE_CHANGED')));
-});
-
-test('P20 launch window can reclaim an abandoned processing lease', async () => {
-  const queries = [];
-  const worker = new DynamicLaunchWindowWorker({
-    workerId: 'launch-test-worker',
-    db: {
-      query: async (sql, params) => {
-        queries.push({ sql, params });
-        if (sql.includes('WITH candidate AS')) {
-          assert.match(sql, /launch_window\.status = 'processing' AND launch_window\.lease_expires_at < NOW\(\)/);
-          assert.match(sql, /job\.status = 'rejected'/);
-          assert.equal(params[0], 'launch-test-worker');
-          return { rows: [] };
-        }
-        return { rows: [] };
-      }
-    },
-    getFeatureState: () => ({
-      P20_DYNAMIC_RESOLUTION_ENABLED: true, P20_RECORD_ENABLED: true,
-      P20_PAPER_ENABLED: true, P20_LIVE_ENABLED: false
-    })
-  });
-  assert.deepEqual(await worker.runOnce(), { status: 'idle' });
-  assert.equal(queries.length, 2);
-  assert.match(queries[0].sql, /UPDATE dynamic_launch_windows AS launch_window/);
-  assert.doesNotMatch(queries[0].sql, /UPDATE dynamic_launch_windows window/);
-});
-
-test('P20 launch window writes keep the worker lease and job transition owner guarded', async () => {
-  const queries = [];
-  const worker = new DynamicLaunchWindowWorker({
-    workerId: 'launch-owner',
-    db: {
-      query: async (sql, params) => {
-        queries.push({ sql, params });
-        if (sql.includes('WITH candidate AS')) {
-          return { rows: [{ id: 11, dynamic_job_id: 22, job_mode: 'record', allowed_chain_ids: [], observed_terms: [] }] };
-        }
-        if (sql.includes("SET status = 'resolved'")) return { rowCount: 1, rows: [{ id: 11 }] };
-        return { rowCount: 1, rows: [] };
-      }
-    },
-    getFeatureState: () => ({
-      P20_DYNAMIC_RESOLUTION_ENABLED: true, P20_RECORD_ENABLED: true,
-      P20_PAPER_ENABLED: false, P20_LIVE_ENABLED: false
-    })
-  });
-  const result = await worker.runOnce();
-  assert.equal(result.status, 'waiting');
-  const waiting = queries.find((item) => item.sql.includes("SET status = 'pending'"));
-  assert.match(waiting.sql, /worker_id = \$2/);
-  assert.match(waiting.sql, /lease_expires_at > NOW\(\)/);
 });
 
 test('P20 paper session worker completes eligible sessions through its bounded loop', async () => {

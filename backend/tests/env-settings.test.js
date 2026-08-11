@@ -35,6 +35,11 @@ test('production settings keep the live provider and mode contract narrow', () =
   assert.throws(() => validateValue('TRADING_MODE', 'paper'), { code: 'ENV_VALUE_INVALID' });
   assert.equal(validateValue('XBOT_PROCESS_ROLE', 'execution'), 'execution');
   assert.throws(() => validateValue('XBOT_PROCESS_ROLE', 'worker'), { code: 'ENV_VALUE_INVALID' });
+  assert.equal(validateValue('XBOT_STRATEGY_SYNC_GROUP_BUDGET', '1'), '1');
+  assert.equal(validateValue('XBOT_STRATEGY_SYNC_GROUP_BUDGET', '4'), '4');
+  assert.throws(() => validateValue('XBOT_STRATEGY_SYNC_GROUP_BUDGET', '5'), {
+    code: 'ENV_VALUE_INVALID'
+  });
 });
 
 test('configuration impact registry keeps research hot and scopes monitoring restarts', () => {
@@ -51,11 +56,12 @@ test('configuration impact registry keeps research hot and scopes monitoring res
   assert.deepEqual(monitoring.restart_roles, ['ingestion']);
   assert.equal(monitoring.manual_rearm_required, false);
   assert.equal(validateValue('P21_FOLLOW_DISCOVERY_ENABLED', 'true'), 'true');
-  assert.equal(validateValue('GMGN_CACHE_WARMER_ENABLED', 'false'), 'false');
-  assert.equal(validateValue('P20_CANDIDATE_WARMUP_ENABLED', 'false'), 'false');
-  const cacheRuntime = impactForKeys(['GMGN_CACHE_WARMER_ENABLED', 'P20_CANDIDATE_WARMUP_ENABLED']);
-  assert.equal(cacheRuntime.impact_scope, 'cache_runtime');
-  assert.deepEqual(cacheRuntime.restart_roles, []);
+  assert.throws(() => validateValue('GMGN_CACHE_WARMER_ENABLED', 'false'), {
+    code: 'ENV_KEY_NOT_ALLOWED'
+  });
+  assert.throws(() => validateValue('P20_CANDIDATE_WARMUP_ENABLED', 'false'), {
+    code: 'ENV_KEY_NOT_ALLOWED'
+  });
   const followDiscovery = impactForKeys(['P21_FOLLOW_DISCOVERY_ENABLED']);
   assert.equal(followDiscovery.impact_scope, 'monitoring_critical');
   assert.deepEqual(followDiscovery.restart_roles, ['ingestion']);

@@ -183,7 +183,6 @@ async function startServer() {
       shadowLiveEvaluator.start({ intervalMs: 500 });
     }
     readinessMonitor.start();
-    researchQueue.start({ intervalMs: 1000 });
     kolProfileEnrichmentWorker.start({ intervalMs: 5000 });
     dynamicSignalWorker.start({ wsBroadcast, intervalMs: 500 });
     dynamicPaperSessionWorker.start({ intervalMs: 60_000 });
@@ -260,6 +259,7 @@ async function startServer() {
       }
     );
     logger.info('engine-state', `Startup recovery result: ${recovery.status}`);
+    researchQueue.start({ intervalMs: 1000 });
   }
   logger.info('server', `Process role ready: ${processRole}`);
 }

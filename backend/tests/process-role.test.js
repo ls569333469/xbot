@@ -22,3 +22,18 @@ test('unknown process roles fail closed', () => {
     { code: 'PROCESS_ROLE_INVALID' }
   );
 });
+
+test('production requires a split process role and never falls back to all', () => {
+  assert.throws(
+    () => getProcessRole({ args: [], envRole: '', nodeEnv: 'production' }),
+    { code: 'PROCESS_ROLE_REQUIRED' }
+  );
+  assert.throws(
+    () => getProcessRole({ args: [], envRole: 'all', nodeEnv: 'production' }),
+    { code: 'PROCESS_ROLE_ALL_FORBIDDEN' }
+  );
+  assert.equal(getProcessRole({
+    args: ['--role=execution'], envRole: 'all', nodeEnv: 'production'
+  }), 'execution');
+  assert.equal(getProcessRole({ args: [], envRole: '', nodeEnv: 'development' }), 'all');
+});

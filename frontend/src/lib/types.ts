@@ -956,19 +956,6 @@ export interface TradeReadiness {
   };
   cache: { total: number; fresh: number; stale: number };
   cacheRequired: { total: number; missing: string[]; ready: boolean };
-  cacheWarmer: {
-    running: boolean;
-    active: boolean;
-    lastRunAt: string | null;
-    lastSuccessAt: string | null;
-    lastFailureAt?: string | null;
-    lastRecoveredAt?: string | null;
-    lastError: string | null;
-    consecutiveFailures?: number;
-    systemFailure?: boolean;
-    processed: number;
-    batchSize: number;
-  };
   latencySlo: {
     windowHours: number;
     requiredSamples: number;

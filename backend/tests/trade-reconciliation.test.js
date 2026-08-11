@@ -1,15 +1,48 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  groupStrategyRows,
   TradeReconciler,
   pollingIntervalMs,
   receiptContainsTradedToken,
   receiptHasVerifiableNativeProceeds,
   receiptMatchesTradedAmount,
   receiptTradedAmountRaw,
+  strategyBatchGroupBudget,
   strategyPollingIntervalMs,
   strategyMatchesConfirmedOrder
 } = require('../domains/trade/reconciliation-service');
+
+test('strategy synchronization batches one open/history query per chain and wallet', async () => {
+  const calls = [];
+  const reconciler = new TradeReconciler({
+    gmgnHttp: {
+      getStrategyOrders: async (chain, filters, request) => {
+        calls.push({ chain, filters, request });
+        return filters.type === 'open'
+          ? { list: [{ order_id: 'strategy-open', status: 'open', strategy_status: 'running' }] }
+          : { list: [{ order_id: 'strategy-history', status: 'closed', strategy_status: 'stopped' }] };
+      }
+    }
+  });
+  const rows = [
+    { id: 1, chain_id: 'robinhood', wallet_address: '0xWallet', provider_order_id: 'strategy-open' },
+    { id: 2, chain_id: 'robinhood', wallet_address: '0xWallet', provider_order_id: 'strategy-history' }
+  ];
+  const found = await reconciler.fetchStrategyBatch(rows);
+  assert.equal(found.size, 2);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((call) => call.filters.type), ['open', 'history']);
+  assert.equal(calls.every((call) => call.filters.base_token === undefined), true);
+  assert.equal(calls.every((call) => (
+    call.request.requestContext.context.category === 'protection_strategy_sync'
+  )), true);
+  assert.equal(groupStrategyRows([...rows, {
+    ...rows[0], id: 3, wallet_address: '0xOther'
+  }]).length, 2);
+  assert.equal(strategyBatchGroupBudget('99'), 4);
+  assert.equal(strategyBatchGroupBudget('invalid'), 1);
+});
 const {
   sellSettlementOutputRaw,
   submittedOrderStatus

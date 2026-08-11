@@ -314,16 +314,6 @@ async function upsert(kolId, input = {}, executor = db) {
       [Number(current.id), revision]
     );
     await executor.query(
-      `UPDATE dynamic_launch_windows SET status = 'failed',
-         last_error = 'DYNAMIC_POLICY_CHANGED', lease_expires_at = NULL,
-         locked_at = NULL, updated_at = NOW()
-       WHERE dynamic_job_id IN (
-         SELECT id FROM dynamic_signal_jobs
-         WHERE actor_policy_id = $1 AND policy_revision <> $2
-       ) AND status IN('pending','processing')`,
-      [Number(current.id), revision]
-    );
-    await executor.query(
       `UPDATE dynamic_signal_jobs SET status = 'cancelled',
          failure_code = 'DYNAMIC_POLICY_CHANGED', completed_at = NOW(),
          lease_expires_at = NULL, locked_at = NULL, updated_at = NOW()

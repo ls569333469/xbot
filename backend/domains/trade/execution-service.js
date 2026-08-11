@@ -597,7 +597,11 @@ async function execute(signalId, prepareToken, operatorId) {
     swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
       rateLease, returnMeta: true, deadlineAt,
-      requestContext: gmgnRequestContext(prepared.signal, 'swap', prepared.traceId)
+      requestContext: {
+        ...gmgnRequestContext(prepared.signal, 'swap', prepared.traceId),
+        attemptId: Number(attempt.id),
+        side: 'buy'
+      }
     });
     rateLease.release();
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
@@ -743,7 +747,11 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
     swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
       rateLease, returnMeta: true, deadlineAt,
-      requestContext: gmgnRequestContext(prepared.signal, 'swap', prepared.traceId)
+      requestContext: {
+        ...gmgnRequestContext(prepared.signal, 'swap', prepared.traceId),
+        attemptId: Number(attempt.id),
+        side: 'buy'
+      }
     });
     rateLease.release();
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
@@ -895,7 +903,11 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
       rateLease, returnMeta: true, deadlineAt,
-      requestContext: gmgnRequestContext(prepared.signal, 'swap', prepared.traceId)
+      requestContext: {
+        ...gmgnRequestContext(prepared.signal, 'swap', prepared.traceId),
+        attemptId: Number(attempt.id),
+        side: 'buy'
+      }
     });
     rateLease.release();
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);

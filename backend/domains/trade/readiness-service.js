@@ -76,12 +76,6 @@ function contractApprovalReady(row = {}, evidenceCurrent = false) {
   return Boolean(evidenceCurrent || row.contract_tested || row.live_enabled);
 }
 
-function cacheWarmerReadiness(policy = {}, status = {}, env = process.env) {
-  void policy;
-  void status;
-  void env;
-  return { blockers: [], advisories: ['FAST_PATH_WARMER_RETIRED'] };
-}
 const CHAINS = Object.keys(CHAIN_REGISTRY);
 
 function enabled(value) {
@@ -910,7 +904,6 @@ async function getSnapshot(options = {}) {
     cacheStatus.entries.filter((entry) => entry.fresh).map((entry) => entry.key)
   );
   const missingCacheKeys = requiredKeys.filter((key) => !freshCacheKeys.has(key));
-  const cacheWarmerStatus = { running: false, retired: true };
   const last429At = rate429Result.rows[0].last_at;
   const recent429 = last429At && Date.now() - new Date(last429At).getTime() < 15 * 60_000;
   const credentials = getGmgnCredentials();
@@ -1121,9 +1114,6 @@ async function getSnapshot(options = {}) {
   blockers.push(...providerHistoryGate.blockers);
   advisories.push(...providerHistoryGate.advisories);
   if (options.probe && missingCacheKeys.length > 0) advisories.push('FAST_PATH_CACHE_NOT_READY');
-  const cacheWarmerGate = cacheWarmerReadiness(policy, cacheWarmerStatus);
-  blockers.push(...cacheWarmerGate.blockers);
-  advisories.push(...cacheWarmerGate.advisories);
   if (options.probe && Object.values(contractProbes).some((probe) => !probe.ok)) {
     blockers.push('CONTRACT_PROBE_FAILED');
   }
@@ -1222,7 +1212,6 @@ async function getSnapshot(options = {}) {
       missing: missingCacheKeys,
       ready: missingCacheKeys.length === 0
     },
-    cacheWarmer: cacheWarmerStatus,
     latencySlo,
     contractProbes,
     strategyProbes,
@@ -1442,7 +1431,6 @@ module.exports = {
   ReadinessMonitor,
   TRANSIENT_BLOCKERS,
   applyRpcBalanceFallback,
-  cacheWarmerReadiness,
   dynamicLivePolicyState,
   followLivePolicyState,
   getSnapshot,

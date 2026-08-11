@@ -233,8 +233,26 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
     };
   }
 
-  const verifier = dependencies.verifyCandidate
-    || require('./gmgn-market-source').verifyCandidate;
+  const verifier = dependencies.verifyCandidate;
+  if (typeof verifier !== 'function') {
+    const policy = applyResolutionPolicy(candidates, {
+      extraction: resolutionExtraction,
+      allowedChains,
+      allowDeterministicLocalCandidate: true
+    });
+    return {
+      ...base,
+      ...policy,
+      canTrade: false,
+      candidateCoverage: {
+        ...indexResult.coverage,
+        candidate_count: candidates.length,
+        provider_verified_count: 0,
+        local_event_ca_count: candidates.filter((candidate) => candidate.localEventCa).length
+      },
+      timing: { total_ms: Date.now() - startedAt }
+    };
+  }
   const verificationStartedAt = Date.now();
   let firstProviderFailure = null;
   const verified = await mapConcurrent(

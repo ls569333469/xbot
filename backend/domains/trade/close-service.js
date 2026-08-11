@@ -17,14 +17,20 @@ const ACTIVE_STRATEGY_STATUSES = new Set(['pending', 'running', 'partially_fille
 const UNSAFE_STRATEGY_STATUSES = new Set(['triggered', 'cancelling', 'unknown']);
 const CANCEL_VERIFY_DELAYS_MS = Object.freeze([0, 1000, 2000, 5000, 5000, 5000, 5000, 5000]);
 
-function closeRequestContext(position, stage) {
+function closeRequestContext(position, stage, options = {}) {
+  const attemptId = Number(options.attemptId || 0) || null;
   return {
     source: 'trade_close',
     stage,
     signalId: Number(position?.signal_id || 0) || null,
     whitelistId: Number(position?.whitelist_id || 0) || null,
     traceId: position?.signal_trace_id || position?.trace_id || null,
-    executionSessionId: position?.id ? `position:${Number(position.id)}` : null,
+    executionSessionId: attemptId
+      ? `attempt:${attemptId}`
+      : position?.id ? `position:${Number(position.id)}` : null,
+    attemptId,
+    positionId: Number(position?.id || 0) || null,
+    side: options.side || null,
     rateScope: scopeKey()
   };
 }
@@ -487,8 +493,10 @@ async function execute(positionId, prepareToken, operatorId, options = {}) {
       returnMeta: true,
       deadlineAt,
       requestContext: {
-        ...closeRequestContext(prepared.position, 'swap'),
-        positionId: Number(prepared.position.id)
+        ...closeRequestContext(prepared.position, 'swap', {
+          attemptId: attempt.id,
+          side: 'sell'
+        })
       }
     });
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
@@ -615,9 +623,11 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       returnMeta: true,
       deadlineAt,
       requestContext: {
-        ...closeRequestContext(prepared.position, 'swap'),
+        ...closeRequestContext(prepared.position, 'swap', {
+          attemptId: attempt.id,
+          side: 'sell'
+        }),
         source: 'trade_close_retry',
-        positionId: Number(prepared.position.id)
       }
     });
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
@@ -670,6 +680,7 @@ module.exports = {
   CANCEL_VERIFY_DELAYS_MS,
   cancelConfirmed,
   cancellationFailureCode,
+  closeRequestContext,
   closeSnapshotIdentity,
   execute,
   normalizeBalanceRaw,

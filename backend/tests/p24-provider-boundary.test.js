@@ -8,8 +8,10 @@ const {
 } = require('../domains/trade/paper-engine');
 const {
   TRADE_EXECUTION_STAGES,
+  auditAllEvents,
   boundedHours,
   boundedLimit,
+  classifyProviderEvent,
   getAuditSummary
 } = require('../domains/trade/provider-audit-service');
 
@@ -43,6 +45,7 @@ test('P24 production server does not start warmup or launch-window workers', () 
     'dynamic-launch-window'
   ]) {
     assert.equal(server.includes(retired), false, `${retired} must stay outside production startup`);
+    assert.equal(fs.existsSync(path.join(BACKEND, 'jobs', `${retired}.js`)), false);
   }
 });
 
@@ -72,14 +75,52 @@ test('P24 provider audit is bounded and reports only local request evidence', as
   assert.equal(result.window_hours, 12);
   assert.equal(result.trade_request_count, 1);
   assert.equal(result.healthy, true);
-  assert.equal(queries.length, 4);
+  assert.equal(queries.length, 5);
   assert.equal(queries.every((sql) => sql.includes('provider_rate_events')), true);
   assert.deepEqual(TRADE_EXECUTION_STAGES, [
     'security', 'gas', 'quote', 'token_info', 'swap', 'order_query'
   ]);
   assert.equal(queries[1].includes("IN ('security', 'gas', 'quote', 'token_info', 'swap', 'order_query')"), true);
-  assert.equal(queries[2].includes("IN ('security', 'gas', 'quote', 'token_info', 'swap', 'order_query')"), true);
+  assert.equal(queries[2].includes("= 'swap'"), true);
   assert.equal(queries[3].includes("NOT IN ('security', 'gas', 'quote', 'token_info', 'swap', 'order_query')"), true);
+});
+
+test('P26 global audit separates background work and enforces Attempt-level swap identity', () => {
+  const rows = [
+    {
+      source: 'p20_dynamic_swap', stage: 'swap', signal_id: 81, http_status: 200,
+      context_json: { attempt_id: 91, execution_session_id: 'signal:81' }
+    },
+    {
+      source: 'trade_close', stage: 'swap', signal_id: 81, http_status: 200,
+      context_json: { attempt_id: 92, execution_session_id: 'attempt:92' }
+    },
+    {
+      source: 'trade_reconciliation', stage: 'strategy_batch_query', http_status: 200,
+      context_json: { execution_session_id: 'strategy-batch:abc' }
+    },
+    {
+      source: 'research', stage: 'token_info', http_status: 200, context_json: {}
+    }
+  ];
+  assert.deepEqual(rows.map(classifyProviderEvent), [
+    'buy', 'close', 'strategy_sync', 'research'
+  ]);
+  const audit = auditAllEvents(rows, { allowedSignalIds: [81] });
+  assert.equal(audit.audit_truncated, false);
+  assert.deepEqual(audit.category_counts, {
+    buy: 1, close: 1, strategy_sync: 1, research: 1
+  });
+  assert.equal(audit.unauthorized_buy_requests.length, 0);
+  assert.equal(audit.invalid_swap_sessions.length, 0);
+
+  const duplicate = auditAllEvents([rows[0], rows[0]], { allowedSignalIds: [81] });
+  assert.deepEqual(duplicate.duplicate_swap_attempts, [{ key: 'buy:91', count: 2 }]);
+  const wrongSession = auditAllEvents([{
+    ...rows[1], context_json: { ...rows[1].context_json, execution_session_id: 'signal:81' }
+  }], { allowedSignalIds: [81] });
+  assert.equal(wrongSession.invalid_swap_sessions.length, 1);
+  assert.equal(auditAllEvents([], { allowedSignalIds: [], truncated: true }).audit_truncated, true);
 });
 
 test('P24 reconciliation loop does not poll open-position balances or activity', () => {

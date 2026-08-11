@@ -1,7 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  cacheWarmerReadiness,
   contractApprovalReady,
   followLivePolicyState,
   jsonb,
@@ -41,28 +40,6 @@ test('P21 can use an infrastructure-ready chain while fixed CA evidence remains 
 test('production approval survives a later transient readiness failure', () => {
   assert.equal(contractApprovalReady({ contract_tested: false, live_enabled: true }), true);
   assert.equal(contractApprovalReady({ contract_tested: false, live_enabled: false }), false);
-});
-
-test('P24 treats the retired warmer as advisory regardless of its old flag', () => {
-  assert.deepEqual(cacheWarmerReadiness(
-    { whitelistIds: [904] },
-    { running: false, systemFailure: false },
-    { GMGN_CACHE_WARMER_ENABLED: 'false' }
-  ), {
-    blockers: [],
-    advisories: ['FAST_PATH_WARMER_RETIRED']
-  });
-});
-
-test('P24 ignores an explicitly enabled legacy warmer flag', () => {
-  assert.deepEqual(cacheWarmerReadiness(
-    { whitelistIds: [904] },
-    { running: false, systemFailure: true },
-    { GMGN_CACHE_WARMER_ENABLED: 'true' }
-  ), {
-    blockers: [],
-    advisories: ['FAST_PATH_WARMER_RETIRED']
-  });
 });
 
 test('readiness probe serializes GMGN balance arrays as JSON for jsonb columns', () => {

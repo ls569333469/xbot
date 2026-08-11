@@ -4,6 +4,7 @@ const {
   CANCEL_VERIFY_DELAYS_MS,
   cancelConfirmed,
   cancellationFailureCode,
+  closeRequestContext,
   closeSnapshotIdentity,
   normalizeBalanceRaw,
   normalizeCancellationWriteError,
@@ -12,6 +13,20 @@ const {
   sumRemainingRaw,
   waitForStrategyCancellation
 } = require('../domains/trade/close-service');
+
+test('sell swaps use an attempt session independent from the originating buy signal', () => {
+  const context = closeRequestContext({
+    id: 44,
+    signal_id: 820,
+    whitelist_id: 9,
+    signal_trace_id: 'buy-trace'
+  }, 'swap', { attemptId: 155, side: 'sell' });
+  assert.equal(context.signalId, 820);
+  assert.equal(context.executionSessionId, 'attempt:155');
+  assert.equal(context.attemptId, 155);
+  assert.equal(context.positionId, 44);
+  assert.equal(context.side, 'sell');
+});
 
 test('close service sums lots and accepts only explicit strategy cancellation', () => {
   assert.equal(sumRemainingRaw([

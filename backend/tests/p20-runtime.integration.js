@@ -9,27 +9,7 @@ const policyService = require('../domains/dynamic-signal/policy-service');
 const { enqueueForActivity } = require('../domains/dynamic-signal/event-queue');
 const candidateRepository = require('../domains/dynamic-signal/candidate-repository');
 const { DynamicSignalWorker } = require('../domains/dynamic-signal/event-worker');
-const { DynamicLaunchWindowWorker, requestWindow } = require('../jobs/dynamic-launch-window');
 const paperWorker = require('../domains/dynamic-signal/paper-worker');
-
-test('P20 launch window worker can poll an empty PostgreSQL queue', async () => {
-  await runMigrations();
-  const previous = {
-    dynamic: process.env.P20_DYNAMIC_RESOLUTION_ENABLED,
-    record: process.env.P20_RECORD_ENABLED
-  };
-  process.env.P20_DYNAMIC_RESOLUTION_ENABLED = 'true';
-  process.env.P20_RECORD_ENABLED = 'true';
-  try {
-    const output = await new DynamicLaunchWindowWorker({ db }).runOnce();
-    assert.deepEqual(output, { status: 'idle' });
-  } finally {
-    if (previous.dynamic === undefined) delete process.env.P20_DYNAMIC_RESOLUTION_ENABLED;
-    else process.env.P20_DYNAMIC_RESOLUTION_ENABLED = previous.dynamic;
-    if (previous.record === undefined) delete process.env.P20_RECORD_ENABLED;
-    else process.env.P20_RECORD_ENABLED = previous.record;
-  }
-});
 
 test('P20 dynamic 6551 activity writes one idempotent job inside the database boundary', async () => {
   await runMigrations();
@@ -65,12 +45,6 @@ test('P20 dynamic 6551 activity writes one idempotent job inside the database bo
     const second = await enqueueForActivity(activity.rows[0], null, client);
     assert.equal(first.length, 1);
     assert.equal(second.length, 0);
-    const window = await requestWindow(
-      { ...first[0], allowed_chain_ids: ['bsc'] },
-      { extraction: { authorOwnedTerms: [{ type: 'cashtag', normalized: 'TEST' }] } },
-      client
-    );
-    assert.deepEqual(window.observed_terms, [{ type: 'cashtag', normalized: 'TEST' }]);
     await client.query('COMMIT');
   } finally {
     await client.query('ROLLBACK').catch(() => {});

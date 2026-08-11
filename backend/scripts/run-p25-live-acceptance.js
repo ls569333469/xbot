@@ -2,12 +2,14 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env'), 
 
 const db = require('../lib/db');
 const { scopeKey } = require('../lib/gmgn-shared-rate-limit');
+const providerAudit = require('../domains/trade/provider-audit-service');
 
 // P25 makes only the terminal swap mandatory. Gas is chain-adapter dependent;
 // security, quote, and token info are explicit opt-ins and may be absent.
 const REQUIRED_STAGES = Object.freeze(['swap']);
 const OPTIONAL_STAGES = Object.freeze(['security', 'gas', 'quote', 'token_info']);
-const BOUNDED_STAGES = Object.freeze({ order_query: 4, strategy_association: 2 });
+const BOUNDED_STAGES = Object.freeze({ strategy_association: 2 });
+const ADVISORY_STAGES = Object.freeze({ order_query: 4 });
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const DEFAULT_POLL_MS = 1000;
 
@@ -15,7 +17,7 @@ function parseArgs(argv = []) {
   const result = {
     timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
     pollMs: DEFAULT_POLL_MS,
-    strategies: ['dynamic', 'follow']
+    strategies: ['fixed', 'dynamic', 'follow']
   };
   for (const item of argv) {
     const [key, ...valueParts] = String(item).split('=');
@@ -26,7 +28,7 @@ function parseArgs(argv = []) {
       result.pollMs = Math.max(250, Math.min(10000, Number(value)));
     } else if (key === '--strategies' && value) {
       result.strategies = value.split(',').map((entry) => entry.trim().toLowerCase())
-        .filter((entry) => ['dynamic', 'follow'].includes(entry));
+        .filter((entry) => ['fixed', 'dynamic', 'follow'].includes(entry));
     } else if (key === '--confirm') {
       result.confirmation = value;
     }
@@ -35,13 +37,23 @@ function parseArgs(argv = []) {
 }
 
 function strategyPredicate(strategy) {
+  if (strategy === 'fixed') {
+    return 'signal.actor_policy_id IS NULL AND signal.follow_discovery_policy_id IS NULL';
+  }
   if (strategy === 'dynamic') return 'signal.actor_policy_id IS NOT NULL';
   if (strategy === 'follow') return 'signal.follow_discovery_policy_id IS NOT NULL';
   throw new Error(`Unsupported P25 strategy: ${strategy}`);
 }
 
 function strategyLabel(strategy) {
+  if (strategy === 'fixed') return 'Fixed CA';
   return strategy === 'dynamic' ? 'P20 dynamic' : 'P21 follow discovery';
+}
+
+function strategyForSignal(signal = {}) {
+  if (signal.follow_discovery_policy_id) return 'follow';
+  if (signal.actor_policy_id) return 'dynamic';
+  return 'fixed';
 }
 
 function wait(ms) {
@@ -165,6 +177,7 @@ function verifyEvidence(evidence, expectedScope = scopeKey()) {
   const receipts = jsonArray(path?.receipts);
   const provider = jsonArray(evidence?.provider);
   const errors = [];
+  const warnings = [];
 
   if (!path) errors.push('SIGNAL_NOT_FOUND');
   if (path?.signal_status !== 'executed') errors.push(`SIGNAL_NOT_EXECUTED:${path?.signal_status || 'missing'}`);
@@ -201,6 +214,11 @@ function verifyEvidence(evidence, expectedScope = scopeKey()) {
       errors.push(`GMGN_STAGE_${stage.toUpperCase()}_COUNT:${stages.get(stage)}`);
     }
   }
+  for (const [stage, threshold] of Object.entries(ADVISORY_STAGES)) {
+    if ((stages.get(stage) || 0) > threshold) {
+      warnings.push(`GMGN_STAGE_${stage.toUpperCase()}_HIGH:${stages.get(stage)}`);
+    }
+  }
   if (stages.get('swap') !== 1) errors.push('GMGN_SWAP_NOT_SINGLE');
   const expectedSession = path?.signal_id ? `signal:${path.signal_id}` : null;
   if (!expectedSession || !sessions.has(expectedSession)) {
@@ -213,6 +231,7 @@ function verifyEvidence(evidence, expectedScope = scopeKey()) {
   return {
     passed: errors.length === 0,
     errors,
+    warnings,
     signalId: path?.signal_id || null,
     chain: path?.chain_id || null,
     contractAddress: path?.contract_address || null,
@@ -224,6 +243,26 @@ function verifyEvidence(evidence, expectedScope = scopeKey()) {
     positionCount: Number(path?.position_count || 0),
     lotCount: Number(path?.lot_count || 0)
   };
+}
+
+function verifyGlobalAudit(audit = {}) {
+  const errors = [];
+  if (audit.audit_truncated === true) errors.push('GMGN_AUDIT_WINDOW_TRUNCATED');
+  if (Number(audit.rate_limited_count || 0) > 0) errors.push(`GMGN_429_COUNT:${audit.rate_limited_count}`);
+  if ((audit.unknown_requests || []).length > 0) errors.push(`GMGN_UNKNOWN_REQUESTS:${audit.unknown_requests.length}`);
+  if ((audit.unauthorized_buy_requests || []).length > 0) {
+    errors.push(`GMGN_UNAUTHORIZED_BUY_REQUESTS:${audit.unauthorized_buy_requests.length}`);
+  }
+  if ((audit.missing_swap_attempts || []).length > 0) {
+    errors.push(`GMGN_SWAP_ATTEMPT_MISSING:${audit.missing_swap_attempts.length}`);
+  }
+  if ((audit.invalid_swap_sessions || []).length > 0) {
+    errors.push(`GMGN_SWAP_SESSION_INVALID:${audit.invalid_swap_sessions.length}`);
+  }
+  if ((audit.duplicate_swap_attempts || []).length > 0) {
+    errors.push(`GMGN_DUPLICATE_ATTEMPT_SWAP:${audit.duplicate_swap_attempts.length}`);
+  }
+  return { passed: errors.length === 0, errors };
 }
 
 async function waitForSignal(strategy, startedAt, timeoutAt, usedIds, options) {
@@ -242,7 +281,7 @@ async function waitForSettlement(signal, startedAt, timeoutAt, options) {
     const result = verifyEvidence(latest);
     if (result.passed) return { result, evidence: latest };
     if (['rejected', 'expired', 'signal_only'].includes(latest.path?.signal_status)) {
-      const error = new Error(`${strategyLabel(signal.actor_policy_id ? 'dynamic' : 'follow')} signal ${signal.id} stopped: ${latest.path.reject_reason || latest.path.signal_status}`);
+      const error = new Error(`${strategyLabel(strategyForSignal(signal))} signal ${signal.id} stopped: ${latest.path.reject_reason || latest.path.signal_status}`);
       error.evidence = result;
       throw error;
     }
@@ -296,7 +335,21 @@ async function run(options = parseArgs(process.argv.slice(2))) {
       results.push({ strategy, signalId: signal.id, ...settlement.result });
       console.log(JSON.stringify({ event: 'p25_live_strategy_passed', strategy, ...settlement.result }));
     }
-    const summary = { event: 'p25_live_acceptance_passed', results };
+    await wait(250);
+    const globalAudit = await providerAudit.getAuditSummary({
+      since: startedAt,
+      until: new Date(),
+      limit: 1000,
+      allowedSignalIds: results.map((item) => item.signalId)
+    });
+    const globalAuditResult = verifyGlobalAudit(globalAudit);
+    if (!globalAuditResult.passed) {
+      const error = new Error(`Global GMGN audit failed: ${globalAuditResult.errors.join(', ')}`);
+      error.code = 'P26_GLOBAL_GMGN_AUDIT_FAILED';
+      error.evidence = { ...globalAuditResult, audit: globalAudit };
+      throw error;
+    }
+    const summary = { event: 'p25_live_acceptance_passed', results, globalAudit };
     console.log(JSON.stringify(summary));
     return summary;
   } catch (error) {
@@ -324,6 +377,8 @@ module.exports = {
   parseArgs,
   runtimeState,
   strategyLabel,
+  strategyForSignal,
   strategyPredicate,
-  verifyEvidence
+  verifyEvidence,
+  verifyGlobalAudit
 };

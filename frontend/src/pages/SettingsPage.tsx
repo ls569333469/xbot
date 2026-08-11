@@ -23,7 +23,7 @@ const SCHEDULER_PRIORITIES = [
   ['1', 'P1 新交易'],
   ['2', 'P2 策略动作'],
   ['3', 'P3 稳定对账'],
-  ['4', 'P4 缓存预热'],
+  ['4', 'P4 低优先级读取'],
 ] as const;
 
 const RETRY_CHAINS: ChainId[] = ['sol', 'bsc', 'base', 'eth', 'robinhood'];
@@ -787,7 +787,7 @@ export default function SettingsPage() {
           <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
             <span className="text-xs text-secondary">订单查询阶段</span>
             <div className="font-mono text-sm mt-1">1 秒 → 2 秒 → 5 秒 → 15-30 秒</div>
-            <div className="font-mono text-xs text-secondary mt-1">运行中策略：10-30 秒 · 持仓余额：120 秒</div>
+            <div className="font-mono text-xs text-secondary mt-1">运行中策略：5-10 分钟 · 持仓余额：仅按恢复任务检查</div>
           </div>
           <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
             <div className="flex justify-between text-xs"><span className="text-secondary">快速交易时延指标 · 24 小时</span><strong className={runtimePolicy.readiness.latencySlo.passed ? 'text-success' : 'text-secondary'}>{runtimePolicy.readiness.latencySlo.passed ? '已达标' : '等待验证'}</strong></div>
@@ -815,12 +815,6 @@ export default function SettingsPage() {
                 <strong className="font-mono text-sm">快速交易缓存</strong>
                 <div className={`text-xs ${runtimePolicy.readiness.cacheRequired.ready ? 'text-success' : 'text-secondary'}`}>
                   {runtimePolicy.readiness.cacheRequired.ready ? '已就绪' : `缺少 ${runtimePolicy.readiness.cacheRequired.missing.length} 项`} · {runtimePolicy.readiness.cache.fresh}/{runtimePolicy.readiness.cacheRequired.total}
-                </div>
-              </div>
-              <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
-                <strong className="font-mono text-sm">缓存预热服务</strong>
-                <div className={`text-xs ${runtimePolicy.readiness.cacheWarmer.running && !runtimePolicy.readiness.cacheWarmer.lastError ? 'text-success' : 'text-secondary'}`}>
-                  {runtimePolicy.readiness.cacheWarmer.running ? '运行中' : '已停止'} · 每批 {runtimePolicy.readiness.cacheWarmer.batchSize} 项
                 </div>
               </div>
               <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>

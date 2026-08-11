@@ -3,7 +3,6 @@ const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { requireChain, validateTokenAddress } = require('../trade/chain-adapters');
 
 const INTERVALS = new Set(['1m', '5m', '1h', '6h', '24h']);
-const TRENCH_TYPES = new Set(['new_creation', 'near_completion', 'completed']);
 const HOLDER_ORDER_FIELDS = new Set([
   'amount_percentage', 'profit', 'unrealized_profit', 'buy_volume_cur', 'sell_volume_cur'
 ]);
@@ -107,43 +106,6 @@ async function fetchHotSearches(input = {}, dependencies = {}) {
   const http = marketAccess(dependencies, 'research_hot');
   const data = await http.getMarketHotSearches(params, input.requestOptions || {});
   return sourceResult('gmgn_hot', gmgnAdapter.normalizeMarketCollection(data));
-}
-
-function buildTrenchesBody(input = {}) {
-  const types = (input.types?.length ? input.types : [...TRENCH_TYPES])
-    .map(String);
-  if (types.some((type) => !TRENCH_TYPES.has(type))) {
-    const error = new Error('GMGN trenches type is invalid');
-    error.code = 'GMGN_MARKET_ARGUMENT_INVALID';
-    throw error;
-  }
-  const numericFilters = Object.fromEntries(Object.entries(
-    input.filters && typeof input.filters === 'object' ? input.filters : {}
-  ).filter(([key, value]) => (
-    /^(?:min|max)_[a-z0-9_]+$/.test(key)
-      && (typeof value === 'number' || typeof value === 'string')
-  )));
-  const section = {
-    ...numericFilters,
-    filters: ['offchain', 'onchain'],
-    launchpad_platform_v2: true,
-    limit: boundedInteger(input.limit, 80, 1, 80)
-  };
-  if (Array.isArray(input.platforms) && input.platforms.length > 0) {
-    section.launchpad_platform = input.platforms.map(String);
-  }
-  return Object.fromEntries([
-    ['version', 'v2'],
-    ...types.map((type) => [type, { ...section }])
-  ]);
-}
-
-async function fetchTrenches(input = {}, dependencies = {}) {
-  const chain = requireChain(input.chain).id;
-  const body = buildTrenchesBody(input);
-  const http = marketAccess(dependencies, 'research_trenches');
-  const data = await http.getMarketTrenches(chain, body, input.requestOptions || {});
-  return sourceResult('gmgn_trenches', gmgnAdapter.normalizeMarketCollection(data, { chain }));
 }
 
 async function fetchTopHolders(input = {}, dependencies = {}) {
@@ -274,13 +236,10 @@ module.exports = {
   INTERVALS,
   HOLDER_ORDER_FIELDS,
   HOLDER_TAGS,
-  TRENCH_TYPES,
-  buildTrenchesBody,
   fetchHotSearches,
   fetchKline,
   fetchRank,
   fetchTopHolders,
-  fetchTrenches,
   normalizeHotParams,
   verifyCandidate
 };

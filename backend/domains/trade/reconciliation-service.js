@@ -12,6 +12,7 @@ const { decimalToRaw } = require('../../lib/decimal-units');
 const { tradeFailureEvidenceService } = require('./trade-failure-evidence-service');
 
 const RECONCILER_LOCK = 'xbot:trade-reconciler';
+const DEFAULT_STRATEGY_BATCH_GROUP_BUDGET = 1;
 
 function recoveryRequest(row, stage, options = {}) {
   const requestContext = options.requestContext || {};
@@ -65,6 +66,25 @@ function strategyPollingIntervalMs(state, random = Math.random) {
 
 function nextStrategyQueryAt(state, random) {
   return new Date(Date.now() + strategyPollingIntervalMs(state, random));
+}
+
+function strategyBatchKey(row = {}) {
+  return `${String(row.chain_id || '').toLowerCase()}:${String(row.wallet_address || '').toLowerCase()}`;
+}
+
+function groupStrategyRows(rows = []) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = strategyBatchKey(row);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  return [...groups.values()];
+}
+
+function strategyBatchGroupBudget(value = process.env.XBOT_STRATEGY_SYNC_GROUP_BUDGET) {
+  const budget = Number(value || DEFAULT_STRATEGY_BATCH_GROUP_BUDGET);
+  return Number.isInteger(budget) ? Math.min(4, Math.max(1, budget)) : DEFAULT_STRATEGY_BATCH_GROUP_BUDGET;
 }
 
 function orderFromStoredRow(row) {
@@ -235,6 +255,8 @@ class TradeReconciler {
     this.hotProcessed = 0;
     this.hotTimers = new Set();
     this.wsBroadcast = null;
+    this.strategyDeferredGroups = 0;
+    this.lastStrategyBacklogWarnAt = 0;
   }
 
   async reconcileOrder(row) {
@@ -509,8 +531,54 @@ class TradeReconciler {
     return null;
   }
 
-  async reconcileStrategy(row) {
-    const normalized = await this.fetchStrategy(row);
+  async fetchStrategyBatch(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return new Map();
+    if (!this.gmgnAccess.getStrategyOrders) {
+      const error = new Error('GMGN strategy batch query is unavailable');
+      error.code = 'GMGN_STRATEGY_BATCH_UNAVAILABLE';
+      throw error;
+    }
+    const first = rows[0];
+    const expected = new Set(rows.map((row) => String(row.provider_order_id)));
+    const found = new Map();
+    const filters = {
+      from_address: first.wallet_address,
+      group_tag: 'STMix',
+      limit: 100
+    };
+    const urgent = rows.some((row) => ['triggered', 'cancelling', 'unknown'].includes(row.status));
+    const batchIdentity = crypto.createHash('sha256')
+      .update(strategyBatchKey(first)).digest('hex').slice(0, 16);
+    for (const type of ['open', 'history']) {
+      const raw = await this.gmgnAccess.getStrategyOrders(
+        first.chain_id,
+        { ...filters, type },
+        recoveryRequest(null, 'strategy_batch_query', {
+          priority: urgent ? PRIORITIES.STRATEGY_ACTION : PRIORITIES.STABLE_RECONCILIATION,
+          executionSessionId: `strategy-batch:${batchIdentity}`,
+          traceId: `strategy-batch:${batchIdentity}`,
+          requestContext: {
+            context: {
+              category: 'protection_strategy_sync',
+              query_type: type,
+              strategy_group_ids: rows.map((row) => Number(row.id))
+            }
+          }
+        })
+      );
+      for (const item of strategyRows(raw)) {
+        const normalized = gmgnAdapter.normalizeStrategy(item);
+        if (expected.has(String(normalized.providerOrderId))) {
+          found.set(String(normalized.providerOrderId), normalized);
+        }
+      }
+      if (found.size === expected.size) break;
+    }
+    return found;
+  }
+
+  async reconcileStrategy(row, options = {}) {
+    const normalized = options.prefetched ? options.strategy : await this.fetchStrategy(row);
     if (!normalized) {
       const missing = {
         raw: { reason: 'not_found_in_open_or_history' },
@@ -745,19 +813,50 @@ class TradeReconciler {
         }
       }
       const strategies = await this.repository.listDueStrategyGroups(20);
-      for (const strategy of strategies) {
+      const strategyGroups = groupStrategyRows(strategies);
+      const strategyBudget = strategyBatchGroupBudget();
+      const selectedStrategyGroups = strategyGroups.slice(0, strategyBudget);
+      this.strategyDeferredGroups = Math.max(0, strategyGroups.length - selectedStrategyGroups.length);
+      if (this.strategyDeferredGroups > 0
+          && Date.now() - this.lastStrategyBacklogWarnAt >= 60_000) {
+        this.lastStrategyBacklogWarnAt = Date.now();
+        this.logger.warn(
+          'trade-reconciler',
+          `${this.strategyDeferredGroups} strategy wallet groups deferred by the per-cycle GMGN budget`
+        );
+      }
+      for (const strategyGroup of selectedStrategyGroups) {
+        let prefetched;
         try {
-          const result = await this.reconcileStrategy(strategy);
-          results.push(result);
-          this.processed += 1;
-          this.wsBroadcast?.({ type: 'trade:strategy-updated', payload: result });
+          prefetched = await this.fetchStrategyBatch(strategyGroup);
         } catch (error) {
           this.lastError = error.message;
           this.logger.error(
             'trade-reconciler',
-            `Strategy ${strategy.id} reconciliation failed: ${error.message}`
+            `Strategy batch ${strategyBatchKey(strategyGroup[0])} failed: ${error.message}`
           );
-          results.push({ strategyGroupId: strategy.id, status: 'error', error: error.code || error.message });
+          for (const strategy of strategyGroup) {
+            results.push({ strategyGroupId: strategy.id, status: 'error', error: error.code || error.message });
+          }
+          continue;
+        }
+        for (const strategy of strategyGroup) {
+          try {
+            const result = await this.reconcileStrategy(strategy, {
+              prefetched: true,
+              strategy: prefetched.get(String(strategy.provider_order_id)) || null
+            });
+            results.push(result);
+            this.processed += 1;
+            this.wsBroadcast?.({ type: 'trade:strategy-updated', payload: result });
+          } catch (error) {
+            this.lastError = error.message;
+            this.logger.error(
+              'trade-reconciler',
+              `Strategy ${strategy.id} reconciliation failed: ${error.message}`
+            );
+            results.push({ strategyGroupId: strategy.id, status: 'error', error: error.code || error.message });
+          }
         }
       }
       // Position balance checks are explicit recovery work. Running them for
@@ -879,6 +978,7 @@ class TradeReconciler {
       lastError: this.lastError,
       processed: this.processed,
       hotProcessed: this.hotProcessed,
+      strategyDeferredGroups: this.strategyDeferredGroups,
       backlog: backlog.rows,
       strategyBacklog: strategyBacklog.rows,
       pollingPolicy: [
@@ -894,8 +994,10 @@ class TradeReconciler {
 const reconciler = new TradeReconciler();
 
 module.exports = {
+  DEFAULT_STRATEGY_BATCH_GROUP_BUDGET,
   RECONCILER_LOCK,
   TradeReconciler,
+  groupStrategyRows,
   nextQueryAt,
   nextStrategyQueryAt,
   pollingIntervalMs,
@@ -905,6 +1007,8 @@ module.exports = {
   receiptTradedAmountRaw,
   orderWithReceiptTradedAmount,
   strategyPollingIntervalMs,
+  strategyBatchGroupBudget,
+  strategyBatchKey,
   strategyMatchesConfirmedOrder,
   reconciler
 };

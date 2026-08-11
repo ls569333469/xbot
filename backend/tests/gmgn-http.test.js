@@ -88,6 +88,7 @@ test('GMGN request events preserve P21 business provenance without secrets', asy
         requestContext: {
           source: 'p21_follow_discovery_verify', processRole: 'execution',
           signalId: 12, policyId: 3, whitelistId: 8,
+          attemptId: 17, positionId: 19, side: 'buy',
           context: { event_id: 9 }
         }
       })
@@ -97,7 +98,12 @@ test('GMGN request events preserve P21 business provenance without secrets', asy
     assert.equal(event.signalId, 12);
     assert.equal(event.policyId, 3);
     assert.equal(event.whitelistId, 8);
-    assert.deepEqual(event.context, { event_id: 9 });
+    assert.deepEqual(event.context, {
+      event_id: 9,
+      attempt_id: 17,
+      position_id: 19,
+      side: 'buy'
+    });
   } finally {
     gmgnHttp.requestEvents.off('request', listener);
     global.fetch = originalFetch;

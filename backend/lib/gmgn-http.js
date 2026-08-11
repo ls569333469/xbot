@@ -118,6 +118,19 @@ function requestContext(options = {}) {
     const normalized = String(value || '').trim();
     return normalized ? normalized.slice(0, limit) : null;
   };
+  const detailContext = context.context && typeof context.context === 'object'
+    ? { ...context.context } : {};
+  for (const [key, value] of [
+    ['attempt_id', options.attemptId ?? context.attemptId ?? context.attempt_id],
+    ['position_id', options.positionId ?? context.positionId ?? context.position_id],
+    ['intent_id', options.intentId ?? context.intentId ?? context.intent_id]
+  ]) {
+    if (Number.isFinite(Number(value))) detailContext[key] = Number(value);
+  }
+  const category = text(options.category ?? context.category, 80);
+  if (category) detailContext.category = category;
+  const side = text(options.side ?? context.side, 16);
+  if (side) detailContext.side = side;
   return {
     source: String(options.source || context.source || 'unspecified').slice(0, 120),
     processRole: String(options.processRole || context.processRole || process.env.XBOT_PROCESS_ROLE || 'all').slice(0, 40),
@@ -132,7 +145,7 @@ function requestContext(options = {}) {
     executionSessionId: text(options.executionSessionId
       ?? context.executionSessionId ?? context.execution_session_id),
     rateScope: text(options.rateScope ?? context.rateScope ?? context.rate_scope ?? scopeKey()),
-    context: context.context && typeof context.context === 'object' ? context.context : {}
+    context: detailContext
   };
 }
 

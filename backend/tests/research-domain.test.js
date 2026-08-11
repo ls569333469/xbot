@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const {
   safeUrl,
@@ -15,7 +17,11 @@ const {
   sanitizeUsage
 } = require('../domains/research/xai-client');
 const { candidateEvidenceSnapshot, upsertActorCandidate } = require('../domains/research/service');
-const { schedulerAllowsResearch } = require('../domains/research/queue');
+const {
+  engineAllowsResearch,
+  ResearchQueue,
+  schedulerAllowsResearch
+} = require('../domains/research/queue');
 
 test('research queue stays out of GMGN while live execution is armed', () => {
   assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
@@ -24,6 +30,31 @@ test('research queue stays out of GMGN while live execution is armed', () => {
   assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
     liveArmed: false
   }), true);
+});
+
+test('research queue cannot claim work during desired live recovery windows', async () => {
+  for (const status of ['recovering', 'running', 'paused_transient', 'fault_protected']) {
+    const engine = {
+      getArmed: () => false,
+      getStatus: () => ({ desiredRunning: true, status })
+    };
+    assert.equal(engineAllowsResearch(engine), false);
+    const queue = new ResearchQueue();
+    queue.engine = engine;
+    assert.equal(await queue.runOnce(), 0);
+  }
+  assert.equal(engineAllowsResearch({
+    getArmed: () => false,
+    getStatus: () => ({ desiredRunning: false, status: 'stopped' })
+  }), true);
+});
+
+test('server starts the research queue only after persisted engine recovery completes', () => {
+  const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
+  const restore = server.indexOf('await engineState.restoreDesiredState');
+  const researchStart = server.indexOf('researchQueue.start');
+  assert.ok(restore >= 0);
+  assert.ok(researchStart > restore);
 });
 
 test('research sanitizers reject private URLs and normalize provider metadata', () => {
