@@ -4,9 +4,6 @@ const cors = require('cors');
 const helmet = require('helmet');
 const http = require('http');
 const WebSocket = require('ws');
-const cron = require('node-cron');
-const fs = require('fs');
-const path = require('path');
 const logger = require('./lib/logger');
 const {
   authorizeWebSocketRequest,
@@ -24,7 +21,6 @@ const {
   TRANSIENT_BLOCKERS
 } = require('./domains/trade/readiness-service');
 const { outboxWorker } = require('./jobs/notification-outbox');
-const { cacheWarmer } = require('./jobs/gmgn-cache-warmup');
 const { whitelistActivationWorker } = require('./jobs/whitelist-activation');
 const { liveExecutionQueue } = require('./domains/trade/live-execution-queue');
 const { shadowLiveEvaluator } = require('./jobs/shadow-live-evaluator');
@@ -35,8 +31,7 @@ const { kolProfileEnrichmentWorker } = require('./jobs/kol-profile-enrichment');
 const { dynamicSignalWorker } = require('./domains/dynamic-signal/event-worker');
 const { dynamicPaperSessionWorker } = require('./domains/dynamic-signal/paper-worker');
 const { actorScreeningWorker } = require('./domains/actor-screening/worker');
-const { candidateCacheWarmup } = require('./jobs/gmgn-candidate-cache-warmup');
-const { dynamicLaunchWindowWorker } = require('./jobs/dynamic-launch-window');
+const { followDiscoveryWorker } = require('./domains/follow-discovery/event-worker');
 const processRole = getProcessRole();
 const capabilities = roleCapabilities(processRole);
 
@@ -91,6 +86,7 @@ app.use('/api/kol', require('./domains/kol/routes'));
 app.use('/api/trade', require('./domains/trade/routes'));
 app.use('/api/dynamic-signal', require('./domains/dynamic-signal/routes'));
 app.use('/api/actor-screening', require('./domains/actor-screening/routes'));
+app.use('/api/follow-discovery', require('./domains/follow-discovery/routes'));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, status: 'ok', process_role: processRole });
@@ -112,44 +108,6 @@ function wsBroadcast(data) {
 }
 app.set('wsBroadcast', wsBroadcast);
 
-// Load and register cron jobs after startup safety checks.
-const jobsRunning = {};
-function safeRun(jobId, handler) {
-  return async () => {
-    if (jobsRunning[jobId]) return;
-    jobsRunning[jobId] = true;
-    try {
-      await handler({ wsBroadcast });
-    } catch (err) {
-      logger.error('cron', `Job ${jobId} failed`, { error: err.message });
-    } finally {
-      jobsRunning[jobId] = false;
-    }
-  };
-}
-
-function registerCronJobs() {
-  if (String(process.env.CRON_ENABLED || 'true').toLowerCase() === 'false') {
-    logger.warn('cron', 'Cron registration disabled by CRON_ENABLED=false');
-    return;
-  }
-  try {
-    const cronConfigPath = path.join(__dirname, 'cron.json');
-    if (fs.existsSync(cronConfigPath)) {
-      const jobs = JSON.parse(fs.readFileSync(cronConfigPath, 'utf8'));
-      jobs.forEach(job => {
-        if (job.enabled) {
-          const handler = require(job.handler).run;
-          cron.schedule(job.schedule, safeRun(job.id, handler));
-          logger.info('cron', `Registered job: ${job.name} (${job.schedule})`);
-        }
-      });
-    }
-  } catch (err) {
-    logger.error('server', 'Failed to load cron jobs', { error: err.message });
-  }
-}
-
 const db = require('./lib/db');
 
 let shuttingDown = false;
@@ -168,14 +126,12 @@ async function gracefulShutdown(signal) {
     dynamicSignalWorker.stop();
     dynamicPaperSessionWorker.stop();
     actorScreeningWorker.stop();
-    candidateCacheWarmup.stop();
-    dynamicLaunchWindowWorker.stop();
+    followDiscoveryWorker.stop();
     researchQueue.stop();
     reconciler.stop();
     tradeRetryOrchestrator.stop();
     readinessMonitor.stop();
     outboxWorker.stop();
-    cacheWarmer.stop();
     whitelistActivationWorker.stop();
     await liveExecutionQueue.stop();
     shadowLiveEvaluator.stop();
@@ -198,8 +154,14 @@ async function startServer() {
   const checkEnv = require('./scripts/check-env');
   await checkEnv();
 
-  const { runMigrations } = require('./lib/migrations');
-  await runMigrations();
+  const shouldRunMigrations = processRole === 'all'
+    || String(process.env.XBOT_RUN_MIGRATIONS || 'false').toLowerCase() === 'true';
+  if (shouldRunMigrations) {
+    const { runMigrations } = require('./lib/migrations');
+    await runMigrations();
+  } else {
+    logger.info('migrations', `Migration phase owned by supervisor; skipped in ${processRole} role`);
+  }
 
   if (capabilities.execution) {
     const engineState = require('./lib/engine-state');
@@ -212,7 +174,6 @@ async function startServer() {
     tradeRetryOrchestrator.start({ intervalMs: 100 });
     providerRateRecorder.start({ wsBroadcast });
     outboxWorker.start({ wsBroadcast, intervalMs: 2000 });
-    cacheWarmer.start({ intervalMs: 2000 });
     whitelistActivationWorker.start({ intervalMs: 1000 });
     liveExecutionQueue.configure({ wsBroadcast });
     await liveExecutionQueue.start({ intervalMs: 500 });
@@ -227,8 +188,7 @@ async function startServer() {
     dynamicSignalWorker.start({ wsBroadcast, intervalMs: 500 });
     dynamicPaperSessionWorker.start({ intervalMs: 60_000 });
     actorScreeningWorker.start({ intervalMs: 2000 });
-    candidateCacheWarmup.start({ intervalMs: 60_000 });
-    dynamicLaunchWindowWorker.start({ intervalMs: 1000 });
+    followDiscoveryWorker.start({ intervalMs: 1000 });
   }
 
   if (capabilities.api) {
@@ -277,15 +237,21 @@ async function startServer() {
           retryOrchestrator: await tradeRetryOrchestrator.getStatus(),
           whitelistActivation: whitelistActivationWorker.getStatus()
         },
-        kolProfileEnrichment: kolProfileEnrichmentWorker.getStatus()
+        kolProfileEnrichment: kolProfileEnrichmentWorker.getStatus(),
+        followDiscovery: followDiscoveryWorker.getStatus()
       } : {})
     })
   });
 
   if (capabilities.execution) {
-    registerCronJobs();
-    const recovery = await require('./lib/engine-state').restoreDesiredState(
-      () => getReadinessSnapshot({ probe: true }),
+    const engineState = require('./lib/engine-state');
+    const recovery = await engineState.restoreDesiredState(
+      (options = {}) => getReadinessSnapshot({
+        // Startup recovery must not fan out into GMGN diagnostics. Explicit
+        // arm preparation remains the place for an operator-requested probe.
+        probe: false,
+        scope: options.scope || engineState.getScopeInput()
+      }),
       {
         maxAttempts: 16,
         retryDelayMs: 1000,
@@ -305,9 +271,9 @@ startServer().catch(err => {
   tradeRetryOrchestrator.stop();
   readinessMonitor.stop();
   outboxWorker.stop();
-  cacheWarmer.stop();
   whitelistActivationWorker.stop();
   kolProfileEnrichmentWorker.stop();
+  followDiscoveryWorker.stop();
   providerRateRecorder.stop();
   shadowLiveEvaluator.stop();
   void serviceHeartbeat.stop();

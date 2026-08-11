@@ -65,6 +65,76 @@ function firstObjectWith(payload, keys) {
   return collectObjects(payload).find((item) => keys.some((key) => item[key] !== undefined));
 }
 
+function normalizeUserProfile(payload, expectedHandle = '') {
+  const user = firstObjectWith(payload, [
+    'userId', 'userIdStr', 'twId', 'screenName', 'screen_name', 'rest_id'
+  ]);
+  if (!user) {
+    const error = new Error('6551 user response is missing a profile object');
+    error.code = 'X6551_SCHEMA_ERROR';
+    throw error;
+  }
+  const legacy = user.legacy && typeof user.legacy === 'object' ? user.legacy : {};
+  const profileUrls = profileWebsiteUrls(user, legacy);
+  const providerHandle = normalizeXHandle(
+    user.screenName ?? user.screen_name ?? user.twAccount ?? user.username
+    ?? legacy.screen_name ?? ''
+  );
+  const normalizedExpected = normalizeXHandle(expectedHandle);
+  if (normalizedExpected && providerHandle && providerHandle !== normalizedExpected) {
+    const error = new Error('6551 returned a different X account than requested');
+    error.code = 'X6551_PROFILE_MISMATCH';
+    throw error;
+  }
+
+  // The provider may omit a numeric ID on the handle endpoint. Callers that
+  // need identity binding can re-query by the event's stable numeric ID.
+  const userId = String(
+    user.userId ?? user.userIdStr ?? user.twId ?? user.rest_id ?? user.id ?? providerHandle
+  ).trim();
+  if (!userId || ['undefined', 'null'].includes(userId.toLowerCase())) {
+    const error = new Error('6551 user response is missing a valid user ID');
+    error.code = 'X6551_SCHEMA_ERROR';
+    throw error;
+  }
+  return {
+    id: userId,
+    handle: providerHandle || normalizedExpected,
+    name: user.name ?? user.twUserName ?? legacy.name ?? '',
+    followers_count: Number(
+      user.followersCount ?? user.followerCount ?? legacy.followers_count ?? 0
+    ),
+    following_count: Number(
+      user.friendsCount ?? user.followingCount ?? legacy.friends_count ?? 0
+    ),
+    description: String(user.description ?? user.bio ?? legacy.description ?? ''),
+    created_at: user.createdAt ?? user.created_at ?? legacy.created_at ?? null,
+    website_urls: profileUrls,
+    pinned_tweet_id: String(
+      user.pinnedTweetId ?? user.pinned_tweet_id ?? legacy.pinned_tweet_ids_str?.[0] ?? ''
+    ).trim() || null
+  };
+}
+
+function profileWebsiteUrls(user, legacy = {}) {
+  const urlEntities = [
+    ...(Array.isArray(user?.entities?.url?.urls) ? user.entities.url.urls : []),
+    ...(Array.isArray(user?.entities?.description?.urls) ? user.entities.description.urls : []),
+    ...(Array.isArray(legacy?.entities?.url?.urls) ? legacy.entities.url.urls : []),
+    ...(Array.isArray(legacy?.entities?.description?.urls) ? legacy.entities.description.urls : [])
+  ];
+  const values = [
+    user?.url,
+    user?.website,
+    user?.websiteUrl,
+    legacy?.url,
+    ...urlEntities.flatMap((item) => [item?.expanded_url, item?.expandedUrl, item?.url])
+  ];
+  return [...new Set(values.filter((value) => {
+    try { return new URL(String(value)).protocol === 'https:'; } catch { return false; }
+  }).map(String))];
+}
+
 function normalizeTweets(payload) {
   const tweets = new Map();
   for (const item of collectObjects(payload)) {
@@ -77,7 +147,12 @@ function normalizeTweets(payload) {
       created_at: item.createdAt ?? item.created_at ?? null,
       user_handle: normalizeXHandle(
         item.userScreenName ?? item.screenName ?? item.twAccount ?? item.username ?? ''
-      )
+      ),
+      is_reply: Boolean(item.inReplyToStatusId ?? item.in_reply_to_status_id ?? item.isReply),
+      is_retweet: Boolean(item.retweetedStatus ?? item.retweeted_status ?? item.isRetweet)
+        || /^RT\s+@/i.test(text),
+      is_quote: Boolean(item.quotedStatus ?? item.quoted_status ?? item.isQuote),
+      pinned: Boolean(item.isPinned ?? item.pinned)
     });
   }
   return [...tweets.values()];
@@ -168,46 +243,15 @@ class X6551Client {
   async getUserProfile(handle) {
     const username = normalizeXHandle(handle);
     const payload = await this.request('twitter_user_info', { username });
-    const user = firstObjectWith(payload, [
-      'userId', 'userIdStr', 'twId', 'screenName', 'screen_name', 'rest_id'
-    ]);
-    if (!user) {
-      const error = new Error('6551 user response is missing a profile object');
-      error.code = 'X6551_SCHEMA_ERROR';
-      throw error;
-    }
-    const legacy = user.legacy && typeof user.legacy === 'object' ? user.legacy : {};
-    const providerHandle = normalizeXHandle(
-      user.screenName ?? user.screen_name ?? user.twAccount ?? user.username
-      ?? legacy.screen_name ?? ''
-    );
-    if (providerHandle && providerHandle !== username) {
-      const error = new Error('6551 returned a different X account than requested');
-      error.code = 'X6551_PROFILE_MISMATCH';
-      throw error;
-    }
+    return normalizeUserProfile(payload, username);
+  }
 
-    // twitter_user_info currently confirms profiles by screenName but may omit a numeric user ID.
-    // Watch management and matching are handle-based, so a confirmed canonical handle is a valid identity fallback.
-    const userId = String(
-      user.userId ?? user.userIdStr ?? user.twId ?? user.rest_id ?? user.id ?? providerHandle
-    ).trim();
-    if (!userId || ['undefined', 'null'].includes(userId.toLowerCase())) {
-      const error = new Error('6551 user response is missing a valid user ID');
-      error.code = 'X6551_SCHEMA_ERROR';
-      throw error;
-    }
-    return {
-      id: userId,
-      handle: providerHandle || username,
-      name: user.name ?? user.twUserName ?? legacy.name ?? '',
-      followers_count: Number(
-        user.followersCount ?? user.followerCount ?? legacy.followers_count ?? 0
-      ),
-      following_count: Number(
-        user.friendsCount ?? user.followingCount ?? legacy.friends_count ?? 0
-      )
-    };
+  async getUserProfileById(userId) {
+    const value = String(userId || '').trim();
+    if (!value) throw new Error('6551 user ID is required');
+    return normalizeUserProfile(
+      await this.request('twitter_user_by_id', { userId: value })
+    );
   }
 
   async getTweetById(tweetId) {
@@ -267,5 +311,6 @@ module.exports = {
   normalizeTweets,
   normalizeWatch,
   normalizeWatchFlags,
+  profileWebsiteUrls,
   preserveWatchUsername
 };

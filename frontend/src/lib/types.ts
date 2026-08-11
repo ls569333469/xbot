@@ -351,6 +351,62 @@ export interface DynamicPolicyTemplate {
   updated_at?: string;
 }
 
+export interface FollowDiscoveryPolicy {
+  id: string;
+  kol_id: string;
+  x_user_id: string;
+  x_handle: string;
+  display_name?: string;
+  mode: 'record' | 'paper' | 'live' | 'paused';
+  enabled: boolean;
+  allowed_chain_ids: ChainId[];
+  trade_template_id?: string | null;
+  trade_template_name?: string | null;
+  trade_config_snapshot: Pick<DynamicPolicyTemplateConfig,
+    'chain_budgets' | 'daily_new_token_limit' | 'per_token_buy_limit' | 'slippage' | 'exit_strategy'>;
+  resolver_options: {
+    event_ttl_seconds: number;
+    max_tweets: number;
+    minimum_account_age_days: number;
+    include_profile_website: boolean;
+    require_original_content: boolean;
+  };
+  revision: number;
+  context_hash: string;
+  baseline_at: string;
+  watch_sync_status?: string | null;
+  watch_sync_error?: string | null;
+  watch_synced_at?: string | null;
+}
+
+export interface FollowDiscoveryPrompts {
+  version: number;
+  fast_prompt: string;
+  relationship_prompt: string;
+  source: 'default' | 'stored';
+  updated_at?: string | null;
+  prompt_version: string;
+}
+
+export interface FollowDiscoveryEvent {
+  id: string;
+  policy_id: string;
+  actor_handle: string;
+  target_user_id: string;
+  target_handle: string;
+  mode: 'record' | 'paper' | 'live';
+  status: 'baseline' | 'pending' | 'processing' | 'resolved' | 'rejected' | 'failed' | 'cancelled';
+  stage: string;
+  project_classification?: string | null;
+  classification_confidence?: string | null;
+  chain_id?: ChainId | null;
+  contract_address?: string | null;
+  failure_code?: string | null;
+  provider_created_at: string;
+  policy_revision: number;
+  current_policy_revision: number;
+}
+
 export interface ActorScreeningResult {
   id: string;
   x_handle: string;
@@ -848,6 +904,7 @@ export interface TradeReadiness {
       whitelistIds: number[];
     } | null;
     policy_enabled: boolean;
+    strategy_ready?: boolean;
     ready: boolean;
     blockers: string[];
     wallet_address?: string | null;
@@ -956,6 +1013,29 @@ export interface TradeReadiness {
   };
   retry?: TradeRetryRuntime;
   pollingPolicy: Array<{ fromSeconds: number; toSeconds: number | null; intervalMs: number | number[] }>;
+  scope?: {
+    scope_type: 'combined' | 'fixed_ca' | 'dynamic_policy' | 'follow_discovery';
+    scope_id: number | null;
+    policy_revision?: number | null;
+    chains: string[];
+    whitelist_ids?: number[];
+    dynamic_policy_ids?: number[];
+    follow_policy_ids?: number[];
+    counts?: {
+      chains: number;
+      whitelists: number;
+      dynamic_policies: number;
+      follow_policies: number;
+      watches: number;
+      relations: number;
+    };
+    manifest_hash?: string | null;
+  };
+  provider?: {
+    cooldown_until?: number | string | null;
+    affected?: string[];
+    advisories?: string[];
+  };
   policy?: {
     providers: string[];
     eventTypes: string[];
@@ -974,6 +1054,12 @@ export interface ArmPreparation {
     readyToArm: boolean;
     blockers: string[];
     advisories: string[];
+    scope?: {
+      type: 'combined' | 'fixed_ca' | 'dynamic_policy' | 'follow_discovery';
+      id: number | null;
+      revision?: number | null;
+      label: string;
+    };
     counts: {
       chains: number;
       whitelists: number;
@@ -987,6 +1073,22 @@ export interface ArmPreparation {
       nativeBalance: number | null;
     }>;
   };
+  scope?: {
+    scope_type: 'combined' | 'fixed_ca' | 'dynamic_policy' | 'follow_discovery';
+    scope_id: number | null;
+    chains?: string[];
+    policy_revision?: number | null;
+    manifest_hash?: string | null;
+  };
+}
+
+export interface RuntimeScope {
+  scope_type: 'combined' | 'fixed_ca' | 'dynamic_policy' | 'follow_discovery';
+  scope_id: number | null;
+  label: string;
+  chains: string[];
+  revision?: number | null;
+  context_hash?: string | null;
 }
 
 export interface RuntimeSummary {
@@ -1039,6 +1141,7 @@ export interface RuntimePolicyDetailPage {
   total: number;
   page: number;
   page_size: number;
+  scope?: RuntimeScope | null;
 }
 
 export interface LiveAcceptanceScope {

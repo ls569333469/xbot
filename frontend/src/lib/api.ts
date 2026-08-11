@@ -245,6 +245,22 @@ export const api = {
     retry: (id: string) => fetchApi<ApiResponse<{ queued: boolean }>>(`/api/actor-screening/${id}/retry`, { method: 'POST', body: '{}' }),
   },
 
+  followDiscovery: {
+    prompts: () => fetchApi<ApiResponse<import('./types').FollowDiscoveryPrompts>>('/api/follow-discovery/prompts'),
+    updatePrompts: (data: Pick<import('./types').FollowDiscoveryPrompts, 'version' | 'fast_prompt' | 'relationship_prompt'>) =>
+      fetchApi<ApiResponse<import('./types').FollowDiscoveryPrompts>>('/api/follow-discovery/prompts', { method: 'PUT', body: JSON.stringify(data) }),
+    resetPrompts: (version: number) =>
+      fetchApi<ApiResponse<import('./types').FollowDiscoveryPrompts>>('/api/follow-discovery/prompts/reset', { method: 'POST', body: JSON.stringify({ version }) }),
+    policies: (params?: Record<string, string>) => fetchApi<ApiResponse<import('./types').FollowDiscoveryPolicy[]>>(`/api/follow-discovery/policies${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
+    policy: (id: string) => fetchApi<ApiResponse<import('./types').FollowDiscoveryPolicy>>(`/api/follow-discovery/policies/${id}`),
+    createPolicy: (data: Partial<import('./types').FollowDiscoveryPolicy> & { kol_id: string }) => fetchApi<ApiResponse<import('./types').FollowDiscoveryPolicy>>('/api/follow-discovery/policies', { method: 'POST', body: JSON.stringify(data) }),
+    updatePolicy: (id: string, data: Partial<import('./types').FollowDiscoveryPolicy>) => fetchApi<ApiResponse<import('./types').FollowDiscoveryPolicy>>(`/api/follow-discovery/policies/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    removePolicy: (id: string) => fetchApi<ApiResponse<{ archived: boolean }>>(`/api/follow-discovery/policies/${id}`, { method: 'DELETE' }),
+    watchImpact: (kolId: string) => fetchApi<ApiResponse<{ handle: string; new_watches: number; required_event: 'follow' }>>('/api/follow-discovery/watch-impact', { method: 'POST', body: JSON.stringify({ kol_id: kolId }) }),
+    events: (params?: Record<string, string>) => fetchApi<ApiResponse<import('./types').FollowDiscoveryEvent[]>>(`/api/follow-discovery/events${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
+    event: (id: string) => fetchApi<ApiResponse<import('./types').FollowDiscoveryEvent>>(`/api/follow-discovery/events/${id}`),
+  },
+
   signals: {
     list: (params?: Record<string, string>) => {
       const q = params ? '?' + new URLSearchParams(params).toString() : '';
@@ -279,8 +295,9 @@ export const api = {
     health: () => fetchApi<ApiResponse<any>>('/api/health'),
     dashboard: () => fetchApi<ApiResponse<any>>('/api/system/dashboard'),
     runtimeSummary: () => fetchApi<ApiResponse<RuntimeSummary>>('/api/system/runtime-summary'),
-    prepareArm: () => fetchApi<ApiResponse<ArmPreparation>>('/api/system/arm/prepare', {
-      method: 'POST', body: '{}'
+    runtimeScopes: () => fetchApi<ApiResponse<import('./types').RuntimeScope[]>>('/api/system/runtime-scopes'),
+    prepareArm: (scope?: { scope_type?: string; scope_id?: number | null; chain_ids?: string[] }, options: { probe?: boolean } = {}) => fetchApi<ApiResponse<ArmPreparation>>('/api/system/arm/prepare', {
+      method: 'POST', body: JSON.stringify({ scope: scope || { scope_type: 'combined' }, probe: options.probe === true }), signal: AbortSignal.timeout(45_000)
     }),
     confirmArm: (preparation: ArmPreparation) => fetchApi<ApiResponse<any>>('/api/system/arm/confirm', {
       method: 'POST',
@@ -292,7 +309,13 @@ export const api = {
     }),
     disarm: () => fetchApi<ApiResponse<any>>('/api/system/disarm', { method: 'POST' }),
     engineStatus: () => fetchApi<ApiResponse<any>>('/api/system/engine-status'),
-    readiness: (probe = false) => fetchApi<ApiResponse<TradeReadiness>>(`/api/system/readiness?probe=${probe}`),
+    readiness: (probe = false, scope?: { scope_type?: string; scope_id?: number | null; chain_ids?: string[] }) => {
+      const params = new URLSearchParams({ probe: String(probe) });
+      if (scope?.scope_type) params.set('scope_type', scope.scope_type);
+      if (scope?.scope_id !== null && scope?.scope_id !== undefined) params.set('scope_id', String(scope.scope_id));
+      if (scope?.chain_ids?.length) params.set('chain_ids', scope.chain_ids.join(','));
+      return fetchApi<ApiResponse<TradeReadiness>>(`/api/system/readiness?${params.toString()}`);
+    },
     budgets: () => fetchApi<ApiResponse<any>>('/api/system/budgets'),
     testTradeAlert: () => fetchApi<ApiResponse<any>>('/api/system/alerts/test', { method: 'POST', body: '{}' }),
     getEnv: () => fetchApi<ApiResponse<any>>('/api/system/env'),

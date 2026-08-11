@@ -6,6 +6,7 @@ import { Modal } from '../components/ui/Modal';
 import { useToast } from '../components/ui/ToastContext';
 import { TableSkeleton } from '../components/ui/Skeleton';
 import type { EcosystemTag, KolAccount } from '../lib/types';
+import AccountResearchPanel from './kol/AccountResearchPanel';
 
 const TAG_OPTIONS: Array<{ value: EcosystemTag | 'all' | 'unclassified'; label: string }> = [
   { value: 'all', label: '全部' },
@@ -61,6 +62,7 @@ function profileState(row: KolAccount, retrying: boolean) {
 }
 
 export default function KolPage() {
+  const [tab, setTab] = useState<'accounts' | 'research'>('accounts');
   const [data, setData] = useState<KolAccount[]>([]);
   const [isModalOpen, setModalOpen] = useState(false);
   const [editItem, setEditItem] = useState<KolAccount | null>(null);
@@ -191,6 +193,12 @@ export default function KolPage() {
 
   return (
     <div className="kol-page">
+      <nav className="strategy-center-tabs kol-page-tabs" aria-label="KOL 页面">
+        <button type="button" className={tab === 'accounts' ? 'active' : ''} onClick={() => setTab('accounts')}>KOL 账号</button>
+        <button type="button" className={tab === 'research' ? 'active' : ''} onClick={() => setTab('research')}>账号研究</button>
+      </nav>
+
+      {tab === 'research' ? <AccountResearchPanel /> : <>
       <div className="kol-toolbar">
         <div className="p16-search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 Handle 或名称" /></div>
         <div className="kol-tag-filter">{TAG_OPTIONS.map((item) => <button type="button" key={item.value} className={tag === item.value ? 'active' : ''} onClick={() => setTag(item.value)}>{item.label}</button>)}</div>
@@ -209,6 +217,7 @@ export default function KolPage() {
           <div className="flex justify-end mt-4 gap-sm"><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>取消</button><button className="btn btn-primary" disabled={saving} onClick={handleSave}>{saving ? '保存中' : '保存'}</button></div>
         </div>
       </Modal>
+      </>}
     </div>
   );
 }

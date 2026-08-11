@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const db = require('../../lib/db');
-const gmgnHttp = require('../../lib/gmgn-http');
+const defaultGmgnAccess = require('../../lib/gmgn-access-service').accessFor('trade_recovery');
+const { scopeKey } = require('../../lib/gmgn-shared-rate-limit');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { rawToDecimal } = require('../../lib/decimal-units');
 const receiptService = require('./chain-receipt-service');
@@ -19,6 +20,27 @@ function activityRows(value) {
   if (Array.isArray(value?.activities)) return value.activities;
   if (Array.isArray(value?.list)) return value.list;
   return [];
+}
+
+function requestOptions(context = {}) {
+  return {
+    ...(context.rateLease ? { rateLease: context.rateLease } : {}),
+    ...(context.deadlineAt ? { deadlineAt: context.deadlineAt } : {}),
+    ...(context.priority ? { priority: context.priority } : {}),
+    ...(context.requestContext ? { requestContext: context.requestContext } : {})
+  };
+}
+
+function attemptRequestContext(attempt, stage) {
+  return {
+    source: 'trade_recovery',
+    stage,
+    signalId: Number(attempt?.signal_id || 0) || null,
+    whitelistId: Number(attempt?.whitelist_id || 0) || null,
+    traceId: attempt?.trace_id || null,
+    executionSessionId: attempt?.id ? `attempt:${Number(attempt.id)}:recovery` : null,
+    rateScope: scopeKey()
+  };
 }
 
 function tokenBalanceRaw(response, decimals) {
@@ -85,7 +107,8 @@ function actualFeeNative(chain, receipt) {
 class TradeFailureEvidenceService {
   constructor(options = {}) {
     this.db = options.db || db;
-    this.gmgnHttp = options.gmgnHttp || gmgnHttp;
+    // Tests may inject a provider-shaped double; production always uses the guarded access object.
+    this.gmgnAccess = options.gmgnAccess || options.gmgnHttp || defaultGmgnAccess;
     this.receiptService = options.receiptService || receiptService;
     this.repository = options.repository || repository;
     this.intentRepository = options.intentRepository || intentRepository;
@@ -112,26 +135,24 @@ class TradeFailureEvidenceService {
   async capturePreSubmitSnapshot(attempt, context = {}) {
     const tokenAddress = attempt.side === 'sell' ? attempt.input_token : attempt.output_token;
     const tokenDecimals = Number(context.tokenDecimals ?? context.token?.decimals);
-    const [chainState, tokenBalance, activity] = await Promise.all([
-      this.stateProvider.capture(attempt.chain, attempt.wallet_address),
-      this.gmgnHttp.getWalletTokenBalance(
-        attempt.chain,
-        attempt.wallet_address,
-        tokenAddress,
-        context.rateLease ? { rateLease: context.rateLease, deadlineAt: context.deadlineAt } : {}
-      ),
-      this.gmgnHttp.getWalletActivity(attempt.chain, attempt.wallet_address, {
-        token_address: tokenAddress,
-        limit: 20
-      }, context.rateLease ? { rateLease: context.rateLease, deadlineAt: context.deadlineAt } : {})
-    ]);
-    const activities = activityRows(activity);
+    const chainState = await this.stateProvider.capture(attempt.chain, attempt.wallet_address);
+    const tokenBalance = context.tokenBalance
+      ? tokenBalanceRaw(context.tokenBalance, tokenDecimals)
+      : { amountRaw: null, amountDisplay: null, decimals: tokenDecimals };
+    const activities = Array.isArray(context.activityCursor) ? context.activityCursor : [];
+    const contextNativeUsd = context.nativeUsd === null || context.nativeUsd === undefined
+      || context.nativeUsd === '' ? null : Number(context.nativeUsd);
+    const gasNativeUsd = context.gas?.native_token_usd_price === null
+      || context.gas?.native_token_usd_price === undefined
+      || context.gas?.native_token_usd_price === ''
+      ? null
+      : Number(context.gas.native_token_usd_price);
     return {
       captured_at: new Date().toISOString(),
       chain_state: chainState,
       token: {
         address: tokenAddress,
-        ...tokenBalanceRaw(tokenBalance, tokenDecimals)
+        ...tokenBalance
       },
       activity_cursor: activities.slice(0, 20).map((item) => ({
         tx_hash: item.tx_hash || item.hash || null,
@@ -140,10 +161,10 @@ class TradeFailureEvidenceService {
       })),
       quote: context.quote?.raw || context.quote || {},
       gas: context.gas || {},
-      native_usd_price: Number.isFinite(Number(context.nativeUsd))
-        ? Number(context.nativeUsd)
-        : Number.isFinite(Number(context.gas?.native_token_usd_price))
-          ? Number(context.gas.native_token_usd_price)
+      native_usd_price: Number.isFinite(contextNativeUsd)
+        ? contextNativeUsd
+        : Number.isFinite(gasNativeUsd)
+          ? gasNativeUsd
           : null,
       config: context.config || {}
     };
@@ -248,14 +269,33 @@ class TradeFailureEvidenceService {
     try {
       const tokenAddress = attempt.side === 'sell' ? attempt.input_token : attempt.output_token;
       const tokenDecimals = Number(before.token?.decimals);
-      const [chainState, balance, activity] = await Promise.all([
-        this.stateProvider.capture(attempt.chain, attempt.wallet_address),
-        this.gmgnHttp.getWalletTokenBalance(attempt.chain, attempt.wallet_address, tokenAddress),
-        this.gmgnHttp.getWalletActivity(attempt.chain, attempt.wallet_address, {
-          token_address: tokenAddress,
-          limit: 100
+      const chainState = await this.stateProvider.capture(attempt.chain, attempt.wallet_address);
+      const requestContext = attemptRequestContext(attempt, 'no_hash_evidence');
+      const evidenceLease = typeof this.gmgnAccess.reserveTradeEvidence === 'function'
+        ? await this.gmgnAccess.reserveTradeEvidence({
+          requestContext,
+          deadlineAt: Date.now() + 30_000
         })
-      ]);
+        : null;
+      let balance;
+      let activity;
+      try {
+        const options = requestOptions({ rateLease: evidenceLease, requestContext });
+        [balance, activity] = await Promise.all([
+          this.gmgnAccess.getWalletTokenBalance(
+            attempt.chain,
+            attempt.wallet_address,
+            tokenAddress,
+            options
+          ),
+          this.gmgnAccess.getWalletActivity(attempt.chain, attempt.wallet_address, {
+            token_address: tokenAddress,
+            limit: 100
+          }, options)
+        ]);
+      } finally {
+        evidenceLease?.release?.();
+      }
       addressHistory = await this.stateProvider.scan(
         attempt.chain,
         attempt.wallet_address,

@@ -7,6 +7,7 @@ const { matchActivity } = require('../../signal/matcher');
 const { normalizeXHandle } = require('../../../lib/x-handles');
 const { normalize6551Event } = require('./normalizer');
 const { enqueueForActivity } = require('../../dynamic-signal/event-queue');
+const { enqueueFollow } = require('../../follow-discovery/repository');
 
 const SENSITIVE_KEY = /(token|authorization|api[_-]?key|secret|password)/i;
 
@@ -133,6 +134,7 @@ async function processInboxEvent(row, options = {}) {
     const activities = [];
     const signals = [];
     const dynamicJobs = [];
+    const followDiscoveryEvents = [];
     let matched = 0;
     for (const item of normalized) {
       const kol = await findKol(item.actorHandle, executor);
@@ -160,6 +162,9 @@ async function processInboxEvent(row, options = {}) {
       if (!activity) continue;
       activities.push(activity);
       dynamicJobs.push(...await enqueueForActivity(activity, row.id, executor));
+      followDiscoveryEvents.push(...await enqueueFollow({
+        activity, providerEventId: row.id, item, kol
+      }, executor));
       if (item.activityType !== 'unfollow') {
         const matchResult = await matchActivity(activity, executor, {
           notify: false,
@@ -233,7 +238,7 @@ async function processInboxEvent(row, options = {}) {
         logger.error('6551-inbox', `Post-commit execution enqueue failed: ${error.message}`);
       }
     }
-    return { status, activities, matched, signals, dynamicJobs };
+    return { status, activities, matched, signals, dynamicJobs, followDiscoveryEvents };
   } catch (error) {
     if (transactionClient) await executor.query('ROLLBACK').catch(() => {});
     const attemptsResult = await stateExecutor.query(
@@ -253,9 +258,9 @@ async function ingest6551Event(event, options = {}) {
   const inserted = await insertInboxEvent(event, options.executor || db, {
     transportReceivedAt: options.transportReceivedAt
   });
-  if (inserted.duplicate) return { duplicate: true, status: 'duplicate', activities: [], matched: 0, dynamicJobs: [] };
+  if (inserted.duplicate) return { duplicate: true, status: 'duplicate', activities: [], matched: 0, dynamicJobs: [], followDiscoveryEvents: [] };
   if (!inserted.identity.stable) {
-    return { duplicate: false, status: 'dead_letter', activities: [], matched: 0, dynamicJobs: [] };
+    return { duplicate: false, status: 'dead_letter', activities: [], matched: 0, dynamicJobs: [], followDiscoveryEvents: [] };
   }
   const result = await processInboxEvent(inserted.row, options);
   return { duplicate: false, ...result };

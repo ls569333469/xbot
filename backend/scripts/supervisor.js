@@ -1,10 +1,11 @@
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const envSettings = require('../domains/system/env-settings');
 
 const ROOT = path.resolve(__dirname, '..');
 const SERVER = path.join(ROOT, 'server.js');
+const MIGRATION_SCRIPT = path.join(__dirname, 'run-migrations.js');
 const ENV_PATH = path.join(ROOT, '.env');
 const ROLES = ['ingestion', 'execution'];
 const RESTART_DELAY_MS = 1_000;
@@ -18,6 +19,26 @@ let lastEnvValues = envSettings.readEnv();
 
 function log(message) {
   process.stdout.write(`[supervisor] ${message}\n`);
+}
+
+function runMigrationsBeforeRoles() {
+  log('Running the migration phase before starting business roles');
+  const result = spawnSync(process.execPath, [MIGRATION_SCRIPT], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'inherit',
+    windowsHide: true
+  });
+  if (result.error) {
+    log(`Migration phase failed to start: ${result.error.message}`);
+    return false;
+  }
+  if (result.status !== 0) {
+    log(`Migration phase failed (status=${result.status ?? 'unknown'})`);
+    return false;
+  }
+  log('Migration phase completed');
+  return true;
 }
 
 function spawnRole(role) {
@@ -97,20 +118,25 @@ async function shutdown(signal) {
   process.exit(0);
 }
 
-ROLES.forEach(spawnRole);
-fs.watchFile(ENV_PATH, { interval: 500 }, (current, previous) => {
-  if (current.mtimeMs === previous.mtimeMs) return;
-  const nextValues = envSettings.readEnv();
-  const changedKeys = [...new Set([...Object.keys(lastEnvValues), ...Object.keys(nextValues)])]
-    .filter((key) => (lastEnvValues[key] || '') !== (nextValues[key] || ''));
-  lastEnvValues = nextValues;
-  changedKeys.forEach((key) => {
-    if (nextValues[key] === undefined) delete process.env[key];
-    else process.env[key] = nextValues[key];
-  });
-  const impact = envSettings.impactForKeys(changedKeys);
-  if (impact.restart_required) scheduleRestart(impact.restart_roles, `.env changed: ${impact.impact_scope}`);
-  else log(`Applied hot configuration (${impact.impact_scope})`);
-});
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+if (runMigrationsBeforeRoles()) {
+  ROLES.forEach(spawnRole);
+  fs.watchFile(ENV_PATH, { interval: 500 }, (current, previous) => {
+    if (current.mtimeMs === previous.mtimeMs) return;
+    const nextValues = envSettings.readEnv();
+    const changedKeys = [...new Set([...Object.keys(lastEnvValues), ...Object.keys(nextValues)])]
+      .filter((key) => (lastEnvValues[key] || '') !== (nextValues[key] || ''));
+    lastEnvValues = nextValues;
+    changedKeys.forEach((key) => {
+      if (nextValues[key] === undefined) delete process.env[key];
+      else process.env[key] = nextValues[key];
+    });
+    const impact = envSettings.impactForKeys(changedKeys);
+    if (impact.restart_required) scheduleRestart(impact.restart_roles, `.env changed: ${impact.impact_scope}`);
+    else log(`Applied hot configuration (${impact.impact_scope})`);
+  });
+} else {
+  process.exitCode = 1;
+}

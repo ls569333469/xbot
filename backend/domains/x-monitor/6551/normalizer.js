@@ -169,6 +169,7 @@ function normalizeFollowerEvent(event) {
       throw error;
     }
     const activityType = eventType === 'NEW_FOLLOWER' ? 'follow' : 'unfollow';
+    const targetUserId = String(firstValue(objects, ['twId', 'userIdStr', 'userId', 'rest_id', 'id']) || '').trim();
     return {
       kind: 'activity',
       actorHandle,
@@ -177,6 +178,7 @@ function normalizeFollowerEvent(event) {
       tweetId: null,
       tweetText: '',
       targetHandles: [targetHandle],
+      targetUserId,
       extractedCas: [],
       extractedTickers: [],
       sourceCreatedAt,

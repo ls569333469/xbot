@@ -13,6 +13,15 @@ function sanitizeUsage(value) {
     const amount = Number(value[key]);
     if (Number.isFinite(amount) && amount >= 0) usage[key] = Math.floor(amount);
   }
+  const toolUsage = value.server_side_tool_usage_details;
+  if (toolUsage && typeof toolUsage === 'object') {
+    const details = {};
+    for (const key of ['x_search_calls', 'web_search_calls', 'num_server_side_tools_used']) {
+      const amount = Number(toolUsage[key]);
+      if (Number.isFinite(amount) && amount >= 0) details[key] = Math.floor(amount);
+    }
+    if (Object.keys(details).length > 0) usage.server_side_tool_usage_details = details;
+  }
   return Object.keys(usage).length > 0 ? usage : null;
 }
 

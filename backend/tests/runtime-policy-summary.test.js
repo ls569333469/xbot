@@ -81,6 +81,39 @@ test('runtime policy detail is chain-filtered, searchable, paginated, and accoun
   }
 });
 
+test('runtime policy detail is bounded by the selected follow-discovery scope', async () => {
+  let scopeWhitelistQuery = true;
+  const executor = {
+    async query(sql, params) {
+      if (sql.includes('FROM follow_discovery_policies policy')) {
+        return { rows: [{
+          id: 2, kol_id: 8, revision: 4, context_hash: 'follow-context', mode: 'live', enabled: true,
+          allowed_chain_ids: ['sol'], x_handle: '@xueqiu88', display_name: '雪球', kol_enabled: true,
+          profile_status: 'verified', trade_template_id: 3, trade_template_version: 2,
+          trade_template_name: 'P21 Test', watch_sync_status: 'succeeded'
+        }] };
+      }
+      if (sql.startsWith('SELECT COUNT')) {
+        assert.deepEqual(params, [[91]]);
+        return { rows: [{ count: 1 }] };
+      }
+      if (scopeWhitelistQuery && sql.includes('FROM ca_whitelist AS whitelist') && sql.includes('whitelist.id')) {
+        scopeWhitelistQuery = false;
+        assert.deepEqual(params, [[-1], [-1], [2]]);
+        return { rows: [{ id: 91 }] };
+      }
+      return { rows: [{
+        id: 91, chain_id: 'sol', contract_address: 'So111', symbol: 'TEST',
+        relation_count: 1, source_count: 0, unique_actor_count: 1, actor_handles: ['xueqiu88']
+      }] };
+    }
+  };
+  const result = await getRuntimePolicyDetail({ scope_type: 'follow_discovery', scope_id: '2' }, executor);
+  assert.equal(result.scope?.scope_type, 'follow_discovery');
+  assert.equal(result.scope?.scope_id, 2);
+  assert.equal(result.items[0].id, 91);
+});
+
 test('runtime policy pagination remains bounded', () => {
   assert.equal(positiveInteger('0', 20, 100), 20);
   assert.equal(positiveInteger('999', 20, 100), 100);

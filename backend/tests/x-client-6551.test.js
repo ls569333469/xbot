@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { X6551Client, normalizeTweets, normalizeWatchFlags } = require('../lib/x-client-6551');
+const {
+  X6551Client, normalizeTweets, normalizeWatchFlags, profileWebsiteUrls
+} = require('../lib/x-client-6551');
 
 function response(payload, options = {}) {
   return {
@@ -104,7 +106,11 @@ test('X6551Client accepts a provider-confirmed profile without a numeric user ID
     handle: 'meadgod',
     name: 'MEAD',
     followers_count: 0,
-    following_count: 0
+    following_count: 0,
+    description: '',
+    created_at: null,
+    website_urls: [],
+    pinned_tweet_id: null
   });
 });
 
@@ -123,6 +129,37 @@ test('X6551Client rejects a profile response for a different account', async () 
   await assert.rejects(client.getUserProfile('@MEADGod'), { code: 'X6551_PROFILE_MISMATCH' });
 });
 
+test('X6551Client can rebind a handle-only follow target by stable user ID', async () => {
+  let request;
+  const client = new X6551Client('test-token', {
+    usage: {
+      reserveUsage: async () => ({ reservedCredits: 0 }),
+      finalizeUsage: async () => {}
+    },
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return response({ success: true, data: {
+        userId: '20002', screenName: 'AgilePeter', name: 'Peter'
+      } });
+    }
+  });
+
+  assert.equal((await client.getUserProfileById('20002')).id, '20002');
+  assert.match(request.url, /twitter_user_by_id$/);
+  assert.deepEqual(request.body, { userId: '20002' });
+});
+
+test('profile website extraction ignores avatar and unrelated nested URLs', () => {
+  assert.deepEqual(profileWebsiteUrls({
+    url: 'https://project.example',
+    profile_image_url_https: 'https://images.example/avatar.jpg',
+    entities: {
+      description: { urls: [{ expanded_url: 'https://docs.project.example' }] }
+    },
+    status: { entities: { urls: [{ expanded_url: 'https://unrelated.example' }] } }
+  }), ['https://project.example', 'https://docs.project.example']);
+});
+
 test('X6551Client exposes bounded user tweet and search helpers', async () => {
   const requests = [];
   const client = new X6551Client('test-token', {
@@ -137,10 +174,12 @@ test('X6551Client exposes bounded user tweet and search helpers', async () => {
   });
 
   assert.deepEqual(await client.getUserTweets('@@Project', { maxResults: 500 }), [{
-    id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project'
+    id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project',
+    is_reply: false, is_retweet: false, is_quote: false, pinned: false
   }]);
   assert.deepEqual(await client.searchTweets({ keywords: '0xabc', fromUser: '@Project', maxResults: 2 }), [{
-    id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project'
+    id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project',
+    is_reply: false, is_retweet: false, is_quote: false, pinned: false
   }]);
   assert.match(requests[0].url, /twitter_user_tweets$/);
   assert.equal(requests[0].body.maxResults, 100);

@@ -1,6 +1,6 @@
 const db = require('../../lib/db');
 const { getExecutionChains } = require('../../lib/chain-config');
-const dynamicAuthorization = require('../dynamic-signal/dynamic-authorization');
+const runtimeAuthorization = require('../trade/runtime-signal-authorization');
 
 const EVENT_TYPES = new Set(['tweet', 'retweet', 'quote', 'reply', 'follow']);
 const VERIFIED_6551_EVENT_TYPES = Object.freeze([...EVENT_TYPES]);
@@ -137,8 +137,8 @@ async function triggerAllowsSignal(signal, executor = db) {
 
 async function evaluate(signal, options = {}) {
   const executor = options.executor || db;
-  if (signal.actor_policy_id && signal.dynamic_target_id) {
-    const dynamic = await dynamicAuthorization.evaluateSignal(signal, executor, {
+  if (runtimeAuthorization.scoped(signal)) {
+    const runtime = await runtimeAuthorization.evaluateSignal(signal, executor, {
       flags: options.flags,
       skipUsage: Boolean(options.skipDynamicUsage)
     });
@@ -147,10 +147,17 @@ async function evaluate(signal, options = {}) {
       'SELECT * FROM chain_live_readiness WHERE chain = $1', [chain]
     );
     const readiness = readinessResult.rows[0] || null;
-    const blockers = [...dynamic.blockers];
+    const blockers = [...runtime.blockers];
     if (!readiness?.implemented) blockers.push('CHAIN_NOT_IMPLEMENTED');
-    if (!readiness?.contract_tested) blockers.push('CHAIN_CONTRACT_NOT_TESTED');
-    return { allowed: blockers.length === 0, blockers, policy: dynamic.policy, readiness, dynamic };
+    if (!readiness?.live_enabled) blockers.push('CHAIN_PRODUCTION_NOT_APPROVED');
+    const result = { allowed: blockers.length === 0, blockers, policy: runtime.policy, readiness, runtime };
+    if (options.throwOnFailure && blockers.length > 0) {
+      const error = new Error(`Live policy rejected signal: ${blockers.join(', ')}`);
+      error.code = blockers[0];
+      error.details = result;
+      throw error;
+    }
+    return result;
   }
   const policy = await getPolicy(executor);
   const blockers = [];
@@ -185,7 +192,9 @@ async function evaluate(signal, options = {}) {
   );
   const readiness = readinessResult.rows[0] || null;
   if (!readiness?.implemented) blockers.push('CHAIN_NOT_IMPLEMENTED');
-  if (!readiness?.contract_tested) blockers.push('CHAIN_CONTRACT_NOT_TESTED');
+  if (!readiness?.contract_tested && !readiness?.live_enabled) {
+    blockers.push('CHAIN_CONTRACT_NOT_TESTED');
+  }
 
   const result = { allowed: blockers.length === 0, blockers, policy, readiness, signalAgeMs: ageMs };
   if (options.throwOnFailure && blockers.length > 0) {

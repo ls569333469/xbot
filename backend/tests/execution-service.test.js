@@ -6,12 +6,41 @@ const {
   derivePriceImpactPct,
   evaluateRisk,
   feeReserve,
+  gmgnRequestContext,
+  mergeTriggeredTokenInfo,
   nativeBalance,
   nativePriceUsd,
   resolveNativePriceUsd,
   resolveWalletNativeBalance,
   taxAdjustedPriceImpact
 } = require('../domains/trade/execution-service');
+
+test('GMGN execution provenance uses one scope and a non-empty trace for every signal', () => {
+  const previous = process.env.P22_GMGN_RATE_SCOPE;
+  process.env.P22_GMGN_RATE_SCOPE = 'gmgn:test-scope';
+  try {
+    assert.deepEqual(gmgnRequestContext({
+      signal_id: 901,
+      actor_policy_id: 7,
+      whitelist_id: 878
+    }, 'quote'), {
+      source: 'p20_dynamic_quote',
+      signalId: 901,
+      policyId: 7,
+      whitelistId: 878,
+      traceId: 'signal:901',
+      executionSessionId: 'signal:901',
+      rateScope: 'gmgn:test-scope'
+    });
+    assert.equal(
+      gmgnRequestContext({ signal_id: 902 }, 'swap', 'trace-902').traceId,
+      'trace-902'
+    );
+  } finally {
+    if (previous === undefined) delete process.env.P22_GMGN_RATE_SCOPE;
+    else process.env.P22_GMGN_RATE_SCOPE = previous;
+  }
+});
 
 test('pre-submit evidence receives its full bounded window when evidence capture begins', () => {
   assert.equal(boundedEvidenceDeadline(20_000, 10_000), 11_500);
@@ -45,7 +74,7 @@ test('execution checks readiness for the target chain instead of any ready chain
   );
 });
 
-test('dynamic execution accepts infrastructure readiness without widening fixed scope', () => {
+test('strategy-scoped execution accepts infrastructure readiness without widening fixed scope', () => {
   const readiness = {
     chains: [{
       chain: 'bsc',
@@ -60,7 +89,7 @@ test('dynamic execution accepts infrastructure readiness without widening fixed 
     { code: 'LIVE_CHAIN_READINESS_FAILED' }
   );
   assert.equal(
-    assertTargetChainReady(readiness, 'bsc', { dynamicScope: true }).chain,
+    assertTargetChainReady(readiness, 'bsc', { strategyScope: true }).chain,
     'bsc'
   );
 });
@@ -135,6 +164,31 @@ test('execution reports an unknown balance only when GMGN and RPC are unavailabl
   });
 });
 
+test('execution merges token decimals from GMGN only after the local context lacks them', () => {
+  const cached = {
+    token: { address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', symbol: '', decimals: null },
+    cacheMeta: { token: { hit: true, source: 'signal_snapshot' } }
+  };
+  const token = mergeTriggeredTokenInfo(cached, {
+    raw: { decimals: 18 },
+    address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    symbol: 'CRUDECAT', decimals: 18, priceUsd: 1.25, liquidityUsd: 1000,
+    fieldAvailability: { liquidity: 'known' }
+  }, { contract_address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+  assert.equal(token.decimals, 18);
+  assert.equal(token.symbol, 'CRUDECAT');
+  assert.equal(cached.cacheMeta.token.hit, false);
+  assert.equal(cached.cacheMeta.token.source, 'gmgn_trigger_token_info');
+});
+
+test('execution rejects token info for a different contract', () => {
+  assert.throws(() => mergeTriggeredTokenInfo({
+    token: { decimals: null }, cacheMeta: { token: {} }
+  }, { address: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', decimals: 18 }, {
+    contract_address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  }), { code: 'GMGN_TOKEN_ADDRESS_MISMATCH' });
+});
+
 test('execution prefers GMGN chain gas price over an ambiguous EVM zero-address token price', () => {
   assert.equal(resolveNativePriceUsd({
     chain: { id: 'bsc', nativeSymbol: 'BNB' },
@@ -183,6 +237,23 @@ test('execution risk records token security warnings without overriding whitelis
   assert.ok(sol.warnings.includes('FREEZE_AUTHORITY_ACTIVE'));
 });
 
+test('missing native USD price is observable but does not block the terminal swap', () => {
+  const context = riskContext('robinhood', {
+    isHoneypot: null,
+    buyTax: null,
+    sellTax: null,
+    renouncedMint: null,
+    renouncedFreeze: null
+  });
+  context.nativeUsd = null;
+  context.budgetUsdSnapshot = null;
+
+  const risk = evaluateRisk(context, {});
+
+  assert.equal(risk.passed, true);
+  assert.equal(risk.reasons.includes('GMGN_NATIVE_USD_PRICE_MISSING'), false);
+});
+
 test('whitelist tax policy warns but does not reject high taxes or count them as pool impact', () => {
   const context = riskContext('base', {
     isHoneypot: false,
@@ -212,7 +283,7 @@ test('whitelist tax policy warns but does not reject high taxes or count them as
   });
 });
 
-test('execution risk records unavailable and reported rug ratio as warnings', () => {
+test('execution risk blocks unavailable and high rug ratio', () => {
   const unknown = riskContext('sol', {
     isHoneypot: null,
     buyTax: null,
@@ -223,8 +294,7 @@ test('execution risk records unavailable and reported rug ratio as warnings', ()
   });
   unknown.token.rugRatio = null;
   const unknownSol = evaluateRisk(unknown, {});
-  assert.equal(unknownSol.reasons.includes('RUG_RATIO_UNKNOWN'), false);
-  assert.ok(unknownSol.warnings.includes('RUG_RATIO_UNKNOWN'));
+  assert.ok(unknownSol.reasons.includes('GMGN_SECURITY_SCHEMA_INVALID'));
 
   const unknownEvm = riskContext('base', {
     isHoneypot: false,
@@ -236,8 +306,7 @@ test('execution risk records unavailable and reported rug ratio as warnings', ()
   });
   unknownEvm.token.rugRatio = null;
   const unknownEvmRisk = evaluateRisk(unknownEvm, {});
-  assert.equal(unknownEvmRisk.reasons.includes('RUG_RATIO_UNKNOWN'), false);
-  assert.ok(unknownEvmRisk.warnings.includes('RUG_RATIO_UNKNOWN'));
+  assert.ok(unknownEvmRisk.reasons.includes('GMGN_SECURITY_SCHEMA_INVALID'));
 
   const high = riskContext('base', {
     isHoneypot: false,
@@ -248,8 +317,23 @@ test('execution risk records unavailable and reported rug ratio as warnings', ()
     renouncedFreeze: null
   });
   const highRisk = evaluateRisk(high, { max_rug_ratio: 0.3 });
-  assert.equal(highRisk.passed, true);
-  assert.ok(highRisk.warnings.includes('RUG_RATIO_REPORTED'));
+  assert.equal(highRisk.passed, false);
+  assert.ok(highRisk.reasons.includes('GMGN_SECURITY_RUG_RISK'));
+});
+
+test('execution risk treats an unavailable Robinhood rug ratio as an official field warning', () => {
+  const context = riskContext('robinhood', {
+    isHoneypot: false,
+    buyTax: 0,
+    sellTax: 0,
+    rugRatio: null,
+    renouncedMint: null,
+    renouncedFreeze: null
+  });
+  context.token.rugRatio = null;
+  const result = evaluateRisk(context, {});
+  assert.equal(result.reasons.includes('GMGN_SECURITY_SCHEMA_INVALID'), false);
+  assert.ok(result.warnings.includes('RUG_RATIO_FIELD_UNAVAILABLE_ROBINHOOD'));
 });
 
 test('execution risk warns on unavailable Solana quote impact and authority facts', () => {

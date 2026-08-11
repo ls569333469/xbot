@@ -2,6 +2,7 @@
 
 > 核对日期：2026-07-23
 > 目的：区分生产主链路、显式回退、测试资产和不可达旧代码；本清单只决定后续治理顺序，不在 P12-B 资金状态机更新中删除文件。
+> P23 复核说明：本文件保留 P12 当时的历史决策；当前处置以 P23 方案为准。P23 已删除经调用图确认不可达的 `signal-matcher`、`price-monitor` 和 `risk-manager`，未删除交易历史、迁移或资金执行核心。当前生产角色由 Supervisor 先执行独立 Migration phase，再启动 `ingestion` 与 `execution`。
 
 ## 生产主链路
 
@@ -9,7 +10,7 @@
 |---|---|---|
 | 进程守护 | `backend/scripts/supervisor.js` | 启动 `ingestion` 与 `execution` 双进程，异常退出自动拉起 |
 | X 实时采集 | `domains/x-monitor/6551-wss-consumer.js` | 6551 Max Watch + WSS 当前生产入口 |
-| 信号持久化 | 6551 Inbox、Normalizer、Signal Matcher | Provider Event 到 Activity/Signal 的正式链路 |
+| 信号持久化 | `domains/x-monitor/6551/event-inbox.js`、Normalizer、Follow/Dynamic 入队 | Provider Event 到 Activity/Signal 的正式链路；旧 `signal-matcher` 已删除 |
 | 自动买入 | `live-execution-queue.js` -> `execution-service.js` | 只消费满足 Live Policy 和 Readiness 的持久化 Signal |
 | 平仓 | `close-service.js`、Strategy Reconciler、Wallet Activity | 人工平仓、保护策略触发和外部卖出恢复均进入统一 Sell Intent |
 | 交易对账 | `reconciliation-service.js`、`chain-receipt-service.js` | GMGN Order、RPC Receipt、Position/Lot、预算和 PnL 的事实入口 |
@@ -27,16 +28,14 @@
 
 ## 默认不可达的旧 Job
 
-`backend/cron.json` 中以下任务全部 `enabled=false`：
+历史版本的 `backend/cron.json` 曾包含以下任务：
 
 - `x-poll-timeline`
 - `x-poll-follows`
-- `signal-matcher`
-- `price-monitor`
 - `order-sync`
 - `budget-reset`
 
-其中 `budget-reset` 已被不可变 Reservation/Ledger 周期替代；其余仍可能被人工诊断或显式回退使用。P12-D 只有在调用图、数据库迁移和等价测试同时证明无需保留后，才能独立提交删除。
+其中 `signal-matcher`、`price-monitor` 和 `risk-manager` 已由 P23 第一批清理删除；`budget-reset` 已被不可变 Reservation/Ledger 周期替代；`x-poll-timeline` 和 `x-poll-follows` 仍仅作为旧 Provider 的显式人工回退，不能由 6551 生产配置启动。P12-D 的剩余删除仍需调用图、数据库迁移和等价测试共同证明。
 
 ## 测试专用
 
@@ -46,7 +45,8 @@
 
 ## 当前治理结论
 
-1. 本轮不删除 Paper、TwitterAPI.io、SocialData、Shadow 或 disabled Job。
+1. 本轮不删除 Paper、TwitterAPI.io、SocialData、Shadow 或仍有人工路由的 disabled Job。
 2. P12 新资金状态机使用独立模块接入，暂不大规模拆分 `trade-repository.js` 和 `SettingsPage.tsx`。
 3. 源码中的旧绝对路径注释和历史命名列入 P12-D 行为等价清理，不与资金语义变更混合。
 4. Robinhood UI 和 Chain Manifest 必须保留；当前仅禁用真实执行和重试，不视为死代码。
+5. Migration 只由 `backend/scripts/run-migrations.js` 作为发布阶段执行；`server.js --role=all` 仅用于本地开发/专用测试，生产角色默认跳过迁移。

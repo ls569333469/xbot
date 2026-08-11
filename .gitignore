@@ -1,6 +1,8 @@
 # Dependency directories
 node_modules/
 **/node_modules/
+.vite/
+**/.vite/
 dist/
 **/dist/
 
@@ -47,6 +49,8 @@ backend/db/backups/
 
 # Editor & OS files
 .vscode/
+.vs/
+**/.vs/
 .idea/
 .DS_Store
 Thumbs.db

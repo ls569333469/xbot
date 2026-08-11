@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { api, getAuthToken, setAdminToken } from '../lib/api';
-import { Shield, Server, Key, Eye, EyeOff, RefreshCw, ListChecks, Radio, Gauge, LockKeyhole, Search, X } from 'lucide-react';
-import type { ArmPreparation, ChainConfig, ChainId, RuntimePolicyDetailPage, TradeRuntimePolicy, X6551Status, X6551WatchPlan } from '../lib/types';
+import { Shield, Server, Key, Eye, EyeOff, RefreshCw, ListChecks, Radio, Gauge, LockKeyhole, Search, X, Save, RotateCcw } from 'lucide-react';
+import type { ArmPreparation, ChainConfig, ChainId, FollowDiscoveryPrompts, RuntimePolicyDetailPage, RuntimeScope, TradeRuntimePolicy, X6551Status, X6551WatchPlan } from '../lib/types';
 import { useToast } from '../components/ui/ToastContext';
 import { FormSkeleton } from '../components/ui/Skeleton';
-import { blockerActionLabel, blockerLabel, eventTypeLabel, statusLabel, watchActionLabel } from '../lib/display-labels';
+import { advisoryActionLabel, advisoryLabel, blockerActionLabel, blockerLabel, statusLabel, watchActionLabel } from '../lib/display-labels';
 
 interface LiveEngineRuntime {
   armed: boolean;
@@ -54,6 +54,7 @@ export default function SettingsPage() {
     GMGN_API_KEY: '',
     GMGN_PRIVATE_KEY_CONFIGURED: false,
     OPENNEWS_TOKEN: '',
+    P21_FOLLOW_DISCOVERY_ENABLED: 'false',
     LIVE_TRADING_ENABLED: 'false',
     ADMIN_TOKEN: ''
   });
@@ -70,6 +71,8 @@ export default function SettingsPage() {
   const [runtimePolicy, setRuntimePolicy] = useState<TradeRuntimePolicy | null>(null);
   const [privateKeyDraft, setPrivateKeyDraft] = useState('');
   const [armPreparation, setArmPreparation] = useState<ArmPreparation | null>(null);
+  const [runtimeScopes, setRuntimeScopes] = useState<RuntimeScope[]>([]);
+  const [selectedScope, setSelectedScope] = useState<{ scope_type: RuntimeScope['scope_type']; scope_id: number | null }>({ scope_type: 'combined', scope_id: null });
   const [armChecking, setArmChecking] = useState(false);
   const [showArmDialog, setShowArmDialog] = useState(false);
   const [showScopeDrawer, setShowScopeDrawer] = useState(false);
@@ -80,10 +83,28 @@ export default function SettingsPage() {
   const [scopeSearch, setScopeSearch] = useState('');
   const [schedulerNow, setSchedulerNow] = useState(Date.now());
   const [chainConfigs, setChainConfigs] = useState<Partial<Record<ChainId, ChainConfig>>>({});
+  const [followPrompts, setFollowPrompts] = useState<FollowDiscoveryPrompts | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptSaving, setPromptSaving] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('trading');
   const [savingManagedRetry, setSavingManagedRetry] = useState(false);
   const [loginToken, setLoginToken] = useState('');
   const { toast } = useToast();
+  const activeRuntimeScope = runtimePolicy?.readiness.scope;
+  const runtimeScopeChainCount = activeRuntimeScope?.counts?.chains
+    ?? activeRuntimeScope?.chains.length
+    ?? runtimePolicy?.readiness.policy?.chains.length
+    ?? 0;
+  const runtimeScopeFixedCount = activeRuntimeScope?.counts?.whitelists
+    ?? activeRuntimeScope?.whitelist_ids?.length
+    ?? runtimePolicy?.readiness.policy?.whitelistIds.length
+    ?? 0;
+  const runtimeScopeDynamicCount = activeRuntimeScope?.counts?.dynamic_policies
+    ?? activeRuntimeScope?.dynamic_policy_ids?.length
+    ?? 0;
+  const runtimeScopeFollowCount = activeRuntimeScope?.counts?.follow_policies
+    ?? activeRuntimeScope?.follow_policy_ids?.length
+    ?? 0;
 
   const applyEngineStatus = (data: any) => {
     const armed = Boolean(data?.armed);
@@ -108,12 +129,15 @@ export default function SettingsPage() {
       return;
     }
 
+    setPromptLoading(true);
     Promise.all([
       api.system.runtimeSummary(),
       api.system.getEnv(),
       api.trade.runtimePolicy(),
       api.config.getChains(),
-    ]).then(([summaryRes, envRes, runtimeRes, chainConfigRes]) => {
+      api.system.runtimeScopes(),
+      api.followDiscovery.prompts(),
+    ]).then(([summaryRes, envRes, runtimeRes, chainConfigRes, scopesRes, promptsRes]) => {
       if (summaryRes.ok && summaryRes.data) {
         applyEngineStatus(summaryRes.data.engine);
       }
@@ -122,6 +146,12 @@ export default function SettingsPage() {
       if (chainConfigRes.ok && chainConfigRes.data) {
         setChainConfigs(chainConfigRes.data);
       }
+      if (scopesRes.ok && scopesRes.data) setRuntimeScopes(scopesRes.data);
+      if (promptsRes.ok && promptsRes.data) setFollowPrompts(promptsRes.data);
+      setPromptLoading(false);
+      setLoading(false);
+    }).catch(() => {
+      setPromptLoading(false);
       setLoading(false);
     });
   }, []);
@@ -172,7 +202,7 @@ export default function SettingsPage() {
     if (!isArmed) {
       setArmChecking(true);
       try {
-        const preparation = await api.system.prepareArm();
+                    const preparation = await api.system.prepareArm(selectedScope);
         if (!preparation.ok || !preparation.data) {
           toast(preparation.error || '实盘准备状态检查失败', 'error');
           return;
@@ -201,7 +231,7 @@ export default function SettingsPage() {
       setShowArmDialog(false);
       toast('真实交易已启动', 'success');
     } else {
-      if (res.code === 'ARM_PREPARATION_STALE') {
+      if (['ARM_PREPARATION_STALE', 'ARM_SCOPE_CHANGED', 'ARM_SNAPSHOT_STALE'].includes(res.code || '')) {
         toast('自动交易范围已变化，请重新检查', 'warning');
       } else {
         toast(res.error || '启动真实交易失败', 'error');
@@ -211,7 +241,12 @@ export default function SettingsPage() {
 
   const loadRuntimeScope = async (nextPage = 1, nextChain = scopeChain, nextSearch = scopeSearch) => {
     setScopeLoading(true);
-    const params: Record<string, string> = { page: String(nextPage), page_size: '20' };
+    const params: Record<string, string> = {
+      page: String(nextPage),
+      page_size: '20',
+      scope_type: selectedScope.scope_type
+    };
+    if (selectedScope.scope_id !== null) params.scope_id = String(selectedScope.scope_id);
     if (nextChain) params.chain = nextChain;
     if (nextSearch.trim()) params.search = nextSearch.trim();
     const response = await api.trade.runtimePolicyDetail(params);
@@ -306,6 +341,43 @@ export default function SettingsPage() {
     }));
     await refreshRuntimePolicy();
     toast(nextEnabled ? '失败后自动重试已开启' : '失败后自动重试已关闭', 'success');
+  };
+
+  const saveFollowPrompts = async () => {
+    if (!followPrompts || promptSaving) return;
+    setPromptSaving(true);
+    const response = await api.followDiscovery.updatePrompts({
+      version: followPrompts.version,
+      fast_prompt: followPrompts.fast_prompt,
+      relationship_prompt: followPrompts.relationship_prompt
+    });
+    setPromptSaving(false);
+    if (!response.ok || !response.data) {
+      if (response.code === 'FOLLOW_PROMPT_VERSION_CONFLICT') {
+        const latest = await api.followDiscovery.prompts();
+        if (latest.ok && latest.data) setFollowPrompts(latest.data);
+        toast('提示词已被其他操作更新，已载入最新版本', 'warning');
+      } else {
+        toast(response.error || 'Grok 提示词保存失败', 'error');
+      }
+      return;
+    }
+    setFollowPrompts(response.data);
+    toast('Grok 提示词已保存，后续新关注研究将使用新版本', 'success');
+  };
+
+  const resetFollowPrompts = async () => {
+    if (!followPrompts || promptSaving) return;
+    if (!window.confirm('确认恢复 Grok 提示词默认版本？当前自定义内容将被替换。')) return;
+    setPromptSaving(true);
+    const response = await api.followDiscovery.resetPrompts(followPrompts.version);
+    setPromptSaving(false);
+    if (!response.ok || !response.data) {
+      toast(response.error || 'Grok 提示词恢复失败', 'error');
+      return;
+    }
+    setFollowPrompts(response.data);
+    toast('Grok 提示词已恢复默认版本', 'success');
   };
 
   const saveEnv = async () => {
@@ -453,6 +525,13 @@ export default function SettingsPage() {
             </div>
 
             <div className="flex flex-col gap-md" style={{ overflowY: 'auto', padding: '16px 18px' }}>
+              {armPreparation.summary.scope && <div className="border-b pb-sm text-sm" style={{ borderColor: 'var(--color-border)' }}>
+                <span className="text-secondary">本次作用域：</span>
+                <strong>{armPreparation.summary.scope.label}</strong>
+                {armPreparation.summary.scope.revision !== null && armPreparation.summary.scope.revision !== undefined
+                  && <span className="text-secondary"> · Revision {armPreparation.summary.scope.revision}</span>}
+              </div>}
+
               <div className="settings-summary-grid">
                 <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.chains}</strong></div>
                 <div><span className="text-xs text-secondary">可实盘 CA</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.whitelists}</strong></div>
@@ -484,8 +563,11 @@ export default function SettingsPage() {
               </div>
 
               {armPreparation.summary.advisories.length > 0 && (
-                <div className="text-xs text-secondary">
-                  观察项：{armPreparation.summary.advisories.map(blockerLabel).join(' · ')}
+                <div className="flex flex-col gap-xs text-xs text-secondary">
+                  <strong>观察项</strong>
+                  {armPreparation.summary.advisories.map(advisory => (
+                    <div key={advisory}><span>{advisoryLabel(advisory)}</span> · {advisoryActionLabel(advisory)}</div>
+                  ))}
                 </div>
               )}
             </div>
@@ -501,7 +583,7 @@ export default function SettingsPage() {
                 <button type="button" className="btn btn-secondary" disabled={armChecking} onClick={async () => {
                   setArmChecking(true);
                   try {
-                    const response = await api.system.prepareArm();
+                     const response = await api.system.prepareArm(selectedScope, { probe: false });
                     if (response.ok && response.data) setArmPreparation(response.data);
                     else toast(response.error || '重新检查失败', 'error');
                   } finally {
@@ -625,6 +707,25 @@ export default function SettingsPage() {
                 : '不接收新的真实买入；订单查询、持仓保护和退出继续运行。'}
           </p>
         </div>
+        {!isArmed && runtimeScopes.length > 0 && (
+          <label className="flex flex-col gap-xs" style={{ minWidth: '220px' }}>
+            <span className="text-xs text-secondary">本次启动范围</span>
+            <select className="input text-sm" value={`${selectedScope.scope_type}:${selectedScope.scope_id ?? ''}`}
+              onChange={(event) => {
+                const [scopeType, rawId] = event.target.value.split(':');
+                setSelectedScope({
+                  scope_type: scopeType as RuntimeScope['scope_type'],
+                  scope_id: rawId ? Number(rawId) : null
+                });
+              }}>
+              {runtimeScopes.map((scope) => (
+                <option key={`${scope.scope_type}:${scope.scope_id ?? ''}`} value={`${scope.scope_type}:${scope.scope_id ?? ''}`}>
+                  {scope.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button className={`btn settings-live-control__action ${isArmed ? 'btn-danger' : 'btn-primary'}`}
           style={{ padding: '12px 24px', fontSize: '1.05rem', fontWeight: 700 }} onClick={handleToggle}
           disabled={armChecking}>
@@ -651,7 +752,9 @@ export default function SettingsPage() {
             {runtimePolicy.readiness.chains.map(chain => (
               <div key={chain.chain}>
                 <strong className="font-mono text-sm">{chain.chain.toUpperCase()}</strong>
-                <span className={`text-xs ${chain.ready ? 'text-success' : 'text-danger'}`}>{chain.ready ? '可以实盘' : '不可交易'}</span>
+                <span className={`text-xs ${chain.ready || chain.strategy_ready ? 'text-success' : 'text-danger'}`}>
+                  {chain.ready ? '可以实盘' : chain.strategy_ready ? 'P20/P21 策略可用' : '不可交易'}
+                </span>
               </div>
             ))}
           </div>
@@ -706,7 +809,7 @@ export default function SettingsPage() {
           <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
             <div className="flex justify-between text-sm"><span>真实交易实时检查</span><strong className={runtimePolicy.readiness.readyToArm ? 'text-success' : 'text-danger'}>{runtimePolicy.readiness.readyToArm ? '可以启动' : '未通过'}</strong></div>
             {runtimePolicy.readiness.blockers.length > 0 && <div className="text-xs text-secondary font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>{runtimePolicy.readiness.blockers.map(blockerLabel).join(' · ')}</div>}
-            {runtimePolicy.readiness.advisories.length > 0 && <div className="text-xs text-secondary font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>观察项：{runtimePolicy.readiness.advisories.map(blockerLabel).join(' · ')}</div>}
+            {runtimePolicy.readiness.advisories.length > 0 && <div className="text-xs text-secondary font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>观察项：{runtimePolicy.readiness.advisories.map(advisoryLabel).join(' · ')}</div>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px', marginTop: '12px' }}>
               <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
                 <strong className="font-mono text-sm">快速交易缓存</strong>
@@ -731,7 +834,13 @@ export default function SettingsPage() {
               {runtimePolicy.readiness.chains.map(chain => (
                 <div key={chain.chain} className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
                   <strong className="font-mono text-sm">{chain.chain.toUpperCase()}</strong>
-                  <div className={`text-xs ${chain.ready ? 'text-success' : 'text-secondary'}`}>{chain.ready ? '可以实盘' : chain.blockers.map(blockerLabel).join('，')}</div>
+                  <div className={`text-xs ${chain.ready || chain.strategy_ready ? 'text-success' : 'text-secondary'}`}>
+                    {chain.ready
+                      ? '可以实盘'
+                      : chain.strategy_ready
+                        ? 'P20/P21 策略可用；固定 CA 仍需合约验收'
+                        : chain.blockers.map(blockerLabel).join('，')}
+                  </div>
                   <div className="text-xs font-mono mt-1">
                     真实买入 {chain.trade_evidence.confirmedBuys} · 真实卖出 {chain.trade_evidence.confirmedSells}
                   </div>
@@ -795,16 +904,16 @@ export default function SettingsPage() {
         <div className="card flex flex-col gap-md">
           <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
             <h3 className="text-lg font-bold flex items-center gap-sm"><Shield size={18} /> 自动交易范围</h3>
-            <span className="text-xs text-success">由有效白名单自动派生</span>
+            <span className="text-xs text-success">当前 Engine Scope</span>
           </div>
           <div className="settings-summary-grid">
             <div><span className="text-xs text-secondary">数据源</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.providers.join(', ') || '-'}</strong></div>
-            <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.chains.length || 0} 条</strong></div>
-            <div title={runtimePolicy.readiness.policy?.eventTypes.map(eventTypeLabel).join('、')}><span className="text-xs text-secondary">关系事件</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.eventTypes.length || 0} 类</strong></div>
-            <div><span className="text-xs text-secondary">有效 CA</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.whitelistIds.length || 0} 个</strong></div>
+            <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{runtimeScopeChainCount} 条</strong></div>
+            <div><span className="text-xs text-secondary">固定 CA</span><strong className="block font-mono text-sm">{runtimeScopeFixedCount} 个</strong></div>
+            <div><span className="text-xs text-secondary">动态 / 关注</span><strong className="block font-mono text-sm">{runtimeScopeDynamicCount} / {runtimeScopeFollowCount}</strong></div>
           </div>
           <div className="flex justify-end border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
-            <Link className="btn btn-secondary" to="/whitelist">管理白名单</Link>
+            <Link className="btn btn-secondary" to="/strategies">管理策略</Link>
           </div>
         </div>
       )}
@@ -953,6 +1062,62 @@ export default function SettingsPage() {
       )}
 
       {settingsSection === 'system' && <div className="grid grid-cols-2 gap-lg">
+        <div className="card flex flex-col gap-md" style={{ gridColumn: '1 / -1' }}>
+          <div className="flex justify-between items-start gap-md" style={{ flexWrap: 'wrap' }}>
+            <div>
+              <h3 className="text-lg font-bold flex items-center gap-sm">
+                <Search size={18} /> Grok 关注发现提示词
+              </h3>
+              <p className="text-sm text-secondary mt-xs">
+                这里维护 Grok 在 X 上检索项目、CA、链和团队关系的自然语言任务。提示词只负责研究，不包含 GMGN 或交易执行逻辑。
+              </p>
+            </div>
+            {followPrompts && (
+              <span className="text-xs text-secondary font-mono">
+                {followPrompts.prompt_version} · {followPrompts.source === 'stored' ? '已保存' : '默认'}
+              </span>
+            )}
+          </div>
+
+          {promptLoading && <div className="text-sm text-secondary">正在读取提示词...</div>}
+          {!promptLoading && followPrompts && (
+            <div className="grid grid-cols-2 gap-lg">
+              <label className="flex flex-col gap-xs">
+                <span className="text-xs text-secondary font-medium">快速研究提示词</span>
+                <textarea
+                  className="input font-mono text-sm"
+                  rows={8}
+                  value={followPrompts.fast_prompt}
+                  onChange={event => setFollowPrompts({ ...followPrompts, fast_prompt: event.target.value })}
+                />
+                <span className="text-xs text-secondary">默认先执行这一段；找到唯一可信结果时直接结束。</span>
+              </label>
+              <label className="flex flex-col gap-xs">
+                <span className="text-xs text-secondary font-medium">人物关系补充提示词</span>
+                <textarea
+                  className="input font-mono text-sm"
+                  rows={8}
+                  value={followPrompts.relationship_prompt}
+                  onChange={event => setFollowPrompts({ ...followPrompts, relationship_prompt: event.target.value })}
+                />
+                <span className="text-xs text-secondary">只有首次研究无结果、结果不唯一或证据冲突时才执行。</span>
+              </label>
+            </div>
+          )}
+
+          <div className="flex justify-between items-center gap-sm border-t pt-md" style={{ borderColor: 'var(--color-border)', flexWrap: 'wrap' }}>
+            <span className="text-xs text-secondary">修改仅影响后续关注事件；正在处理的事件保持原提示词版本，不重启服务、不改变真实交易状态。</span>
+            <div className="flex gap-sm">
+              <button type="button" className="btn btn-secondary" onClick={resetFollowPrompts} disabled={!followPrompts || promptSaving}>
+                <RotateCcw size={15} /> 恢复默认
+              </button>
+              <button type="button" className="btn btn-primary" onClick={saveFollowPrompts} disabled={!followPrompts || promptSaving}>
+                <Save size={15} /> {promptSaving ? '保存中...' : '保存提示词'}
+              </button>
+            </div>
+          </div>
+        </div>
+
         {/* API Credentials and Environment config */}
         <div className="card flex flex-col gap-md" style={{ gridColumn: '1 / -1' }}>
           <h3 className="text-lg font-bold flex items-center gap-sm border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}><Key size={18} /> 接口与系统连接</h3>
@@ -1012,6 +1177,12 @@ export default function SettingsPage() {
                 <span className="text-xs text-secondary font-medium">X 实时数据源</span>
                 <strong className="font-mono text-sm">6551 Max</strong>
               </div>
+
+              <label className="flex items-center justify-between gap-sm">
+                <span className="text-xs text-secondary font-medium">新关注发现能力</span>
+                <input type="checkbox" checked={envConfig.P21_FOLLOW_DISCOVERY_ENABLED === 'true'}
+                  onChange={e => setEnvConfig({ ...envConfig, P21_FOLLOW_DISCOVERY_ENABLED: String(e.target.checked) })} />
+              </label>
 
                   <label className="flex flex-col gap-xs">
                     <span className="text-xs text-secondary font-medium flex items-center justify-between">

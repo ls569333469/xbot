@@ -7,7 +7,6 @@ const eventQueue = require('./event-queue');
 const resolutionStore = require('./resolution-store');
 const targetService = require('./dynamic-target-service');
 const paperWorker = require('./paper-worker');
-const { requestWindow } = require('../../jobs/dynamic-launch-window');
 const { p20FeatureState } = require('../../lib/p20-features');
 
 class DynamicSignalWorker {
@@ -85,11 +84,24 @@ class DynamicSignalWorker {
           ? context.approved_aliases : [],
         allowedChains: context.allowed_chain_ids,
         allowedTermTypes: context.allowed_term_types,
+        executionMode: context.mode,
         ...(context.resolver_options || {})
-      }, { candidateIndex });
+      }, {
+        candidateIndex,
+        verificationOptions: {
+          requestOptions: {
+            requestContext: {
+              source: 'p20_dynamic_verify',
+              processRole: process.env.XBOT_PROCESS_ROLE || 'all',
+              policyId: context.actor_policy_id,
+              context: { dynamic_job_id: Number(job.id) }
+            }
+          }
+        }
+      });
       if (result.status === 'resolved' && result.selectedCandidate) {
-        const selectedRow = await candidateRepository.upsertCandidate(
-          result.selectedCandidate, 'gmgn_info', this.db,
+          const selectedRow = await candidateRepository.upsertCandidate(
+            result.selectedCandidate, context.mode === 'live' ? 'tweet_ca' : 'gmgn_info', this.db,
           { sourceRef: context.tweet_id || context.provider_event_id }
         );
         const selected = {
@@ -126,7 +138,6 @@ class DynamicSignalWorker {
       try {
         await client.query('BEGIN');
         const attempt = await resolutionStore.persist(context, result, client);
-        if (result.status === 'not_found') await requestWindow(context, result, client);
         if (result.status === 'resolved' && ['paper', 'live'].includes(context.mode)) {
           const target = await targetService.materialize(context, attempt, result.selectedCandidate, client);
           signal = await targetService.createSignal(context, attempt, target, result, client);

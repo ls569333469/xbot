@@ -191,3 +191,63 @@ test('resolver never uses a term type disabled by the actor policy', async () =>
   assert.equal(symbol.selectedCandidate, null);
   assert.equal(calls, 0);
 });
+
+test('P25 Live resolution reuses the local Candidate Index without GMGN verification', async () => {
+  let indexCalls = 0;
+  let verifyCalls = 0;
+  const result = await resolveDynamicSignal({
+    text: `Buy ${CA}`,
+    allowedChains: ['robinhood'],
+    allowedTermTypes: ['ca'],
+    executionMode: 'live'
+  }, {
+    candidateIndex: {
+      lookupTerms() {
+        indexCalls += 1;
+        return { candidates: [{ chainId: 'robinhood', contractAddress: CA }] };
+      }
+    },
+    async verifyCandidate() {
+      verifyCalls += 1;
+      throw new Error('P24 Live resolution must not call GMGN');
+    }
+  });
+
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.selectedCandidate.contractAddress, CA);
+  assert.equal(result.selectedCandidate.localIndexCandidate, true);
+  assert.equal(indexCalls, 1);
+  assert.equal(verifyCalls, 0);
+});
+
+test('P25 Live resolution resolves an unknown multi-EVM CA through RPC identity and code', async () => {
+  let verifyCalls = 0;
+  let resolverCalls = 0;
+  const result = await resolveDynamicSignal({
+    text: `Buy ${CA}`,
+    allowedChains: ['base', 'robinhood'],
+    allowedTermTypes: ['ca'],
+    executionMode: 'live'
+  }, {
+    candidateIndex: new CandidateIndex(),
+    resolveContractChain: async (address, chains) => {
+      resolverCalls += 1;
+      assert.equal(address, CA);
+      assert.deepEqual(chains, ['base', 'robinhood']);
+      return {
+        status: 'resolved',
+        chainId: 'robinhood',
+        contractAddress: CA,
+        source: 'rpc_contract_code'
+      };
+    },
+    verifyCandidate: async () => { verifyCalls += 1; }
+  });
+
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.selectedCandidate.chainId, 'robinhood');
+  assert.equal(result.selectedCandidate.localEventCa, true);
+  assert.equal(result.selectedCandidate.chainResolutionSource, 'rpc_contract_code');
+  assert.equal(resolverCalls, 1);
+  assert.equal(verifyCalls, 0);
+});

@@ -38,6 +38,31 @@ function baseAttempt() {
   };
 }
 
+test('P24 pre-submit evidence uses local chain state and never warms GMGN', async () => {
+  let providerCalls = 0;
+  const service = new TradeFailureEvidenceService({
+    gmgnHttp: {
+      async getWalletTokenBalance() { providerCalls += 1; throw new Error('must not run'); },
+      async getWalletActivity() { providerCalls += 1; throw new Error('must not run'); }
+    },
+    stateProvider: {
+      async capture() {
+        return { kind: 'evm', latestNonce: 2, pendingNonce: 2, nativeBalanceRaw: '1000000' };
+      }
+    }
+  });
+  const snapshot = await service.capturePreSubmitSnapshot(baseAttempt(), {
+    tokenDecimals: 18,
+    quote: { outputAmountRaw: '25' },
+    gas: null
+  });
+  assert.equal(providerCalls, 0);
+  assert.equal(snapshot.chain_state.latestNonce, 2);
+  assert.equal(snapshot.token.amountRaw, null);
+  assert.deepEqual(snapshot.activity_cursor, []);
+  assert.equal(snapshot.native_usd_price, null);
+});
+
 test('no-hash EVM failure remains uncertain when address history is unavailable', async () => {
   let scheduled = 0;
   let uncertain = 0;

@@ -9,6 +9,7 @@ const { requireChain } = require('./chain-adapters');
 const intentRepository = require('./trade-intent-repository');
 const { persistManualE2eEvidence } = require('./manual-e2e-evidence');
 const { legacyPercentages } = require('./exit-strategy-compiler');
+const runtimeAuthorization = require('./runtime-signal-authorization');
 
 function fingerprint(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -55,7 +56,7 @@ function submittedOrderStatus(status) {
 }
 
 function usesWhitelistLifetimeBudget(signal) {
-  return !(signal?.actor_policy_id && signal?.dynamic_target_id);
+  return !runtimeAuthorization.scoped(signal);
 }
 
 async function recordUnusedFeeRelease(executor, reservation, intentId, attemptId, reason) {
@@ -101,6 +102,10 @@ async function getSignalForExecution(signalId, executor = db) {
             signal.dynamic_intent_class,
             signal.dynamic_intent_reason_codes,
             signal.dynamic_intent_rule_revision,
+            signal.follow_discovery_policy_id,
+            signal.follow_discovery_event_id,
+            signal.follow_discovery_policy_revision,
+            signal.follow_discovery_context_hash,
             signal.trace_id,
             activity.provider,
             activity.activity_type,
@@ -119,6 +124,7 @@ async function getSignalForExecution(signalId, executor = db) {
             whitelist.current_buy_count,
             whitelist.live_activation_state,
             whitelist.activation_version,
+            whitelist.provider_verification_snapshot,
             whitelist.status AS whitelist_status
      FROM trade_signals AS signal
      JOIN ca_whitelist AS whitelist ON whitelist.id = signal.whitelist_id
@@ -303,9 +309,8 @@ async function createBuyAttempt(prepared) {
         duplicate: intentResult.duplicate
       };
     }
-    if (signal.actor_policy_id && signal.dynamic_target_id) {
-      const dynamicAuthorization = require('../dynamic-signal/dynamic-authorization');
-      await dynamicAuthorization.reserveUsage({
+    if (runtimeAuthorization.scoped(signal)) {
+      await runtimeAuthorization.reserveUsage({
         ...signal,
         chain_id: signal.chain_id,
         contract_address: signal.contract_address,
@@ -356,11 +361,6 @@ async function createBuyAttempt(prepared) {
           && committed + reservedPrincipal + principal > Number(whitelist.total_budget))) {
       const error = new Error('Whitelist lifetime budget exceeded');
       error.code = 'WHITELIST_BUDGET_EXCEEDED';
-      throw error;
-    }
-    if (!Number.isFinite(plannedUsd) || plannedUsd <= 0) {
-      const error = new Error('USD budget snapshot is required');
-      error.code = 'USD_BUDGET_SNAPSHOT_REQUIRED';
       throw error;
     }
     const configuredMinimumGasReserve = Number(
@@ -468,6 +468,8 @@ async function beginBuySubmission(attemptId, options = {}) {
               signal.matched_dynamic_resolution_id, signal.dynamic_target_id,
               signal.actor_policy_id, signal.actor_policy_revision,
               signal.dynamic_policy_context_hash,
+              signal.follow_discovery_policy_id, signal.follow_discovery_event_id,
+              signal.follow_discovery_policy_revision, signal.follow_discovery_context_hash,
               signal.activation_wait_version, signal.created_at AS signal_created_at,
               activity.activity_type, activity.source_created_at,
               whitelist.status AS whitelist_status,
@@ -603,22 +605,21 @@ async function beginBuySubmission(attemptId, options = {}) {
       error.code = productionAuthorization.errorCode;
       throw error;
     }
-    if (context.actor_policy_id && context.dynamic_target_id) {
-      const dynamicAuthorization = require('../dynamic-signal/dynamic-authorization');
-      const dynamicResult = await dynamicAuthorization.evaluateSignal({
+    if (runtimeAuthorization.scoped(context)) {
+      const runtimeResult = await runtimeAuthorization.evaluateSignal({
         ...context,
         chain_id: context.chain,
         contract_address: context.output_token || context.contract_address,
         signal_created_at: context.signal_created_at,
         source_created_at: context.source_created_at
       }, client, { skipUsage: true });
-      if (!dynamicResult.allowed) {
-        const error = new Error(`Dynamic live authorization changed: ${dynamicResult.blockers.join(', ')}`);
-        error.code = dynamicResult.blockers[0];
+      if (!runtimeResult.allowed) {
+        const error = new Error(`Runtime authorization changed: ${runtimeResult.blockers.join(', ')}`);
+        error.code = runtimeResult.blockers[0];
         throw error;
       }
     }
-    if (!authorization.trigger_allowed && !(context.actor_policy_id && context.dynamic_target_id)) {
+    if (!authorization.trigger_allowed && !runtimeAuthorization.scoped(context)) {
       const error = new Error('Signal trigger authorization changed before submission');
       error.code = 'LIVE_TRIGGER_EVENT_NOT_ALLOWED';
       throw error;
@@ -1000,7 +1001,7 @@ async function releaseRejectedAttempt(attemptId, error) {
        WHERE id = $1`,
       [attemptResult.rows[0].signal_id, error.code || 'TRADE_REJECTED']
     );
-    await require('../dynamic-signal/dynamic-authorization')
+    await runtimeAuthorization
       .releaseUsage(attemptResult.rows[0].signal_id, client);
     await addAttemptEvent(client, attemptId, 'submitting', 'rejected', {
       reason: error.message,
@@ -1019,7 +1020,7 @@ async function releaseRejectedAttempt(attemptId, error) {
 async function listDueOrders(limit = 20) {
   const result = await db.query(
     `SELECT orders.*, attempts.chain, attempts.wallet_address, attempts.signal_id,
-            attempts.side, attempts.intent_id, attempts.attempt_no,
+            attempts.side, attempts.intent_id, attempts.attempt_no, attempts.trace_id,
             attempts.whitelist_id, attempts.position_id,
             attempts.metadata AS attempt_metadata,
             attempts.status AS attempt_status,
@@ -1053,7 +1054,7 @@ async function listDueOrders(limit = 20) {
 async function getOrderForReconciliation(orderId) {
   const result = await db.query(
     `SELECT orders.*, attempts.chain, attempts.wallet_address, attempts.signal_id,
-            attempts.side, attempts.intent_id, attempts.attempt_no,
+            attempts.side, attempts.intent_id, attempts.attempt_no, attempts.trace_id,
             attempts.whitelist_id, attempts.position_id,
             attempts.metadata AS attempt_metadata,
             attempts.status AS attempt_status,
@@ -1140,9 +1141,12 @@ async function listUncertainAttempts(limit = 10) {
   const result = await db.query(
     `SELECT attempt.*
      FROM trade_attempts AS attempt
-     WHERE attempt.status IN ('submission_uncertain','reconciliation_required')
+     WHERE (
+       attempt.status = 'submission_uncertain'
+       OR attempt.error_code IN ('STRATEGY_CANCEL_UNCERTAIN','STRATEGY_CANCEL_UNVERIFIED')
+     )
        AND NOT EXISTS (SELECT 1 FROM trade_orders WHERE attempt_id = attempt.id)
-       AND (attempt.last_reconciled_at IS NULL OR attempt.last_reconciled_at < NOW() - INTERVAL '30 seconds')
+       AND (attempt.last_reconciled_at IS NULL OR attempt.last_reconciled_at < NOW() - INTERVAL '5 minutes')
      ORDER BY attempt.created_at ASC LIMIT $1`,
     [Math.min(50, Math.max(1, Number(limit)))]
   );
@@ -1333,7 +1337,7 @@ async function finalizeAdditionalBuyFill(client, row, position, normalizedOrder,
      WHERE id = $2`,
     [inputDisplay, row.whitelist_id]
   );
-  await require('../dynamic-signal/dynamic-authorization')
+  await runtimeAuthorization
     .commitUsage(row.signal_id, inputDisplay, client);
   await client.query(
     `INSERT INTO trade_reconciliation_incidents(
@@ -1507,8 +1511,8 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
       const groupResult = await client.query(
         `INSERT INTO strategy_groups
           (position_id, attempt_id, provider_order_id, total_amount_raw,
-           status, requested_params, provider_params)
-         VALUES ($1,$2,$3,$4,'running',$5,$6)
+           status, requested_params, provider_params, next_query_at)
+         VALUES ($1,$2,$3,$4,'running',$5,$6,NOW() + INTERVAL '5 minutes')
          RETURNING id`,
         [
           position.id,
@@ -1651,7 +1655,7 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
        reject_reason = NULL, updated_at = NOW() WHERE id = $1`,
       [row.signal_id]
     );
-    await require('../dynamic-signal/dynamic-authorization')
+    await runtimeAuthorization
       .commitUsage(row.signal_id, inputDisplay, client);
     await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'confirmed', {
       providerRequestId: normalizedOrder.providerOrderId,
@@ -2106,6 +2110,7 @@ async function resolveCancelledCloseAttempt(attemptId, positionId, strategyEvide
 async function getPositionForClose(positionId, executor = db) {
   const result = await executor.query(
     `SELECT position.*, whitelist.slippage AS whitelist_slippage,
+            signal.trace_id AS signal_trace_id,
             COALESCE((
               SELECT json_agg(lot ORDER BY lot.id)
               FROM position_lots AS lot
@@ -2118,6 +2123,7 @@ async function getPositionForClose(positionId, executor = db) {
             ), '[]') AS strategy_groups
      FROM positions AS position
      LEFT JOIN ca_whitelist AS whitelist ON whitelist.id = position.whitelist_id
+     LEFT JOIN trade_signals AS signal ON signal.id = position.signal_id
      WHERE position.id = $1`,
     [positionId]
   );
@@ -2128,9 +2134,10 @@ async function listDueStrategyGroups(limit = 20) {
   const result = await db.query(
     `SELECT strategy_group.*, position.chain_id, position.contract_address,
             position.signal_id, position.whitelist_id, position.status AS position_status,
-            lot.wallet_address, lot.token_decimals
+            signal.trace_id, lot.wallet_address, lot.token_decimals
      FROM strategy_groups AS strategy_group
      JOIN positions AS position ON position.id = strategy_group.position_id
+     LEFT JOIN trade_signals AS signal ON signal.id = position.signal_id
      LEFT JOIN LATERAL (
        SELECT wallet_address, token_decimals
        FROM position_lots
@@ -2596,7 +2603,8 @@ async function backfillLegacyPosition(positionId, facts) {
 async function getPositionBalanceState(positionId) {
   const result = await db.query(
     `SELECT position.id AS position_id, position.chain_id, position.contract_address,
-            position.status AS position_status,
+            position.status AS position_status, position.signal_id, position.whitelist_id,
+            signal.trace_id,
             position.opened_at,
             MIN(lot.wallet_address) AS wallet_address,
             MIN(lot.token_decimals) AS token_decimals,
@@ -2608,6 +2616,7 @@ async function getPositionBalanceState(positionId) {
               AS active_strategy_count
      FROM positions AS position
      JOIN position_lots AS lot ON lot.position_id = position.id
+     LEFT JOIN trade_signals AS signal ON signal.id = position.signal_id
      WHERE position.id = $1
      GROUP BY position.id`,
     [positionId]

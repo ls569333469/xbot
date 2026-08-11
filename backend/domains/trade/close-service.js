@@ -1,4 +1,5 @@
-const gmgnHttp = require('../../lib/gmgn-http');
+const gmgnAccess = require('../../lib/gmgn-access-service').accessFor('trade_close');
+const { scopeKey } = require('../../lib/gmgn-shared-rate-limit');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { assertLiveExitMode } = require('../../lib/runtime-mode');
 const { decimalToRaw, minRaw, rawToDecimal } = require('../../lib/decimal-units');
@@ -15,6 +16,18 @@ const CLOSABLE_STATUSES = new Set(['open', 'open_protected', 'open_unprotected',
 const ACTIVE_STRATEGY_STATUSES = new Set(['pending', 'running', 'partially_filled']);
 const UNSAFE_STRATEGY_STATUSES = new Set(['triggered', 'cancelling', 'unknown']);
 const CANCEL_VERIFY_DELAYS_MS = Object.freeze([0, 1000, 2000, 5000, 5000, 5000, 5000, 5000]);
+
+function closeRequestContext(position, stage) {
+  return {
+    source: 'trade_close',
+    stage,
+    signalId: Number(position?.signal_id || 0) || null,
+    whitelistId: Number(position?.whitelist_id || 0) || null,
+    traceId: position?.signal_trace_id || position?.trace_id || null,
+    executionSessionId: position?.id ? `position:${Number(position.id)}` : null,
+    rateScope: scopeKey()
+  };
+}
 
 function sumRemainingRaw(lots) {
   return (lots || []).reduce(
@@ -173,11 +186,12 @@ async function loadStrategyState(position) {
       states.push({ group, normalized: null, status: 'unknown' });
       continue;
     }
-    const raw = await gmgnHttp.queryStrategyOrder(
+    const raw = await gmgnAccess.queryStrategyOrder(
       position.chain_id,
       group.provider_order_id,
       group.wallet_address || position.lots?.[0]?.wallet_address,
-      { baseToken: position.contract_address }
+      { baseToken: position.contract_address },
+      { requestContext: closeRequestContext(position, 'strategy_state') }
     );
     const normalized = findStrategy(raw, group.provider_order_id);
     states.push({ group, normalized, status: normalized?.status || 'unknown' });
@@ -221,10 +235,11 @@ async function buildClosePrepared(positionId, options = {}) {
   const percent = Math.min(100, Math.max(1, Number(options.percent || 100)));
   const remainingRaw = sumRemainingRaw(lots);
   const requestedRaw = ((BigInt(remainingRaw) * BigInt(Math.round(percent * 100))) / 10000n).toString();
-  const balanceRawResponse = await gmgnHttp.getWalletTokenBalance(
+  const balanceRawResponse = await gmgnAccess.getWalletTokenBalance(
     chain.id,
     walletAddress,
-    position.contract_address
+    position.contract_address,
+    { requestContext: closeRequestContext(position, 'wallet_balance') }
   );
   const walletAvailableRaw = normalizeBalanceRaw(balanceRawResponse, tokenDecimals);
   const inputAmountRaw = selectSellAmountRaw(requestedRaw, remainingRaw, walletAvailableRaw);
@@ -242,19 +257,23 @@ async function buildClosePrepared(positionId, options = {}) {
     throw error;
   }
   const cancellable = strategyStates.filter((item) => ACTIVE_STRATEGY_STATUSES.has(item.status));
-  const quoteRaw = await gmgnHttp.quoteOrder(
+  const quoteRaw = await gmgnAccess.quoteOrder(
     chain.id,
     walletAddress,
     position.contract_address,
     chain.nativeToken,
     inputAmountRaw,
     slippage,
-    options.rateLease ? { rateLease: options.rateLease, deadlineAt: options.deadlineAt } : {}
+    {
+      ...(options.rateLease ? { rateLease: options.rateLease } : {}),
+      ...(options.deadlineAt ? { deadlineAt: options.deadlineAt } : {}),
+      requestContext: closeRequestContext(position, 'quote')
+    }
   );
   const quote = gmgnAdapter.normalizeQuote(quoteRaw);
-  const gas = ['bsc', 'base'].includes(chain.id)
-    ? await gmgnHttp.getGasPrice(chain.id)
-    : null;
+  // Gas is resolved from the local execution profile/RPC snapshot. A close
+  // preparation must not add an unbounded GMGN gas read before the trade.
+  const gas = null;
   const snapshotHash = repository.fingerprint(closeSnapshotIdentity({
     position,
     chain,
@@ -327,12 +346,18 @@ async function cancelStrategies(prepared, options = {}) {
     );
     let response;
     try {
-      response = await gmgnHttp.cancelStrategyOrder(prepared.chain.id, {
+      response = await gmgnAccess.cancelStrategyOrder(prepared.chain.id, {
         chain: prepared.chain.id,
         from_address: prepared.wallet.address,
         order_id: item.group.provider_order_id,
         order_type: 'smart_trade'
-      }, { deadlineAt: options.deadlineAt });
+      }, {
+        deadlineAt: options.deadlineAt,
+        requestContext: {
+          ...closeRequestContext(prepared.position, 'strategy_cancel'),
+          executionSessionId: `attempt:${Number(options.attemptId || prepared.position.id)}:recovery`
+        }
+      });
     } catch (error) {
       if (isDefinitiveWriteRejection(error)) {
         await walletWriteLane.release(options.attemptId, 'STRATEGY_CANCEL_REJECTED');
@@ -352,12 +377,18 @@ async function cancelStrategies(prepared, options = {}) {
       response,
       deadlineAt: options.deadlineAt,
       verify: async () => {
-        const verificationRaw = await gmgnHttp.queryStrategyOrder(
+        const verificationRaw = await gmgnAccess.queryStrategyOrder(
           prepared.chain.id,
           item.group.provider_order_id,
           prepared.wallet.address,
           { baseToken: prepared.position.contract_address },
-          { deadlineAt: options.deadlineAt }
+          {
+            deadlineAt: options.deadlineAt,
+            requestContext: {
+              ...closeRequestContext(prepared.position, 'strategy_cancel_verify'),
+              executionSessionId: `attempt:${Number(options.attemptId || prepared.position.id)}:recovery`
+            }
+          }
         );
         return findStrategy(verificationRaw, item.group.provider_order_id);
       }
@@ -383,7 +414,14 @@ async function execute(positionId, prepareToken, operatorId, options = {}) {
     throw error;
   }
   const deadlineAt = Date.now() + 60_000;
-  const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
+  const positionContext = await repository.getPositionForClose(positionId);
+  const rateLease = await gmgnAccess.reserveTrade({
+    deadlineAt,
+    requestContext: closeRequestContext(
+      positionContext || { id: positionId },
+      'provider_lease'
+    )
+  });
   let prepared;
   let attempt;
   let swapStarted = false;
@@ -419,6 +457,7 @@ async function execute(positionId, prepareToken, operatorId, options = {}) {
     strategiesCancelled = true;
     const snapshot = await tradeFailureEvidenceService.capturePreSubmitSnapshot(attempt, {
       tokenDecimals: prepared.tokenDecimals,
+      tokenBalance: { balance_raw: prepared.walletAvailableRaw, decimal: prepared.tokenDecimals },
       quote: prepared.quote,
       gas: prepared.gas,
       config: created.intent.config_snapshot_json
@@ -443,7 +482,15 @@ async function execute(positionId, prepareToken, operatorId, options = {}) {
     });
     await repository.transitionAttempt(attempt.id, ['preparing'], 'submitting', { actor: operatorId });
     swapStarted = true;
-    const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
+    const response = await gmgnAccess.swap(swapParams, {
+      rateLease,
+      returnMeta: true,
+      deadlineAt,
+      requestContext: {
+        ...closeRequestContext(prepared.position, 'swap'),
+        positionId: Number(prepared.position.id)
+      }
+    });
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
     if (!normalizedOrder.providerOrderId) {
       const error = new Error('GMGN sell response did not include order_id');
@@ -492,7 +539,14 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     throw error;
   }
   const deadlineAt = new Date(intent.expires_at).getTime();
-  const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
+  const positionContext = await repository.getPositionForClose(intent.position_id);
+  const rateLease = await gmgnAccess.reserveTrade({
+    deadlineAt,
+    requestContext: closeRequestContext(
+      positionContext || { id: intent.position_id, signal_id: intent.signal_id },
+      'provider_lease'
+    )
+  });
   let prepared;
   let attempt;
   let swapStarted = false;
@@ -531,6 +585,7 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     strategiesCancelled = true;
     const snapshot = await tradeFailureEvidenceService.capturePreSubmitSnapshot(attempt, {
       tokenDecimals: prepared.tokenDecimals,
+      tokenBalance: { balance_raw: prepared.walletAvailableRaw, decimal: prepared.tokenDecimals },
       quote: prepared.quote,
       gas: prepared.gas,
       config: intent.config_snapshot_json
@@ -555,7 +610,16 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     });
     await repository.transitionAttempt(attempt.id, ['preparing'], 'submitting', { actor: operatorId });
     swapStarted = true;
-    const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
+    const response = await gmgnAccess.swap(swapParams, {
+      rateLease,
+      returnMeta: true,
+      deadlineAt,
+      requestContext: {
+        ...closeRequestContext(prepared.position, 'swap'),
+        source: 'trade_close_retry',
+        positionId: Number(prepared.position.id)
+      }
+    });
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
     if (!normalizedOrder.providerOrderId) {
       const error = new Error('GMGN close retry response did not include order_id');

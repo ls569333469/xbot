@@ -91,6 +91,14 @@ async function loadDesiredWatches(executor = db) {
           AND policy.mode <> 'paused'
           AND actor.enabled = true
       UNION ALL
+       SELECT actor.x_handle, 'follow' AS event_type
+       FROM follow_discovery_policies AS policy
+       JOIN x_kol_accounts AS actor ON actor.id = policy.kol_id
+       WHERE policy.archived_at IS NULL
+         AND policy.enabled = true
+         AND policy.mode <> 'paused'
+         AND actor.enabled = true
+      UNION ALL
        SELECT actor.x_handle, event_type
        FROM project_launch_sources AS source
        JOIN x_kol_accounts AS actor ON actor.id = source.actor_id

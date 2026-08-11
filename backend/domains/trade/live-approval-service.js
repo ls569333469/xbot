@@ -3,6 +3,7 @@ const db = require('../../lib/db');
 const engineState = require('../../lib/engine-state');
 const { CHAIN_REGISTRY } = require('../../lib/chain-config');
 const { codeVersion } = require('../../lib/code-version');
+const { getGmgnCredentials } = require('../../lib/gmgn-credentials');
 
 const REQUIRED_MIGRATION = '020_p16_1_prelaunch_project_monitor.sql';
 const CONTRACT_EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -67,10 +68,7 @@ function contractContext(chain, whitelists = []) {
     rpcUrlHash: hash(process.env[definition.rpcEnvKey] || ''),
     maxFeeReserve: process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`] || '',
     minimumGasReserve: process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`] || '',
-    gmgnCredentialsHash: hash({
-      apiKey: process.env.GMGN_API_KEY || '',
-      privateKey: process.env.GMGN_PRIVATE_KEY || ''
-    })
+    gmgnCredentialsHash: hash(getGmgnCredentials())
   };
   const context = {
     chain,

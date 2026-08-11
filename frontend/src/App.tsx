@@ -11,6 +11,7 @@ const TradeLog = lazy(() => import('./pages/TradeLog'));
 const StrategyCenterPage = lazy(() => import('./pages/StrategyCenterPage'));
 const FixedStrategyWorkspacePage = lazy(() => import('./pages/strategy/FixedStrategyWorkspacePage'));
 const DynamicStrategyWorkspacePage = lazy(() => import('./pages/strategy/DynamicStrategyWorkspacePage'));
+const FollowDiscoveryWorkspacePage = lazy(() => import('./pages/strategy/FollowDiscoveryWorkspacePage'));
 
 function App() {
   const basename = import.meta.env.BASE_URL === '/'
@@ -26,6 +27,7 @@ function App() {
             <Route path="strategies" element={<StrategyCenterPage />} />
             <Route path="strategies/fixed" element={<FixedStrategyWorkspacePage />} />
             <Route path="strategies/dynamic" element={<DynamicStrategyWorkspacePage />} />
+            <Route path="strategies/follow-discovery" element={<FollowDiscoveryWorkspacePage />} />
             <Route path="whitelist" element={<FixedStrategyWorkspacePage />} />
             <Route path="kol" element={<KolPage />} />
             <Route path="signals" element={<SignalLog />} />

@@ -1,6 +1,7 @@
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
-const gmgnHttp = require('../../lib/gmgn-http');
+const engineState = require('../../lib/engine-state');
+const researchAccess = require('../../lib/gmgn-access-service').accessFor('research');
 const {
   REPORT_ANALYZER_VERSION,
   createReport,
@@ -102,7 +103,8 @@ function jobStatusFromCounts(counts) {
   return 'completed';
 }
 
-function schedulerAllowsResearch(status = gmgnHttp.scheduler.getStatus()) {
+function schedulerAllowsResearch(status = researchAccess.scheduler.getStatus(), options = {}) {
+  if (options.liveArmed === true) return false;
   if (status.state === 'cooling' || Number(status.reservedWeight || 0) > 0) return false;
   return !Object.entries(status.queueByPriority || {})
     .some(([priority, count]) => Number(priority) < 4 && Number(count) > 0);
@@ -313,13 +315,16 @@ async function retryFailedItems(jobId) {
 
 class ResearchQueue {
   constructor() {
+    this.engine = engineState;
     this.timer = null;
     this.running = false;
   }
 
   async runOnce() {
     if (this.running) return 0;
-    if (!schedulerAllowsResearch()) return 0;
+    if (!schedulerAllowsResearch(undefined, {
+      liveArmed: this.engine.getArmed?.() === true
+    })) return 0;
     this.running = true;
     try {
       const items = await claimItems(DEFAULT_CONCURRENCY);

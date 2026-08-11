@@ -15,6 +15,11 @@ let state = {
   armed_at: null,
   stopped_at: null,
   readiness_snapshot_hash: null,
+  scope_type: 'combined',
+  scope_id: null,
+  scope_chain_ids: [],
+  scope_revision: null,
+  scope_manifest_hash: null,
   configuration_fingerprint: null,
   last_error: null,
   last_checked_at: null,
@@ -85,6 +90,11 @@ async function arm(options = {}) {
     armed_at: now.toISOString(),
     stopped_at: null,
     readiness_snapshot_hash: options.readiness?.snapshotHash || null,
+    scope_type: options.readiness?.scope?.scope_type || state.scope_type || 'combined',
+    scope_id: options.readiness?.scope?.scope_id ?? state.scope_id ?? null,
+    scope_chain_ids: options.readiness?.scope?.chains || state.scope_chain_ids || [],
+    scope_revision: options.readiness?.scope?.policy_revision ?? state.scope_revision ?? null,
+    scope_manifest_hash: options.readiness?.scope?.manifest_hash || state.scope_manifest_hash || null,
     configuration_fingerprint: options.readiness?.configurationFingerprint || null,
     last_error: null,
     last_error_details: null,
@@ -133,6 +143,33 @@ async function stop(options = {}) {
   isArmed = false;
   armedAt = null;
   return getStatus();
+}
+
+function getScopeInput() {
+  if (!state.scope_type || state.scope_type === 'combined') return { scope_type: 'combined' };
+  return {
+    scope_type: state.scope_type,
+    scope_id: state.scope_id,
+    chain_ids: state.scope_chain_ids || []
+  };
+}
+
+function scopeAllowsSignal(signal = {}, explicitScope = null) {
+  const scope = explicitScope || getScopeInput();
+  if (scope.scope_type === 'combined') return true;
+  if (scope.scope_type === 'dynamic_policy') {
+    return Number(signal.actor_policy_id) === Number(scope.scope_id)
+      && Number.isInteger(Number(scope.scope_id));
+  }
+  if (scope.scope_type === 'follow_discovery') {
+    return Number(signal.follow_discovery_policy_id) === Number(scope.scope_id)
+      && Number.isInteger(Number(scope.scope_id));
+  }
+  if (scope.scope_type === 'fixed_ca') {
+    return !signal.actor_policy_id && !signal.follow_discovery_policy_id
+      && (scope.scope_id === null || Number(signal.whitelist_id) === Number(scope.scope_id));
+  }
+  return false;
 }
 
 async function setFaulted(options = {}) {
@@ -215,7 +252,7 @@ async function restoreDesiredState(snapshotProvider, options = {}) {
   try {
     let snapshot;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      snapshot = await snapshotProvider();
+      snapshot = await snapshotProvider({ scope: getScopeInput() });
       if (snapshot.readyToArm) break;
       const blockers = Array.isArray(snapshot.blockers) ? snapshot.blockers : [];
       const retryable = blockers.length > 0
@@ -277,6 +314,13 @@ function getStatus() {
     requestedAt: state.requested_at,
     stoppedAt: state.stopped_at,
     readinessSnapshotHash: state.readiness_snapshot_hash,
+    scope: {
+      scope_type: state.scope_type,
+      scope_id: state.scope_id,
+      chain_ids: state.scope_chain_ids || [],
+      revision: state.scope_revision,
+      manifest_hash: state.scope_manifest_hash
+    },
     configurationFingerprint: state.configuration_fingerprint,
     lastError: state.last_error,
     lastErrorDetails: state.last_error_details || null,
@@ -292,6 +336,8 @@ module.exports = {
   arm,
   getArmed: () => isArmed,
   getArmedAt: () => armedAt,
+  getScopeInput,
+  scopeAllowsSignal,
   getConfigurationFingerprint: () => state.configuration_fingerprint,
   getStatus,
   init,

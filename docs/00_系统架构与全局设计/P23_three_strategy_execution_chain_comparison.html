@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P23 三策略执行链路对比</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d11;
+      --surface: #10151b;
+      --surface-raised: #151b22;
+      --surface-muted: #0d1217;
+      --line: #26313a;
+      --line-strong: #3a4a56;
+      --text: #edf2f4;
+      --text-secondary: #b4c0c6;
+      --text-muted: #7d8a92;
+      --cyan: #67c8d8;
+      --cyan-soft: rgba(103, 200, 216, 0.11);
+      --green: #69d5a6;
+      --green-soft: rgba(105, 213, 166, 0.11);
+      --amber: #e7ba69;
+      --amber-soft: rgba(231, 186, 105, 0.11);
+      --red: #ef858b;
+      --red-soft: rgba(239, 133, 139, 0.11);
+      --blue: #86ace8;
+      --blue-soft: rgba(134, 172, 232, 0.11);
+      --radius: 6px;
+      --font: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { background: var(--bg); }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+      font: 14px/1.5 var(--font);
+      letter-spacing: 0;
+    }
+    button { font: inherit; letter-spacing: 0; }
+    button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      min-height: 60px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 30px;
+      border-bottom: 1px solid #1d252c;
+      background: rgba(10, 13, 17, 0.97);
+      backdrop-filter: blur(10px);
+    }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark {
+      display: grid;
+      width: 31px;
+      height: 31px;
+      place-items: center;
+      border: 1px solid rgba(103, 200, 216, 0.48);
+      border-radius: 5px;
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .brand-copy { min-width: 0; }
+    .brand-copy strong { display: block; font-size: 14px; font-weight: 720; }
+    .brand-copy span { display: block; color: var(--text-muted); font-size: 11px; }
+    .top-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid rgba(231, 186, 105, 0.35);
+      border-radius: 5px;
+      color: var(--amber);
+      background: var(--amber-soft);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .top-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    main { width: min(1580px, 100%); margin: 0 auto; padding: 27px 30px 54px; }
+    h1, h2, h3, p { margin: 0; }
+    .eyebrow {
+      margin-bottom: 7px;
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .page-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 22px;
+    }
+    .page-head h1 { font-size: 28px; line-height: 1.2; font-weight: 720; }
+    .page-head p { max-width: 720px; margin-top: 9px; color: var(--text-secondary); }
+    .head-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .meta-chip {
+      display: inline-flex;
+      min-height: 28px;
+      align-items: center;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      background: var(--surface);
+      font-family: var(--mono);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .meta-chip strong { color: var(--green); font-weight: 700; }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .summary-card {
+      min-height: 96px;
+      padding: 14px 15px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .summary-card .label { color: var(--text-muted); font-size: 12px; }
+    .summary-card strong { display: block; margin-top: 7px; font-size: 16px; font-weight: 680; }
+    .summary-card p { margin-top: 5px; color: var(--text-secondary); font-size: 12px; }
+    .summary-card.good { border-color: rgba(105, 213, 166, 0.27); }
+    .summary-card.good strong { color: var(--green); }
+    .summary-card.warn { border-color: rgba(231, 186, 105, 0.27); }
+    .summary-card.warn strong { color: var(--amber); }
+    .summary-card.bad { border-color: rgba(239, 133, 139, 0.27); }
+    .summary-card.bad strong { color: var(--red); }
+
+    .workspace {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-muted);
+      overflow: hidden;
+    }
+    .workspace-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 15px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .toolbar-copy strong { display: block; font-size: 14px; font-weight: 680; }
+    .toolbar-copy span { display: block; margin-top: 2px; color: var(--text-muted); font-size: 12px; }
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tab {
+      min-height: 35px;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      background: var(--surface-raised);
+      cursor: pointer;
+    }
+    .tab:hover { border-color: var(--cyan); color: var(--text); }
+    .tab.active { border-color: rgba(103, 200, 216, 0.65); color: var(--cyan); background: var(--cyan-soft); }
+    .tab small { margin-left: 5px; color: var(--text-muted); font-family: var(--mono); font-size: 10px; }
+    .tab.active small { color: var(--cyan); }
+
+    .strategy-panel { padding: 20px; }
+    .strategy-intro {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 17px;
+    }
+    .strategy-title { display: flex; align-items: center; gap: 10px; }
+    .strategy-code {
+      display: inline-grid;
+      width: 41px;
+      height: 28px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 5px;
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .strategy-title h2 { font-size: 20px; line-height: 1.25; font-weight: 700; }
+    .strategy-title p { margin-top: 3px; color: var(--text-secondary); font-size: 12px; }
+    .delta {
+      max-width: 520px;
+      padding: 10px 12px;
+      border-left: 2px solid var(--green);
+      color: var(--text-secondary);
+      background: var(--green-soft);
+      font-size: 12px;
+    }
+    .delta strong { color: var(--green); font-weight: 680; }
+
+    .compare-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .chain-column {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .chain-column.current { border-color: rgba(239, 133, 139, 0.33); }
+    .chain-column.target { border-color: rgba(105, 213, 166, 0.36); }
+    .column-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 57px;
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-raised);
+    }
+    .column-head strong { display: block; font-size: 14px; font-weight: 700; }
+    .column-head span { display: block; margin-top: 2px; color: var(--text-muted); font-size: 11px; }
+    .column-badge {
+      display: inline-flex;
+      min-height: 23px;
+      align-items: center;
+      padding: 0 7px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .current .column-badge { color: var(--red); background: var(--red-soft); }
+    .target .column-badge { color: var(--green); background: var(--green-soft); }
+
+    .flow { padding: 14px 14px 16px; }
+    .flow-step { position: relative; display: grid; grid-template-columns: 29px minmax(0, 1fr); gap: 10px; }
+    .flow-step:not(:last-child) { padding-bottom: 19px; }
+    .flow-step:not(:last-child)::after {
+      position: absolute;
+      top: 27px;
+      bottom: 1px;
+      left: 14px;
+      width: 1px;
+      background: var(--line-strong);
+      content: "";
+    }
+    .flow-step:not(:last-child)::before {
+      position: absolute;
+      bottom: 0;
+      left: 11px;
+      z-index: 1;
+      width: 7px;
+      height: 7px;
+      border-right: 1px solid var(--line-strong);
+      border-bottom: 1px solid var(--line-strong);
+      transform: rotate(45deg);
+      content: "";
+    }
+    .step-index {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      width: 29px;
+      height: 29px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      color: var(--text-secondary);
+      background: var(--surface-raised);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .step-card {
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--surface-muted);
+    }
+    .step-card h3 { font-size: 13px; line-height: 1.35; font-weight: 680; }
+    .step-card p { margin-top: 3px; color: var(--text-secondary); font-size: 12px; }
+    .step-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+    .module, .call, .state {
+      display: inline-flex;
+      min-height: 20px;
+      align-items: center;
+      padding: 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .module { color: var(--blue); background: var(--blue-soft); }
+    .call { color: var(--amber); background: var(--amber-soft); }
+    .state { color: var(--text-muted); background: rgba(125, 138, 146, 0.08); }
+    .step-card.problem { border-color: rgba(239, 133, 139, 0.36); background: var(--red-soft); }
+    .step-card.problem .step-index { color: var(--red); }
+    .step-card.good { border-color: rgba(105, 213, 166, 0.36); background: var(--green-soft); }
+    .step-card.good .step-index { color: var(--green); }
+    .step-card.neutral { border-color: rgba(103, 200, 216, 0.26); }
+    .call.none { color: var(--green); background: var(--green-soft); }
+    .call.research { color: var(--cyan); background: var(--cyan-soft); }
+    .call.execution { color: var(--amber); background: var(--amber-soft); }
+    .call.duplicate { color: var(--red); background: var(--red-soft); }
+
+    .callout {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .callout-icon {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 5px;
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .callout strong { font-size: 13px; font-weight: 680; }
+    .callout p { margin-top: 3px; color: var(--text-secondary); font-size: 12px; }
+
+    .kernel-section { margin-top: 20px; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 15px; margin-bottom: 10px; }
+    .section-head h2 { font-size: 17px; font-weight: 700; }
+    .section-head p { color: var(--text-muted); font-size: 12px; }
+    .kernel {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(100px, 1fr));
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid rgba(105, 213, 166, 0.33);
+      border-radius: var(--radius);
+      background: var(--green-soft);
+    }
+    .kernel-item {
+      position: relative;
+      min-height: 62px;
+      padding: 11px 9px;
+      border: 1px solid rgba(105, 213, 166, 0.28);
+      border-radius: 5px;
+      background: rgba(10, 13, 17, 0.44);
+      text-align: center;
+    }
+    .kernel-item:not(:last-child)::after {
+      position: absolute;
+      top: 29px;
+      right: -8px;
+      width: 7px;
+      height: 1px;
+      background: var(--green);
+      content: "";
+    }
+    .kernel-item strong { display: block; font-size: 12px; font-weight: 680; }
+    .kernel-item span { display: block; margin-top: 3px; color: var(--text-secondary); font-family: var(--mono); font-size: 10px; }
+    .kernel-item.provider { border-color: rgba(231, 186, 105, 0.4); background: var(--amber-soft); }
+    .kernel-item.provider strong { color: var(--amber); }
+
+    .rules-section { margin-top: 20px; }
+    .rules-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 12px; }
+    .rules-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .rules-card h3 { font-size: 14px; font-weight: 700; }
+    .rules-table { width: 100%; margin-top: 11px; border-collapse: collapse; table-layout: fixed; }
+    .rules-table th, .rules-table td { padding: 9px 8px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 12px; }
+    .rules-table th { color: var(--text-muted); font-weight: 600; }
+    .rules-table td { color: var(--text-secondary); }
+    .rules-table td:first-child { width: 22%; color: var(--text); font-weight: 650; }
+    .rules-table code { color: var(--cyan); font-family: var(--mono); font-size: 11px; }
+    .rule-list { display: grid; gap: 8px; margin: 11px 0 0; padding: 0; list-style: none; }
+    .rule-list li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 7px; color: var(--text-secondary); font-size: 12px; }
+    .rule-list b { color: var(--green); font-family: var(--mono); font-weight: 700; }
+    .rule-list li.forbidden b { color: var(--red); }
+
+    .footer-note { margin-top: 17px; color: var(--text-muted); font-size: 11px; }
+    .footer-note code { color: var(--text-secondary); font-family: var(--mono); }
+
+    @media (max-width: 1100px) {
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .kernel { grid-template-columns: repeat(4, minmax(100px, 1fr)); }
+      .kernel-item:nth-child(4)::after { display: none; }
+      .kernel-item:nth-child(5)::after { display: block; }
+      .rules-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 780px) {
+      .topbar { padding: 0 18px; }
+      main { padding: 22px 18px 40px; }
+      .page-head, .strategy-intro { display: block; }
+      .head-meta { justify-content: start; margin-top: 14px; }
+      .delta { max-width: none; margin-top: 13px; }
+      .compare-grid { grid-template-columns: 1fr; }
+      .workspace-toolbar { display: block; }
+      .tabs { margin-top: 12px; }
+      .tab { flex: 1 1 30%; }
+    }
+    @media (max-width: 520px) {
+      .page-head h1 { font-size: 23px; }
+      .summary-grid { grid-template-columns: 1fr; }
+      .strategy-panel { padding: 14px; }
+      .kernel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .kernel-item:nth-child(2n)::after { display: none; }
+      .kernel-item:nth-child(odd)::after { display: block; right: -8px; }
+      .rules-table th, .rules-table td { padding: 8px 5px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">P23</div>
+      <div class="brand-copy">
+        <strong>XBOT 执行链路复核</strong>
+        <span>三策略当前实现与目标结构对比</span>
+      </div>
+    </div>
+    <div class="top-status"><i></i>仅架构预览 · 不执行交易</div>
+  </header>
+
+  <main>
+    <section class="page-head">
+      <div>
+        <div class="eyebrow">P23 / EXECUTION ARCHITECTURE REVIEW</div>
+        <h1>三策略执行链路对比</h1>
+        <p>把触发、研究、授权和交易执行拆开看。修订后的共同原则是：一次事件只有一个执行会话拥有 GMGN 调用权，研究与监听模块不再越权发起交易准备请求。</p>
+      </div>
+      <div class="head-meta">
+        <div class="meta-chip">范围 <strong>固定 CA · P20 · P21</strong></div>
+        <div class="meta-chip">Provider owner <strong>ExecutionSession</strong></div>
+      </div>
+    </section>
+
+    <section class="summary-grid" aria-label="P23 核心结论">
+      <article class="summary-card good">
+        <div class="label">事件与执行</div>
+        <strong>1 event : 1 session</strong>
+        <p>同一事件只生成一个 Signal、Trade Intent 和 Attempt。</p>
+      </article>
+      <article class="summary-card good">
+        <div class="label">GMGN 热路径</div>
+        <strong>Quote + Swap</strong>
+        <p>两次请求属于同一 trace、同一 Provider 预算。</p>
+      </article>
+      <article class="summary-card warn">
+        <div class="label">Activation 边界</div>
+        <strong>配置变化时执行</strong>
+        <p>固定 CA 可激活；P20/P21 事件不再物化白名单激活任务。</p>
+      </article>
+      <article class="summary-card bad">
+        <div class="label">历史 429 根因</div>
+        <strong>重复调用权</strong>
+        <p>监听、研究、激活、执行各自请求 Provider，冷却期被反复打穿。</p>
+      </article>
+    </section>
+
+    <section class="workspace" aria-label="策略链路对比工作区">
+      <div class="workspace-toolbar">
+        <div class="toolbar-copy">
+          <strong>选择策略查看链路</strong>
+          <span>左侧为现状中的重复路径，右侧为 P23 收敛后的目标路径。</span>
+        </div>
+        <div class="tabs" role="tablist" aria-label="策略选择">
+          <button class="tab active" type="button" role="tab" aria-selected="true" data-strategy="fixed">固定 CA <small>FIXED</small></button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-strategy="p20">P20 动态喊单 <small>DYNAMIC</small></button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-strategy="p21">P21 关注发现 <small>FOLLOW</small></button>
+        </div>
+      </div>
+      <div id="strategy-panel" class="strategy-panel"></div>
+    </section>
+
+    <section class="kernel-section">
+      <div class="section-head">
+        <div>
+          <h2>三种策略共享的交易执行内核</h2>
+          <p>策略差异停在 Signal 之前；资金状态和交易状态统一进入同一个 P19/P12 内核。</p>
+        </div>
+      </div>
+      <div class="kernel" aria-label="统一交易执行内核">
+        <div class="kernel-item"><strong>Signal</strong><span>策略信号</span></div>
+        <div class="kernel-item"><strong>ExecutionSession</strong><span>唯一 owner</span></div>
+        <div class="kernel-item"><strong>授权快照</strong><span>本地读取</span></div>
+        <div class="kernel-item provider"><strong>Quote</strong><span>GMGN / trace</span></div>
+        <div class="kernel-item"><strong>Risk Gate</strong><span>预算与风险</span></div>
+        <div class="kernel-item provider"><strong>Swap</strong><span>GMGN / write</span></div>
+        <div class="kernel-item"><strong>对账</strong><span>Order / Receipt</span></div>
+        <div class="kernel-item"><strong>持仓退出</strong><span>Position / Exit</span></div>
+      </div>
+    </section>
+
+    <section class="rules-section">
+      <div class="section-head">
+        <div>
+          <h2>调用边界复核</h2>
+          <p>用于验收时判断“谁应该调用 GMGN”，而不是只看页面是否显示成功。</p>
+        </div>
+      </div>
+      <div class="rules-grid">
+        <article class="rules-card">
+          <h3>按策略划分的允许调用</h3>
+          <table class="rules-table">
+            <thead><tr><th>策略</th><th>研究 / 候选阶段</th><th>事件交易阶段</th></tr></thead>
+            <tbody>
+              <tr><td>固定 CA</td><td>配置变化时激活一次，可复用快照</td><td><code>Quote -> Swap</code></td></tr>
+              <tr><td>P20 动态</td><td>新 chain + CA 首次出现时验证一次并保存快照</td><td><code>Quote -> Swap</code></td></tr>
+              <tr><td>P21 Follow</td><td>Grok + x_search；研究阶段 <code>GMGN = 0</code></td><td><code>Quote -> Swap</code></td></tr>
+            </tbody>
+          </table>
+        </article>
+        <article class="rules-card">
+          <h3>明确禁止的历史路径</h3>
+          <ul class="rule-list">
+            <li class="forbidden"><b>01</b><span>6551 监听阶段调用 GMGN。</span></li>
+            <li class="forbidden"><b>02</b><span>Grok / x_search 阶段调用 GMGN 或验证交易资格。</span></li>
+            <li class="forbidden"><b>03</b><span>P20/P21 每条事件都创建白名单激活任务。</span></li>
+            <li class="forbidden"><b>04</b><span>每条事件重复读取 user/info、原生币 token/info、gas_price。</span></li>
+            <li><b>OK</b><span>429 冷却期只记录状态，不发起低价值 readiness 或 warmup 请求。</span></li>
+          </ul>
+        </article>
+      </div>
+      <p class="footer-note">对应文档：<code>P23_three_strategy_execution_chain_revision.md</code> · 本页面是链路说明预览，不代表已修改业务代码。</p>
+    </section>
+  </main>
+
+  <script>
+    const strategies = {
+      fixed: {
+        code: "FIXED",
+        title: "固定 CA 策略",
+        subtitle: "用户明确配置并授权的资产，配置级动作与事件级交易分离。",
+        delta: "<strong>修订重点：</strong>白名单 Activation 从每次事件路径移回配置生命周期；事件只做本地 CA 匹配，然后进入统一执行会话。",
+        current: {
+          badge: "存在重复准备",
+          note: "配置激活和事件交易都可能触发 Provider 读取",
+          steps: [
+            ["配置资产", "用户录入 CA、链、预算、滑点、退出模板", "Strategy Config", "none", "配置"],
+            ["写入授权记录", "保存 ca_whitelist 并同步 Watch", "Whitelist / Watch", "none", "配置"],
+            ["Activation Outbox", "生成白名单激活任务，准备 live_ready", "Activation Worker", "duplicate", "配置动作被带入热路径"],
+            ["激活阶段读取", "钱包、RPC、GMGN 只读检查与 activation Quote", "Readiness / Provider", "duplicate", "GMGN 读检 + Quote"],
+            ["6551 事件进入 Inbox", "监听事件落库并进入匹配链路", "6551 Inbox", "none", "事件"],
+            ["本地固定 CA 匹配", "匹配 CA / 关系并生成 trade_signal", "Signal Matcher", "none", "本地"],
+            ["执行服务", "再次 Quote、风控、创建 Attempt", "Execution Service", "execution", "GMGN Quote"],
+            ["Swap 与结果对账", "Swap、Order、Receipt、Position、Exit", "Trade Kernel", "execution", "GMGN Swap"]
+          ]
+        },
+        target: {
+          badge: "配置与事件分离",
+          note: "配置不变时，事件热路径不再 Activation",
+          steps: [
+            ["保存配置", "保存 CA、链、预算、退出模板与授权快照", "Strategy Config", "none", "配置"],
+            ["配置变更时 Activation", "仅在 CA、链、预算或模板变化时执行一次", "Activation Worker", "research", "GMGN 仅配置级"],
+            ["6551 事件进入 Inbox", "监听事件落库，事件本身不调用 GMGN", "6551 Inbox", "none", "GMGN 0"],
+            ["本地固定 CA 匹配", "使用本地授权快照匹配并生成 Signal", "Signal Matcher", "none", "本地"],
+            ["Fixed Execution Session", "单一会话接管本次 Provider 调用和 trace", "ExecutionSession", "execution", "唯一 owner"],
+            ["Quote 与风险门禁", "Quote 后校验预算、滑点、余额和策略限制", "Trade Kernel", "execution", "GMGN Quote"],
+            ["Swap 与结果对账", "Swap、Order、Receipt、Position、Exit", "Trade Kernel", "execution", "GMGN Swap"]
+          ]
+        }
+      },
+      p20: {
+        code: "P20",
+        title: "动态喊单策略",
+        subtitle: "从内容事件中发现候选 CA；候选资产验证一次，后续事件复用快照。",
+        delta: "<strong>修订重点：</strong>候选验证结果属于 Candidate Index 资产快照，不再把新 CA 直接当成固定白名单去重复 Activation。",
+        current: {
+          badge: "候选被当成配置",
+          note: "解析、候选验证、白名单激活和执行串成多段 Provider 路径",
+          steps: [
+            ["6551 内容事件", "Tweet / Quote / Reply 进入动态事件队列", "6551 Event Worker", "none", "事件"],
+            ["去重与意图门", "识别作者、内容意图和候选信号", "Dynamic Signal", "none", "本地"],
+            ["提取候选 CA", "从文本、关系和项目上下文得到候选资产", "Candidate Resolver", "none", "候选"],
+            ["候选 Provider 验证", "调用候选 token / security / pool 信息", "GMGN Market Source", "duplicate", "每次候选路径可能重读"],
+            ["物化 ca_whitelist", "把动态候选写成固定授权记录", "Whitelist", "duplicate", "改变了资产语义"],
+            ["Activation Outbox", "再次执行 Quote、Watch、RPC 和 readiness", "Activation Worker", "duplicate", "GMGN 再次进入"],
+            ["动态 Signal", "live_ready 后进入交易队列", "Signal / Queue", "none", "状态被拆散"],
+            ["执行服务", "再次 Quote、风控、Attempt、Swap", "Execution Service", "execution", "GMGN Quote + Swap"]
+          ]
+        },
+        target: {
+          badge: "候选快照复用",
+          note: "同一 chain + CA 首次验证一次，后续事件只读本地快照",
+          steps: [
+            ["6551 内容事件", "Tweet / Quote / Reply 进入动态事件队列", "6551 Event Worker", "none", "GMGN 0"],
+            ["去重与意图门", "作者归属、内容意图和事件唯一键在本地完成", "Dynamic Signal", "none", "本地"],
+            ["解析候选 CA", "命中新 chain + CA 时查候选索引", "Candidate Resolver", "none", "研究阶段 GMGN 0"],
+            ["首次候选验证", "仅新资产做一次必要 Provider 验证并保存快照", "Candidate Index", "research", "GMGN 一次性"],
+            ["本地授权快照", "保存候选证据、链、CA、策略预算和有效期", "Policy Snapshot", "none", "无 Activation"],
+            ["Dynamic Execution Session", "Signal 触发后由统一会话接管交易", "ExecutionSession", "execution", "唯一 owner"],
+            ["Quote、风险门禁、Swap", "Quote 后检查，再执行 Swap 并统一对账", "Trade Kernel", "execution", "GMGN Quote + Swap"],
+            ["Order / Position / Exit", "交易结果、持仓和退出沿用 P19/P12", "Trade Kernel", "none", "状态统一"]
+          ]
+        }
+      },
+      p21: {
+        code: "P21",
+        title: "新关注发现策略",
+        subtitle: "关注行为只是触发器；Grok 4.5 + x_search 负责快速检索项目、人员关系和 CA。",
+        delta: "<strong>修订重点：</strong>取消 P21 独立 GMGN Resolver、临时白名单和 Activation；研究阶段 GMGN 调用为 0，只有真实交易的 ExecutionSession 进入 Quote -> Swap。",
+        current: {
+          badge: "研究与交易混在一起",
+          note: "一次 Follow 事件被 6551、Grok、Resolver、Activation、Execution 多次拆分处理",
+          steps: [
+            ["6551 Follow 事件", "捕获关注者、目标账号和关注时间", "6551 Follow Worker", "none", "事件"],
+            ["去重与基线", "actor / target 去重并计算行为键", "Follow Discovery", "none", "本地"],
+            ["Grok + x_search", "检索项目账号、CEO、核心人员和 CA 证据", "Research / Grok", "none", "研究阶段 GMGN 0"],
+            ["P21 Resolver 调 GMGN", "token/info、security、pool_info 再验证候选", "P21 Resolver", "duplicate", "研究阶段 GMGN"],
+            ["物化 ca_whitelist", "把发现结果转换成固定白名单资产", "Whitelist", "duplicate", "语义越界"],
+            ["Activation Outbox", "user、wallet、RPC、GMGN readiness 检查", "Activation Worker", "duplicate", "又一轮 Provider"],
+            ["Follow Signal 入队", "生成 Signal 并等待 live-execution-queue", "Signal / Queue", "none", "事件被拆散"],
+            ["执行阶段 Context", "user、token、gas、wallet、quote 等重复读取", "Execution Service", "duplicate", "低价值高频"],
+            ["Attempt / Swap", "提交交易并处理 Order、Receipt、Position", "Trade Kernel", "execution", "GMGN Swap"]
+          ]
+        },
+        target: {
+          badge: "研究零 GMGN",
+          note: "Follow 只创建一次发现信号，交易才创建一次执行会话",
+          steps: [
+            ["6551 Follow 事件", "捕获 actor、target、时间和原始事件证据", "6551 Follow Worker", "none", "GMGN 0"],
+            ["去重、基线、行为键", "同一关注事件只能生成一次发现任务", "Follow Discovery", "none", "本地"],
+            ["Grok 4.5 + x_search", "快速检索项目、CEO、核心人员关系和 CA", "Research / Grok", "none", "只负责搜索 / GMGN 0"],
+            ["本地证据归一化", "提取完整 CA，校验链、唯一性和证据来源", "P21 Resolver", "none", "GMGN 0"],
+            ["生成 P21 Policy Snapshot", "保存候选 CA、证据、策略预算和有效期", "Policy Snapshot", "none", "不创建 Activation"],
+            ["Follow Signal", "候选满足本地策略后只生成一个交易意图", "Signal / Trade Intent", "none", "一次事件一次"],
+            ["Follow Execution Session", "唯一 Provider owner，复用本地授权与运行时快照", "ExecutionSession", "execution", "唯一 owner"],
+            ["Quote、风险门禁、Swap", "Quote 后检查预算和风险，再提交 Swap", "Trade Kernel", "execution", "GMGN Quote + Swap"],
+            ["Order / Receipt / Position", "统一对账、持仓和退出", "Trade Kernel", "none", "状态闭环"]
+          ]
+        }
+      }
+    };
+
+    function callClass(kind) {
+      return kind === "duplicate" ? "duplicate" : kind === "execution" ? "execution" : kind === "research" ? "research" : "none";
+    }
+
+    function renderSteps(steps, state) {
+      return steps.map((step, index) => {
+        const [title, detail, module, callKind, meta] = step;
+        const status = state === "current" && callKind === "duplicate" ? "problem" : state === "target" && (callKind === "execution" || callKind === "none") ? "good" : "neutral";
+        return `
+          <div class="flow-step">
+            <div class="step-index">${String(index + 1).padStart(2, "0")}</div>
+            <article class="step-card ${status}">
+              <h3>${title}</h3>
+              <p>${detail}</p>
+              <div class="step-meta">
+                <span class="module">${module}</span>
+                <span class="call ${callClass(callKind)}">${callKind === "duplicate" ? "GMGN 重复" : callKind === "execution" ? "GMGN 执行" : callKind === "research" ? "GMGN 低频/一次" : "GMGN 0"}</span>
+                <span class="state">${meta}</span>
+              </div>
+            </article>
+          </div>`;
+      }).join("");
+    }
+
+    function renderColumn(label, data, state) {
+      const current = state === "current";
+      return `
+        <section class="chain-column ${state}">
+          <header class="column-head">
+            <div>
+              <strong>${label}</strong>
+              <span>${data.note}</span>
+            </div>
+            <span class="column-badge">${data.badge}</span>
+          </header>
+          <div class="flow">${renderSteps(data.steps, state)}</div>
+        </section>`;
+    }
+
+    function renderStrategy(key) {
+      const strategy = strategies[key];
+      document.querySelector("#strategy-panel").innerHTML = `
+        <div class="strategy-intro">
+          <div>
+            <div class="strategy-title">
+              <span class="strategy-code">${strategy.code}</span>
+              <div>
+                <h2>${strategy.title}</h2>
+                <p>${strategy.subtitle}</p>
+              </div>
+            </div>
+          </div>
+          <div class="delta">${strategy.delta}</div>
+        </div>
+        <div class="compare-grid">
+          ${renderColumn("当前实现", strategy.current, "current")}
+          ${renderColumn("P23 修复后目标", strategy.target, "target")}
+        </div>
+        <div class="callout">
+          <div class="callout-icon">01</div>
+          <div>
+            <strong>本页要确认的核心判断</strong>
+            <p>${key === "p21" ? "6551 不是交易工具，Grok 不是交易验证器，白名单也不是每次关注事件的中间跳板。只有 Follow Execution Session 能在真实交易时调用 GMGN。" : key === "p20" ? "动态候选不是固定 CA 配置。候选验证结果应保存为资产快照，后续喊单直接复用，不要再次生成白名单 Activation。" : "固定 CA 的 Activation 属于配置生命周期。CA、链、预算或退出模板没有变化时，新的 6551 事件不应再次激活。"}</p>
+          </div>
+        </div>`;
+    }
+
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((item) => {
+          const active = item === tab;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-selected", String(active));
+        });
+        renderStrategy(tab.dataset.strategy);
+      });
+    });
+
+    renderStrategy("fixed");
+  </script>
+</body>
+</html>

@@ -1,10 +1,13 @@
 const db = require('../lib/db');
 const logger = require('../lib/logger');
-const { p20FeatureState } = require('../lib/p20-features');
 const market = require('../domains/dynamic-signal/gmgn-market-source');
 const repository = require('../domains/dynamic-signal/candidate-repository');
 
 const CHAINS = ['sol', 'bsc', 'base', 'eth', 'robinhood'];
+
+function candidateWarmupEnabled(env = process.env) {
+  return String(env.P20_CANDIDATE_WARMUP_ENABLED ?? 'false').toLowerCase() === 'true';
+}
 
 class CandidateCacheWarmup {
   constructor(options = {}) {
@@ -13,7 +16,7 @@ class CandidateCacheWarmup {
     this.lastRunAt = null; this.lastSuccessAt = null; this.lastError = null; this.processed = 0;
   }
   async runOnce() {
-    if (this.active || !p20FeatureState().P20_CANDIDATE_INDEX_ENABLED) return { status: 'skipped' };
+    if (this.active || !candidateWarmupEnabled()) return { status: 'skipped' };
     this.active = true; this.lastRunAt = new Date();
     try {
       const expiry = new Date(Date.now() + 2 * 60_000);
@@ -45,4 +48,4 @@ class CandidateCacheWarmup {
   getStatus() { return { running: this.running, active: this.active, lastRunAt: this.lastRunAt, lastSuccessAt: this.lastSuccessAt, lastError: this.lastError, processed: this.processed }; }
 }
 const candidateCacheWarmup = new CandidateCacheWarmup();
-module.exports = { CandidateCacheWarmup, candidateCacheWarmup };
+module.exports = { CandidateCacheWarmup, candidateCacheWarmup, candidateWarmupEnabled };

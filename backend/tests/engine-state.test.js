@@ -73,13 +73,13 @@ test('live engine persists intent, restores matching configuration, and faults o
     await engine.setFaulted({ reason: 'RESTART' });
     const waiting = await engine.restoreDesiredState(async () => ({
       readyToArm: false,
-      blockers: ['GMGN_RECENT_429'],
+       blockers: ['GMGN_SCHEDULER_NOT_HEALTHY'],
       snapshotHash: 'startup-cooling',
       configurationFingerprint: 'config-1'
     }), {
       maxAttempts: 2,
       retryDelayMs: 1,
-      retryableBlockers: ['GMGN_RECENT_429'],
+       retryableBlockers: ['GMGN_SCHEDULER_NOT_HEALTHY'],
       pauseOnRetryableExhaustion: true,
       sleep: async () => {}
     });

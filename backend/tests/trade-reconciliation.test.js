@@ -127,6 +127,51 @@ test('receipt validation matches exact managed-wallet token deltas', () => {
   assert.equal(receiptMatchesTradedAmount(evmOrder, {
     report: { outputAmountRaw: '25' }
   }, oneUnitShortfall), false);
+
+  assert.equal(receiptMatchesTradedAmount({ ...evmOrder, chain: 'robinhood' }, {
+    report: { outputAmountRaw: '25' }
+  }, oneUnitShortfall), true);
+
+  const twoUnitShortfall = {
+    transfers: [{ ...evmReceipt.transfers[0], data: '0x17' }]
+  };
+  assert.equal(receiptMatchesTradedAmount({ ...evmOrder, chain: 'robinhood' }, {
+    report: { outputAmountRaw: '25' }
+  }, twoUnitShortfall), false);
+});
+
+test('buy settlement records the managed-wallet receipt amount as authoritative', () => {
+  const { orderWithReceiptTradedAmount } = require('../domains/trade/reconciliation-service');
+  const wallet = '1111111111111111111111111111111111111111';
+  const token = '2222222222222222222222222222222222222222';
+  const row = {
+    chain: 'robinhood',
+    side: 'buy',
+    wallet_address: `0x${wallet}`,
+    output_token: `0x${token}`,
+    output_amount_raw: '25'
+  };
+  const receipt = {
+    transfers: [{
+      address: `0x${token}`,
+      topics: [
+        '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+        `0x${'0'.repeat(64)}`,
+        `0x${'0'.repeat(24)}${wallet}`
+      ],
+      data: '0x18'
+    }]
+  };
+  const settled = orderWithReceiptTradedAmount(row, {
+    report: { outputAmountRaw: '25' },
+    raw: { status: 'confirmed' }
+  }, receipt);
+  assert.equal(settled.report.outputAmountRaw, '24');
+  assert.deepEqual(settled.raw.xbot_receipt_settlement, {
+    source: 'managed_wallet_token_transfer',
+    provider_output_amount_raw: '25',
+    receipt_output_amount_raw: '24'
+  });
 });
 
 test('sell receipt validation still requires the exact managed-wallet token amount', () => {
@@ -255,9 +300,9 @@ test('EVM replacement is accepted only from a refreshed GMGN order hash', async 
 
 test('strategy reconciliation prioritizes triggered states and claims a close once', async () => {
   assert.equal(strategyPollingIntervalMs('triggered', () => 1), 1000);
-  assert.equal(strategyPollingIntervalMs('unknown', () => 1), 5000);
-  assert.equal(strategyPollingIntervalMs('running', () => 0), 10000);
-  assert.equal(strategyPollingIntervalMs('running', () => 1), 30000);
+  assert.equal(strategyPollingIntervalMs('unknown', () => 1), 60000);
+  assert.equal(strategyPollingIntervalMs('running', () => 0), 300000);
+  assert.equal(strategyPollingIntervalMs('running', () => 1), 600000);
 
   const calls = [];
   const reconciler = new TradeReconciler({
@@ -321,11 +366,13 @@ test('missing swap strategy id is recovered only from one exact strategy match',
     strategy_status: 'running'
   };
   const wrongAmount = { ...exact, order_id: 'strategy-2', open_amount: '1' };
+  let strategyQueries = 0;
   const reconciler = new TradeReconciler({
     gmgnHttp: {
-      getStrategyOrders: async (_chain, filters) => ({
-        list: filters.type === 'open' ? [exact, wrongAmount] : [exact]
-      })
+      getStrategyOrders: async (_chain, filters) => {
+        strategyQueries += 1;
+        return { list: filters.type === 'open' ? [exact, wrongAmount] : [exact] };
+      }
     }
   });
   const normalizedOrder = {
@@ -341,6 +388,7 @@ test('missing swap strategy id is recovered only from one exact strategy match',
   const resolved = await reconciler.resolveProtectionStrategy(row, normalizedOrder);
   assert.equal(resolved.strategyOrderId, 'strategy-1');
   assert.equal(resolved.raw.xbot_strategy_association.status, 'matched');
+  assert.equal(strategyQueries, 1);
 });
 
 test('position balance reconciliation records surplus without selling external holdings', async () => {

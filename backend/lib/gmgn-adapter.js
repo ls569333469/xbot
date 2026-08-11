@@ -17,8 +17,9 @@ function numberOrNull(value) {
 
 function booleanOrNull(value) {
   if (value === undefined || value === null || value === '') return null;
-  if (value === true || value === 1 || String(value).toLowerCase() === 'true') return true;
-  if (value === false || value === 0 || String(value).toLowerCase() === 'false') return false;
+  const normalized = String(value).trim().toLowerCase();
+  if (value === true || value === 1 || ['true', 'yes'].includes(normalized)) return true;
+  if (value === false || value === 0 || ['false', 'no'].includes(normalized)) return false;
   return null;
 }
 
@@ -311,6 +312,9 @@ function normalizeQuote(data) {
     raw: data,
     outputAmountRaw,
     minOutputAmountRaw: String(data?.min_output_amount || outputAmountRaw),
+    inputDecimals: numberOrNull(data?.input_token_decimals ?? data?.input_decimals),
+    outputDecimals: numberOrNull(data?.output_token_decimals
+      ?? data?.output_decimals ?? data?.token_decimals),
     priceImpactPct: numberOrNull(data?.price_impact ?? data?.price_impact_pct),
     totalCostRaw: data?.tx?.sol_cost ? String(data.tx.sol_cost) : null,
     platformFeeRaw: data?.tx?.quote?.platformFee ? String(data.tx.quote.platformFee) : null

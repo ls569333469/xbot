@@ -26,6 +26,7 @@
 | 环境与凭据热重载 | `POST /api/system/env`、`POST /api/system/env/gmgn-private-key` | 保留在“系统维护” | 修改 RPC、端口、数据库连接或轮换 GMGN 签名私钥 | 修改后停止新买入并由 Supervisor 重启；不得在日志或文档输出秘密值 |
 | 外部告警测试 | `POST /api/system/alerts/test` | 保留在“系统维护” | 验证外部告警通道 | 只写通知 Outbox，不执行交易 |
 | 测试库与 Migration 演练 | `test:integration`、`test:migration:p12`、`test:db:manage` | CLI only | 发布前验证完整 Schema、历史回填和约束 | 只允许名称包含 `test` 的独立数据库；拒绝生产库 |
+| 生产 Migration phase | `npm run migrate` / `scripts/run-migrations.js` | CLI only | Supervisor 启动业务角色前按文件名顺序应用未完成迁移 | 必须使用部署目标 `.env`；迁移失败时不启动 `ingestion` 或 `execution`；不由业务角色重复执行 |
 | 环境、Schema 与链上审计 | `scripts/check-env.js`、`scripts/audit-db-schema.js`、`audit:solana-tx` | CLI only | 启动检查、数据库结构核验、历史 Solana 交易独立复核 | 默认只读；不得输出 API Key、私钥或完整未脱敏凭据 |
 
 ## 3. 不属于日常前端的原因

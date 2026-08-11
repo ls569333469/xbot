@@ -83,6 +83,22 @@ test('candidate verification distinguishes unknown provider fields from zero', a
   assert.equal(result.fieldAvailability.renowned_wallets, 'unknown');
 });
 
+test('candidate verification propagates GMGN rate bans from security or pool endpoints', async () => {
+  const http = {
+    getTokenInfo: async () => ({ address: CA, name: 'Pons', symbol: 'PONS', decimals: 18 }),
+    getTokenSecurity: async () => {
+      throw Object.assign(new Error('temporarily banned'), {
+        code: 'RATE_LIMIT_BANNED', status: 429, resetAt: Date.now() + 240_000
+      });
+    },
+    getTokenPoolInfo: async () => ({ liquidity: 1000 })
+  };
+  await assert.rejects(
+    verifyCandidate({ chainId: 'robinhood', contractAddress: CA }, { http }),
+    { code: 'RATE_LIMIT_BANNED' }
+  );
+});
+
 test('candidate verification rejects a provider response for a different CA', async () => {
   const http = {
     getTokenInfo: async () => ({

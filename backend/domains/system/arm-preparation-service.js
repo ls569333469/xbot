@@ -4,6 +4,8 @@ const readinessService = require('../trade/readiness-service');
 const livePolicy = require('../signal/live-policy');
 const engineState = require('../../lib/engine-state');
 const logger = require('../../lib/logger');
+const runtimeScopeService = require('../trade/runtime-scope-service');
+const { executionGateService } = require('../trade/execution-gate-service');
 
 function hash(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -13,11 +15,22 @@ function tokenHash(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
-async function currentPolicyContext(executor = db) {
-  const policy = await livePolicy.getPolicy(executor);
-  const scope = policy.whitelistIds.length > 0
+async function currentPolicyContext(executor = db, scopeInput = {}) {
+  const manifest = await runtimeScopeService.resolveScope(scopeInput, executor);
+  const includesFixed = ['fixed_ca', 'combined'].includes(manifest.scope_type);
+  const policy = includesFixed ? await livePolicy.getPolicy(executor) : {
+    providers: [], eventTypes: [], verifiedEventTypes: [], chains: [], whitelistIds: []
+  };
+  const fixedWhitelistIds = includesFixed ? manifest.whitelist_ids : [];
+  const dynamicPolicyIds = manifest.dynamic_policy_ids || [];
+  const followPolicyIds = manifest.follow_policy_ids || [];
+  const hasOwnedWhitelists = fixedWhitelistIds.length > 0
+    || dynamicPolicyIds.length > 0 || followPolicyIds.length > 0;
+  const scope = hasOwnedWhitelists
     ? await executor.query(
       `SELECT whitelist.id, whitelist.activation_version,
+              whitelist.source, whitelist.live_activation_state,
+              whitelist.actor_policy_id, whitelist.follow_discovery_policy_id,
               COALESCE((
                 SELECT jsonb_agg(jsonb_build_object(
                   'id', relation.id, 'actor_id', relation.kol_id,
@@ -37,33 +50,57 @@ async function currentPolicyContext(executor = db) {
                 WHERE rule.whitelist_id = whitelist.id AND rule.enabled = true
               ), '[]'::jsonb) AS sources
        FROM ca_whitelist AS whitelist
-       WHERE whitelist.id = ANY($1::int[])
-         AND whitelist.status = 'active'
+       WHERE whitelist.status = 'active'
          AND whitelist.live_activation_state = 'live_ready'
+         AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+         AND (
+           whitelist.id = ANY($1::int[])
+           OR whitelist.actor_policy_id = ANY($2::bigint[])
+           OR whitelist.follow_discovery_policy_id = ANY($3::bigint[])
+         )
        ORDER BY whitelist.id`,
-      [policy.whitelistIds]
+      [fixedWhitelistIds, dynamicPolicyIds, followPolicyIds]
     ) : { rows: [] };
   const activationVersions = Object.fromEntries(scope.rows.map((item) => [
     String(item.id), Number(item.activation_version)
   ]));
+  const scopeWhitelistIds = scope.rows.map((item) => Number(item.id));
   return {
-    policy,
+    policy: includesFixed ? {
+      ...policy,
+      chains: manifest.chains,
+      whitelistIds: scopeWhitelistIds
+    } : { providers: [], eventTypes: [], verifiedEventTypes: [],
+      chains: manifest.chains, whitelistIds: scopeWhitelistIds },
+    manifest,
     activationVersions,
-    fingerprint: hash({ policy, scope: scope.rows })
+    fingerprint: hash({ manifest, scope: scope.rows })
   };
 }
 
 function compactSummary(readiness, context) {
   const relations = Array.isArray(readiness.relations) ? readiness.relations : [];
+  const manifestCounts = context.manifest.counts || {};
   return {
     readyToArm: Boolean(readiness.readyToArm),
     blockers: readiness.blockers || [],
     advisories: readiness.advisories || [],
+    scope: {
+      type: context.manifest.scope_type,
+      id: context.manifest.scope_id,
+      revision: context.manifest.policy_revision,
+      label: context.manifest.kol_handle
+        ? `@${String(context.manifest.kol_handle).replace(/^@+/, '')}`
+        : context.manifest.scope_type === 'fixed_ca' ? '固定 CA' : '全部已启用策略'
+    },
     counts: {
       chains: context.policy.chains.length,
       whitelists: context.policy.whitelistIds.length,
-      watches: new Set(relations.map((item) => String(item.actorHandle).toLowerCase())).size,
-      relations: relations.length
+      watches: Number.isFinite(Number(manifestCounts.watches))
+        ? Number(manifestCounts.watches)
+        : new Set(relations.map((item) => String(item.actorHandle).toLowerCase())).size,
+      relations: Number.isFinite(Number(manifestCounts.relations))
+        ? Number(manifestCounts.relations) : relations.length
     },
     chains: (readiness.chains || [])
       .filter((chain) => context.policy.chains.includes(chain.chain))
@@ -77,36 +114,64 @@ function compactSummary(readiness, context) {
 }
 
 async function prepare(operator, options = {}) {
+  const scopeInput = options.scope || {};
+  const probe = options.probe === true;
   const readiness = await (options.readinessProvider
-    || (() => readinessService.getSnapshot({ probe: true })))();
-  const context = await currentPolicyContext();
+    || (() => readinessService.getSnapshot({ probe, scope: scopeInput })))();
+  const context = await currentPolicyContext(db, scopeInput);
   const summary = compactSummary(readiness, context);
   if (!readiness.readyToArm) {
     return {
       preparation_id: null,
       arm_token: null,
       expires_at: null,
-      summary
+      summary,
+      scope: context.manifest
     };
   }
+  const readinessSnapshot = {
+    generatedAt: readiness.generatedAt,
+    snapshotHash: readiness.snapshotHash,
+    readyToArm: readiness.readyToArm,
+    blockers: readiness.blockers || [],
+    advisories: readiness.advisories || [],
+    configurationFingerprint: readiness.configurationFingerprint,
+    scope: readiness.scope || context.manifest,
+    provider: readiness.provider || null,
+    checks: readiness.checks || {},
+    chains: (readiness.chains || []).filter((chain) => context.manifest.chains.includes(chain.chain))
+      .map((chain) => ({
+        chain: chain.chain,
+        ready: Boolean(chain.ready),
+        infrastructure_ready: Boolean(chain.infrastructure_ready),
+        blockers: chain.blockers || [],
+        native_balance: chain.native_balance ?? null
+      }))
+  };
   const token = crypto.randomBytes(32).toString('base64url');
   const result = await db.query(
     `INSERT INTO arm_preparations(
        token_hash, operator, configuration_fingerprint, policy_fingerprint,
-       snapshot_hash, activation_versions, compact_summary, expires_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '60 seconds')
+       snapshot_hash, activation_versions, compact_summary, scope_type, scope_id,
+       scope_chain_ids, scope_revision, scope_manifest_hash, readiness_snapshot,
+       probe_requested, expires_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW() + INTERVAL '60 seconds')
      RETURNING id, expires_at, created_at`,
     [
       tokenHash(token), String(operator || 'admin').slice(0, 128),
       readiness.configurationFingerprint, context.fingerprint,
-      readiness.snapshotHash, context.activationVersions, summary
+      readiness.snapshotHash, context.activationVersions, summary,
+      context.manifest.scope_type, context.manifest.scope_id, context.manifest.chains,
+      context.manifest.policy_revision, context.manifest.manifest_hash, readinessSnapshot,
+      probe
     ]
   );
   return {
     preparation_id: Number(result.rows[0].id),
     arm_token: token,
     expires_at: result.rows[0].expires_at,
-    summary
+    summary,
+    scope: context.manifest
   };
 }
 
@@ -119,7 +184,8 @@ async function getPreparation(id, operator, executor = db) {
   }
   const result = await executor.query(
     `SELECT id, operator, compact_summary, status, expires_at, consumed_at,
-            failed_at, failure_code, failure_detail, created_at
+            failed_at, failure_code, failure_detail, created_at,
+            scope_type, scope_id, scope_chain_ids, scope_revision, scope_manifest_hash
      FROM arm_preparations
      WHERE id = $1 AND operator = $2`,
     [preparationId, String(operator || 'admin').slice(0, 128)]
@@ -129,6 +195,13 @@ async function getPreparation(id, operator, executor = db) {
   return {
     preparation_id: Number(row.id),
     summary: row.compact_summary,
+    scope: {
+      scope_type: row.scope_type,
+      scope_id: row.scope_id === null ? null : Number(row.scope_id),
+      chain_ids: row.scope_chain_ids || [],
+      revision: row.scope_revision,
+      manifest_hash: row.scope_manifest_hash
+    },
     status: row.status,
     expires_at: row.expires_at,
     consumed_at: row.consumed_at,
@@ -147,10 +220,9 @@ async function confirm(input, operator, options = {}) {
     error.code = 'ARM_PREPARATION_REQUIRED';
     throw error;
   }
-  const currentReadiness = await (options.snapshotProvider || readinessService.getSnapshot)();
-  const context = await currentPolicyContext();
   const client = await db.pool.connect();
   let transactionOpen = false;
+  let savedReadiness = null;
   try {
     await client.query('BEGIN');
     transactionOpen = true;
@@ -180,8 +252,20 @@ async function confirm(input, operator, options = {}) {
       error.code = 'ARM_PREPARATION_EXPIRED';
       throw error;
     }
-    const stale = !currentReadiness.readyToArm
-      || row.configuration_fingerprint !== currentReadiness.configurationFingerprint
+    const scopeInput = {
+      scope_type: row.scope_type,
+      scope_id: row.scope_id,
+      chain_ids: row.scope_chain_ids || []
+    };
+    const context = await currentPolicyContext(client, scopeInput);
+    savedReadiness = row.readiness_snapshot || {};
+    const snapshotHashMatches = row.snapshot_hash === savedReadiness.snapshotHash;
+    const snapshotScopeMatches = savedReadiness.scope?.manifest_hash === row.scope_manifest_hash;
+    const stale = !savedReadiness.readyToArm
+      || !snapshotHashMatches
+      || !snapshotScopeMatches
+      || row.scope_manifest_hash !== context.manifest.manifest_hash
+      || Number(row.scope_revision || 0) !== Number(context.manifest.policy_revision || 0)
       || row.policy_fingerprint !== context.fingerprint
       || hash(row.activation_versions || {}) !== hash(context.activationVersions);
     if (stale) {
@@ -193,7 +277,10 @@ async function confirm(input, operator, options = {}) {
       transactionOpen = false;
       const error = new Error('Live scope changed after the readiness check');
       error.code = 'ARM_PREPARATION_STALE';
-      error.details = { blockers: currentReadiness.blockers || [] };
+      error.code = row.scope_manifest_hash !== context.manifest.manifest_hash
+        || Number(row.scope_revision || 0) !== Number(context.manifest.policy_revision || 0)
+        ? 'ARM_SCOPE_CHANGED' : 'ARM_SNAPSHOT_STALE';
+      error.details = { blockers: savedReadiness.blockers || [], scope: context.manifest };
       throw error;
     }
     await client.query(
@@ -212,7 +299,8 @@ async function confirm(input, operator, options = {}) {
   }
   let runtime;
   try {
-    runtime = await engineState.arm({ operator, readiness: currentReadiness });
+    runtime = await engineState.arm({ operator, readiness: savedReadiness });
+    executionGateService.update(savedReadiness);
   } catch (error) {
     await db.query(
       `UPDATE arm_preparations

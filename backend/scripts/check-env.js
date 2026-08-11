@@ -7,6 +7,7 @@ const {
   legacyShadowEnabled,
   legacyXProvidersEnabled
 } = require('../lib/legacy-features');
+const { getGmgnCredentials } = require('../lib/gmgn-credentials');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
@@ -47,8 +48,9 @@ function checkVars() {
     throw new Error('Production requires separate --role=ingestion and --role=execution processes.');
   }
 
-  const apiKey = process.env.GMGN_API_KEY || '';
-  const privateKey = (process.env.GMGN_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const credentials = getGmgnCredentials();
+  const apiKey = credentials.apiKey;
+  const privateKey = credentials.privateKey;
 
   if (apiKey && !apiKey.startsWith('gmgn')) {
     throw new Error('GMGN_API_KEY has an invalid format.');

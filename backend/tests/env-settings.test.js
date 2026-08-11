@@ -10,6 +10,9 @@ test('environment settings enforce local binding and valid ports', () => {
 
 test('environment settings validate GMGN and RPC contracts without exposing values', () => {
   assert.equal(validateValue('GMGN_API_KEY', 'gmgn-test-value'), 'gmgn-test-value');
+  assert.equal(validateValue('GMGN_TEST_API_KEY', 'gmgn-test-value'), 'gmgn-test-value');
+  assert.equal(validateValue('GMGN_CREDENTIAL_PROFILE', 'test'), 'test');
+  assert.throws(() => validateValue('GMGN_CREDENTIAL_PROFILE', 'staging'), { code: 'ENV_VALUE_INVALID' });
   assert.throws(() => validateValue('GMGN_API_KEY', 'invalid'), { code: 'ENV_VALUE_INVALID' });
   assert.equal(validateValue('XAI_API_KEY', 'xai-test-value'), 'xai-test-value');
   assert.equal(validateValue('XAI_BASE_URL', 'https://api.apikey.fun/v1/'), 'https://api.apikey.fun/v1');
@@ -47,6 +50,16 @@ test('configuration impact registry keeps research hot and scopes monitoring res
   assert.equal(monitoring.impact_scope, 'monitoring_critical');
   assert.deepEqual(monitoring.restart_roles, ['ingestion']);
   assert.equal(monitoring.manual_rearm_required, false);
+  assert.equal(validateValue('P21_FOLLOW_DISCOVERY_ENABLED', 'true'), 'true');
+  assert.equal(validateValue('GMGN_CACHE_WARMER_ENABLED', 'false'), 'false');
+  assert.equal(validateValue('P20_CANDIDATE_WARMUP_ENABLED', 'false'), 'false');
+  const cacheRuntime = impactForKeys(['GMGN_CACHE_WARMER_ENABLED', 'P20_CANDIDATE_WARMUP_ENABLED']);
+  assert.equal(cacheRuntime.impact_scope, 'cache_runtime');
+  assert.deepEqual(cacheRuntime.restart_roles, []);
+  const followDiscovery = impactForKeys(['P21_FOLLOW_DISCOVERY_ENABLED']);
+  assert.equal(followDiscovery.impact_scope, 'monitoring_critical');
+  assert.deepEqual(followDiscovery.restart_roles, ['ingestion']);
+  assert.equal(followDiscovery.manual_rearm_required, false);
   const chain = impactForKeys(['ROBINHOOD_RPC_URL']);
   assert.equal(chain.impact_scope, 'chain_scoped');
   assert.equal(chain.restart_required, false);

@@ -104,6 +104,14 @@ const BLOCKER_LABELS: Record<string, string> = {
   CHAIN_CONSECUTIVE_FAILURE_LOCK: '该链连续明确失败次数达到阈值，新买入已暂停',
   FAST_PATH_CACHE_NOT_READY: '快速交易缓存尚未就绪',
   FAST_PATH_WARMER_NOT_RUNNING: '快速交易缓存预热服务未运行',
+  FOLLOW_POLICY_NOT_LIVE: '关注发现策略未处于实盘模式',
+  FOLLOW_WATCH_NOT_SYNCED: '关注发现目标尚未同步到 6551 Watch',
+  FOLLOW_SCOPE_CHAIN_MISSING: '关注发现作用域没有配置交易链',
+  P21_FOLLOW_DISCOVERY_DISABLED: 'P21 关注发现运行开关尚未开启',
+  ARM_SCOPE_CHANGED: '启动确认后，交易作用域已发生变化',
+  ARM_SNAPSHOT_STALE: '启动确认快照已失效，需要重新检查',
+  LIVE_SCOPE_SIGNAL_NOT_ALLOWED: '信号不属于当前已确认的交易作用域',
+  RUNTIME_SCOPE_NOT_FOUND: '指定的交易作用域不存在或已停用',
   FAST_PATH_WARMER_ERROR: '快速交易缓存预热服务异常',
   FAST_PATH_SLO_NOT_VERIFIED: '快速交易时延指标尚未验证',
   LIVE_CONFIGURATION_CHANGED: '真实交易配置已变化，需要重新检查',
@@ -147,6 +155,10 @@ const BLOCKER_ACTION_LABELS: Record<string, string> = {
   MIGRATION_NOT_CURRENT: '停止交易进程，备份数据库后执行 P14 additive migration',
   LIVE_MODE_REQUIRED: '后台尚未加载真实交易运行基线',
   LIVE_TRADING_DISABLED: '后台尚未加载真实交易许可基线',
+  FOLLOW_WATCH_NOT_SYNCED: '等待 6551 Watch 同步成功后重新检查',
+  P21_FOLLOW_DISCOVERY_DISABLED: '开启 P21 关注发现运行开关后重新检查',
+  ARM_SCOPE_CHANGED: '返回作用域配置，确认 Revision 后重新准备',
+  ARM_SNAPSHOT_STALE: '重新执行一次实盘检查，不复用旧快照',
   X_6551_INGESTION_UNHEALTHY: '系统正在自动重连，状态恢复后弹窗会自动更新',
   LIVE_POLICY_EMPTY: '选择 6551、回复、SOL 和首个 CA，然后保存实盘执行策略',
   P20_LIVE_DISABLED: '开启 P20 实盘能力，或将动态策略切换为记录、模拟或暂停',
@@ -249,6 +261,34 @@ export function blockerLabel(value: string): string {
 
 export function blockerActionLabel(value: string): string {
   return BLOCKER_ACTION_LABELS[value] || '请先处理该项后重新检查';
+}
+
+const ADVISORY_LABELS: Record<string, string> = {
+  GMGN_TRADE_WEIGHT_REFILLING: 'GMGN 额度正在恢复中',
+  GMGN_SCHEDULER_BUSY: 'GMGN 当前有请求排队',
+  FAST_PATH_WARMER_DISABLED_LAZY_LOAD: '快速交易缓存按需加载',
+  FAST_PATH_CACHE_NOT_READY: '快速交易缓存尚未全部命中',
+  FAST_PATH_SLO_NOT_VERIFIED: '快速交易时延样本尚未达标',
+  TRADE_ALERTS_NOT_VERIFIED: '资金告警尚未完成验证',
+  WALLET_QUARANTINE_ACTIVE: '存在待核对的钱包写入隔离',
+};
+
+const ADVISORY_ACTION_LABELS: Record<string, string> = {
+  GMGN_TRADE_WEIGHT_REFILLING: '等待额度恢复；不重复触发探测',
+  GMGN_SCHEDULER_BUSY: '等待当前请求完成',
+  FAST_PATH_WARMER_DISABLED_LAZY_LOAD: '首次交易按需补齐缓存',
+  FAST_PATH_CACHE_NOT_READY: '交易前只补齐当前 CA 所需数据',
+  FAST_PATH_SLO_NOT_VERIFIED: '继续积累样本，不阻止本次作用域确认',
+  TRADE_ALERTS_NOT_VERIFIED: '完成告警测试后再作为运维验收项处理',
+  WALLET_QUARANTINE_ACTIVE: '先核对该钱包的未确定结果',
+};
+
+export function advisoryLabel(value: string): string {
+  return ADVISORY_LABELS[value] || `观察项（${value}）`;
+}
+
+export function advisoryActionLabel(value: string): string {
+  return ADVISORY_ACTION_LABELS[value] || '记录并观察，不作为启动阻断项';
 }
 
 export function eventTypeLabel(value?: string | null): string {

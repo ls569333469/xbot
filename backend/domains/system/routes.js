@@ -11,6 +11,7 @@ const armPreparation = require('./arm-preparation-service');
 const { getRuntimeSummary } = require('../trade/runtime-policy-summary');
 const { enqueueWhitelistActivation } = require('../whitelist/activation-outbox');
 const { cache: gmgnCache } = require('../../lib/gmgn-cache');
+const runtimeScopeService = require('../trade/runtime-scope-service');
 
 function operatorId(req) {
   return String(req.get('x-operator-id') || 'admin').slice(0, 128);
@@ -67,12 +68,23 @@ router.get('/runtime-summary', async (req, res) => {
   }
 });
 
+router.get('/runtime-scopes', async (req, res) => {
+  try {
+    res.json({ ok: true, data: await runtimeScopeService.listActiveScopes() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, code: err.code || 'RUNTIME_SCOPES_FAILED' });
+  }
+});
+
 router.post('/arm/prepare', async (req, res) => {
   try {
     if (String(process.env.LIVE_TRADING_ENABLED || 'false').toLowerCase() !== 'true') {
       return res.status(409).json({ ok: false, error: 'Live trading is disabled by configuration', code: 'LIVE_DISABLED' });
     }
-    const data = await armPreparation.prepare(operatorId(req));
+    const data = await armPreparation.prepare(operatorId(req), {
+      scope: req.body?.scope || req.body || {},
+      probe: req.body?.probe === true
+    });
     await auditControl(req, 'LIVE_ENGINE_ARM_PREPARED', {
       preparation_id: data.preparation_id,
       counts: data.summary.counts
@@ -131,7 +143,12 @@ router.get('/engine-status', (req, res) => {
 router.get('/readiness', async (req, res) => {
   try {
     const probe = String(req.query.probe || 'false').toLowerCase() === 'true';
-    res.json({ ok: true, data: await readinessService.getSnapshot({ probe }) });
+    const scope = req.query.scope_type ? {
+      scope_type: req.query.scope_type,
+      scope_id: req.query.scope_id || null,
+      chain_ids: String(req.query.chain_ids || '').split(',').filter(Boolean)
+    } : engineState.getScopeInput();
+    res.json({ ok: true, data: await readinessService.getSnapshot({ probe, scope }) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, code: err.code || 'READINESS_FAILED' });
   }
@@ -237,7 +254,7 @@ router.get('/signals', async (req, res) => {
     const result = await db.query(query, params);
     const [policy, chainRows] = await Promise.all([
       livePolicy.getPolicy(),
-      db.query('SELECT chain, implemented, contract_tested FROM chain_live_readiness')
+      db.query('SELECT chain, implemented, contract_tested, live_enabled FROM chain_live_readiness')
         .catch(() => ({ rows: [] }))
     ]);
     const chainMap = new Map(chainRows.rows.map(item => [item.chain, item]));
@@ -251,7 +268,7 @@ router.get('/signals', async (req, res) => {
       const automatic = policyMatched
         && policy.verifiedEventTypes.includes(String(signal.activity_type || '').toLowerCase())
         && chain?.implemented
-        && chain?.contract_tested;
+        && (chain?.contract_tested || chain?.live_enabled);
       return {
         ...signal,
         live_authorization: automatic ? 'auto_allowed' : policyMatched ? 'manual_allowed' : 'record_only'

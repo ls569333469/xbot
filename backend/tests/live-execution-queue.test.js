@@ -151,3 +151,29 @@ test('final policy rejection after queue claim never reaches the GMGN execution 
       && call.params[1] === 'LIVE_TRIGGER_EVENT_NOT_ALLOWED'
   )));
 });
+
+test('pre-submit provider cooldown returns a live signal to the durable queue', async () => {
+  const db = fakeDb();
+  const error = Object.assign(new Error('GMGN request rejected during provider rate-limit cooldown'), {
+    code: 'GMGN_RATE_LIMIT_COOLDOWN',
+    retryable: true,
+    providerWait: true
+  });
+  const queue = new LiveExecutionQueue({
+    db,
+    engine: { getArmed: () => true, getArmedAt: () => new Date(0) },
+    modeProvider: () => 'live',
+    execution: {
+      executeAutomatic: async () => { throw error; }
+    },
+    logger: { error() {}, warn() {} }
+  });
+  queue.enqueue([{ id: 46, execution_mode: 'live' }]);
+  await queue.waitForIdle();
+  assert.ok(db.calls.some((call) => (
+    call.sql.includes("status = 'recorded'")
+      && call.params[0] === 46
+      && call.params[1] === 'GMGN_RATE_LIMIT_COOLDOWN'
+  )));
+  assert.equal(db.calls.some((call) => call.sql.includes("status = 'rejected'")), false);
+});

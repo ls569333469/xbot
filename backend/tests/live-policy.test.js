@@ -97,6 +97,78 @@ test('live whitelist authorization follows active unexpired entries on allowed c
   assert.deepEqual(await resolveActiveWhitelistIds([], executor), []);
 });
 
+test('strategy-scoped signals require production chain approval without fixed-CA contract evidence', async () => {
+  const previous = process.env.P21_FOLLOW_DISCOVERY_ENABLED;
+  process.env.P21_FOLLOW_DISCOVERY_ENABLED = 'true';
+  const executor = {
+    async query(sql) {
+      if (sql.includes('FROM follow_discovery_policies policy')) {
+        return { rows: [{
+          id: 2, enabled: true, mode: 'live', archived_at: null, kol_enabled: true,
+          revision: 4, context_hash: 'follow-context', event_status: 'resolved',
+          event_chain: 'sol', event_ca: 'So11111111111111111111111111111111111111112',
+          provider_created_at: new Date().toISOString(),
+          trade_config_snapshot: {
+            chain_budgets: { sol: { budget_per_trade: 0.01, daily_budget: 0.1 } }
+          }
+        }] };
+      }
+      if (sql.includes('FROM chain_live_readiness')) {
+        return { rows: [{
+          chain: 'sol', implemented: true, live_enabled: true, contract_tested: false
+        }] };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    }
+  };
+  try {
+    const result = await evaluate({
+      follow_discovery_policy_id: 2,
+      follow_discovery_event_id: 9,
+      follow_discovery_policy_revision: 4,
+      follow_discovery_context_hash: 'follow-context',
+      chain_id: 'sol',
+      contract_address: 'So11111111111111111111111111111111111111112',
+      source_created_at: new Date().toISOString()
+    }, { executor, skipDynamicUsage: true });
+    assert.equal(result.allowed, true);
+    assert.equal(result.blockers.includes('CHAIN_CONTRACT_NOT_TESTED'), false);
+  } finally {
+    if (previous === undefined) delete process.env.P21_FOLLOW_DISCOVERY_ENABLED;
+    else process.env.P21_FOLLOW_DISCOVERY_ENABLED = previous;
+  }
+});
+
+test('fixed CA signals keep working after a transient probe failure when the chain is production-approved', async () => {
+  const originalProvider = process.env.X_DATA_PROVIDER;
+  process.env.X_DATA_PROVIDER = '6551';
+  const executor = {
+    async query(sql) {
+      if (sql.includes('FROM ca_whitelist AS whitelist')) {
+        return { rows: [{ id: 8, chain_id: 'base', event_types: ['tweet'] }] };
+      }
+      if (sql.includes('FROM x_signal_relations AS relation')) {
+        return { rows: [{ '?column?': 1 }] };
+      }
+      if (sql.includes('FROM chain_live_readiness')) {
+        return { rows: [{ chain: 'base', implemented: true, contract_tested: false, live_enabled: true }] };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    }
+  };
+  try {
+    const result = await evaluate({
+      provider: '6551', activity_type: 'tweet', chain_id: 'base', whitelist_id: 8,
+      source_created_at: new Date().toISOString(), matched_relation_ids: [12], matched_source_rule_ids: []
+    }, { executor });
+    assert.equal(result.allowed, true);
+    assert.equal(result.blockers.includes('CHAIN_CONTRACT_NOT_TESTED'), false);
+  } finally {
+    if (originalProvider === undefined) delete process.env.X_DATA_PROVIDER;
+    else process.env.X_DATA_PROVIDER = originalProvider;
+  }
+});
+
 test('6551 live policy fails closed when the upstream event time is missing', async () => {
   const originalProvider = process.env.X_DATA_PROVIDER;
   process.env.X_DATA_PROVIDER = '6551';

@@ -1,5 +1,5 @@
 import {
-  Archive, ArrowRight, Check, Layers3, RotateCcw, Save, SearchCheck,
+  Archive, ArrowRight, Check, Layers3, RotateCcw, Save,
   ShieldAlert, Trash2, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import { useToast } from '../../components/ui/ToastContext';
 import { api } from '../../lib/api';
 import type {
-  ActorScreeningRun, ChainId, DynamicPolicy,
+  ChainId, DynamicPolicy,
   DynamicPolicyTemplate, DynamicPolicyTemplateConfig, DynamicResolution,
   DynamicSignalStatus, ExitStrategy, KolAccount,
 } from '../../lib/types';
@@ -156,15 +156,6 @@ function configDiffLabels(draft: Draft, baseline?: DynamicPolicyTemplateConfig |
   return labels;
 }
 
-function handles(value: string) {
-  return [...new Set(value.split(/[\s,，;；]+/)
-    .map((item) => item.trim().replace(/^@+/, '').toLowerCase()).filter(Boolean))];
-}
-
-function pct(value?: number | null) {
-  return value === null || value === undefined ? '--' : `${(Number(value) * 100).toFixed(1)}%`;
-}
-
 function modeLabel(mode: DynamicPolicy['mode']) {
   return mode === 'record' ? '记录' : mode === 'paper' ? '模拟' : mode === 'live' ? '实盘' : '暂停';
 }
@@ -240,38 +231,23 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
   const [aliasInput, setAliasInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [templateBusy, setTemplateBusy] = useState(false);
-  const [screenInput, setScreenInput] = useState('');
-  const [runs, setRuns] = useState<ActorScreeningRun[]>([]);
-  const [activeRun, setActiveRun] = useState<ActorScreeningRun | null>(null);
   const [resolutions, setResolutions] = useState<DynamicResolution[]>([]);
   const [runtime, setRuntime] = useState<DynamicSignalStatus | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const { toast } = useToast();
 
   const refresh = useCallback(async () => {
-    const [policyResponse, templateResponse, runResponse, resolutionResponse, statusResponse] = await Promise.all([
-      api.dynamicSignal.policies(), api.dynamicSignal.templates.list(), api.actorScreening.list(),
+    const [policyResponse, templateResponse, resolutionResponse, statusResponse] = await Promise.all([
+      api.dynamicSignal.policies(), api.dynamicSignal.templates.list(),
       api.dynamicSignal.resolutions({ limit: '50' }), api.dynamicSignal.status(),
     ]);
     if (policyResponse.ok) setPolicies(policyResponse.data || []);
     if (templateResponse.ok) setTemplates(templateResponse.data || []);
-    if (runResponse.ok) setRuns(runResponse.data || []);
     if (resolutionResponse.ok) setResolutions(resolutionResponse.data || []);
     if (statusResponse.ok) setRuntime(statusResponse.data || null);
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => {
-    if (!activeRun || !['pending', 'running'].includes(activeRun.status)) return undefined;
-    const timer = window.setInterval(async () => {
-      const response = await api.actorScreening.get(activeRun.id);
-      if (response.ok && response.data) {
-        setActiveRun(response.data);
-        if (!['pending', 'running'].includes(response.data.status)) void refresh();
-      }
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [activeRun, refresh]);
 
   const selected = useMemo(
     () => policies.find((item) => String(item.kol_id) === kolId),
@@ -495,18 +471,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     } finally { setActionBusy(false); }
   };
 
-  const startScreening = async () => {
-    const values = handles(screenInput);
-    if (!values.length) return toast('请输入至少一个 X 账号', 'error');
-    const response = await api.actorScreening.create({ handles: values });
-    if (!response.ok || !response.data) return toast(response.error || '账号清洗任务创建失败', 'error');
-    setActiveRun(response.data);
-    setScreenInput('');
-    toast('账号清洗任务已进入队列', 'success');
-    await refresh();
-  };
-
-  const visibleRun = activeRun || runs[0] || null;
   const policyResolutions = selected
     ? resolutions.filter((item) => item.actor_policy_id === selected.id).slice(0, 8) : [];
   const watchReady = selected?.watch_sync_status === 'succeeded';
@@ -601,10 +565,7 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
         </main>
       </section>
 
-      <div className="p20-operations-grid p20-support-grid">
-        <section className="p20-configured-policies"><div className="p20-section-title"><strong>已配置账号</strong><span>{policies.length} 个</span></div><div className="p20-policy-list">{policies.map((policy) => <button type="button" key={policy.id} className={String(policy.kol_id) === kolId ? 'selected' : ''} onClick={() => setKolId(String(policy.kol_id))}><strong>@{policy.x_handle.replace(/^@+/, '')}</strong><span>{modeLabel(policy.mode)} · Revision {policy.revision}</span></button>)}{!policies.length && <div className="p16-empty-line">还没有动态策略。</div>}</div></section>
-        <section className="p20-screening"><div className="p20-section-title"><strong>账号清洗</strong><span>{visibleRun?.status || '空闲'}</span></div><div className="p20-screen-input"><textarea rows={3} value={screenInput} onChange={(event) => setScreenInput(event.target.value)} placeholder="@account1  @account2" /><button type="button" className="btn btn-secondary" onClick={startScreening}><SearchCheck size={15} />开始</button></div><div className="p20-screen-results">{visibleRun?.results?.length ? visibleRun.results.map((result) => <button type="button" key={result.id} className="p20-result-row"><strong>@{result.x_handle}</strong><span>{result.sample_size} 帖</span><span>意图 {pct(result.direct_intent_rate)}</span><span>解析 {pct(result.ca_resolution_rate)}</span><span>胜率 {pct(result.executable_win_rate)}</span><i>{result.recommendation === 'approve_for_record' ? '建议记录' : result.recommendation === 'watch' ? '继续观察' : result.recommendation === 'reject' ? '不建议' : '数据不足'}</i></button>) : <div className="p16-empty-line">暂无清洗结果</div>}</div></section>
-      </div>
+      <section className="p20-configured-policies p20-configured-policies-wide"><div className="p20-section-title"><strong>已配置账号</strong><span>{policies.length} 个</span></div><div className="p20-policy-list">{policies.map((policy) => <button type="button" key={policy.id} className={String(policy.kol_id) === kolId ? 'selected' : ''} onClick={() => setKolId(String(policy.kol_id))}><strong>@{policy.x_handle.replace(/^@+/, '')}</strong><span>{modeLabel(policy.mode)} · Revision {policy.revision}</span></button>)}{!policies.length && <div className="p16-empty-line">还没有动态策略。</div>}</div></section>
 
       <div className="p20-runtime-grid">
         <section><div className="p20-section-title"><strong>解析记录</strong><span>{policyResolutions.length ? `最近 ${policyResolutions.length} 条` : '暂无记录'}</span></div><div className="p20-audit-list">{policyResolutions.map((item) => <div key={item.id}><span><strong>{item.symbol || item.contract_address || '未解析词条'}</strong><small>{item.chain_id?.toUpperCase() || '--'} · {item.failure_code || item.intent_class}</small></span><i className={item.status === 'resolved' ? 'active' : ''}>{resolutionLabel(item.status)}</i></div>)}{!policyResolutions.length && <div className="p16-empty-line">该策略还没有解析记录</div>}</div></section>

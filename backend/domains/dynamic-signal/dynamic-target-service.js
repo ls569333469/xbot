@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const db = require('../../lib/db');
 const { chainBudgetFor } = require('./policy-service');
 const { legacyPercentages } = require('../trade/exit-strategy-compiler');
-const { enqueueWhitelistActivation } = require('../whitelist/activation-outbox');
 
 async function materialize(job, attempt, selected, executor = db) {
   if (!selected || !['paper', 'live'].includes(job.mode)) return null;
@@ -66,13 +65,10 @@ async function materialize(job, attempt, selected, executor = db) {
     [selected.contractAddress, selected.chainId, selected.symbol || null, selected.name || selected.symbol || null,
        chainBudget.budget_per_trade, chainBudget.daily_budget, legacy.auto_tp_pct, legacy.auto_sl_pct,
       policy.slippage, policy.per_token_buy_limit > 1, policy.per_token_buy_limit, target.id, policy.id,
-      policy.revision, policy.exit_strategy, 'syncing',
+      policy.revision, policy.exit_strategy, 'live_ready',
       crypto.createHash('sha256').update(policy.context_hash).digest('hex')]
   );
   const whitelist = whitelistResult.rows[0];
-  const activation = job.mode === 'live'
-    ? await enqueueWhitelistActivation(whitelist.id, executor, { increment: false })
-    : null;
   await executor.query(
     'UPDATE dynamic_targets SET whitelist_id = $2, updated_at = NOW() WHERE id = $1',
     [target.id, whitelist.id]
@@ -80,8 +76,8 @@ async function materialize(job, attempt, selected, executor = db) {
   return {
     ...target,
     whitelist_id: whitelist.id,
-    activation_version: activation?.activation_version || whitelist.activation_version,
-    whitelist: activation ? { ...whitelist, ...activation, live_activation_state: 'syncing' } : whitelist
+    activation_version: whitelist.activation_version,
+    whitelist
   };
 }
 
@@ -105,7 +101,7 @@ async function createSignal(job, attempt, target, result, executor = db) {
       job.policy_revision, job.context_hash, result.intent?.intentClass || 'unknown',
       result.intent?.reasonCodes || [], result.intent?.ruleRevision || 'unknown',
       { resolver_revision: result.resolverRevision, resolution_confidence: result.confidence },
-      job.mode === 'live' ? target.activation_version : null]
+      null]
   );
   return signalResult.rows[0] || null;
 }

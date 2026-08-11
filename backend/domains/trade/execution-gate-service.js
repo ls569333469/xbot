@@ -17,6 +17,13 @@ class ExecutionGateService {
       readyToArm: Boolean(readiness.readyToArm),
       blockers: [...new Set(readiness.blockers || [])],
       configurationFingerprint: readiness.configurationFingerprint || null,
+      scope: readiness.scope ? {
+        scope_type: readiness.scope.scope_type || 'combined',
+        scope_id: readiness.scope.scope_id ?? null,
+        chains: [...new Set(readiness.scope.chains || readiness.scope.scope_chain_ids || [])].sort(),
+        revision: readiness.scope.policy_revision ?? readiness.scope.scope_revision ?? null,
+        manifest_hash: readiness.scope.manifest_hash || readiness.scope.scope_manifest_hash || null
+      } : null,
       scheduler: readiness.scheduler ? {
         state: readiness.scheduler.state,
         configuredCapacity: readiness.scheduler.configuredCapacity,
@@ -63,8 +70,23 @@ class ExecutionGateService {
       error.code = 'LIVE_CONFIGURATION_CHANGED';
       throw error;
     }
+    if (snapshot.scope && runtime.scope
+        && (snapshot.scope.scope_type !== runtime.scope.scope_type
+          || Number(snapshot.scope.scope_id || 0) !== Number(runtime.scope.scope_id || 0)
+          || (snapshot.scope.chains.length > 0
+            && JSON.stringify(snapshot.scope.chains)
+              !== JSON.stringify([...(runtime.scope.chain_ids || [])].sort()))
+          || (snapshot.scope.revision !== null && snapshot.scope.revision !== undefined
+            && Number(snapshot.scope.revision || 0) !== Number(runtime.scope.revision || 0))
+          || (snapshot.scope.manifest_hash && runtime.scope.manifest_hash
+            && snapshot.scope.manifest_hash !== runtime.scope.manifest_hash))) {
+      const error = new Error('Execution gate snapshot belongs to another runtime scope');
+      error.code = 'LIVE_SCOPE_SNAPSHOT_MISMATCH';
+      throw error;
+    }
     const target = snapshot.chains.find((item) => item.chain === chain);
-    const targetReady = options.dynamicScope
+    const strategyScope = Boolean(options.strategyScope ?? options.dynamicScope);
+    const targetReady = strategyScope
       ? target?.infrastructureReady
       : target?.ready;
     if (!targetReady) {

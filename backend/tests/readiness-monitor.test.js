@@ -22,15 +22,12 @@ test('scheduler readiness treats an in-flight reservation as busy rather than fa
   });
 });
 
-test('scheduler readiness still blocks real cooldowns and undersized capacity', () => {
+test('scheduler readiness still blocks real cooldowns while allowing a swap-sized bucket', () => {
   assert.deepEqual(schedulerReadiness({
     state: 'cooling',
     configuredCapacity: 5,
     availableWeight: 5
-  }).blockers, [
-    'GMGN_SCHEDULER_NOT_HEALTHY',
-    'GMGN_TRADE_WEIGHT_UNAVAILABLE'
-  ]);
+  }).blockers, ['GMGN_SCHEDULER_NOT_HEALTHY']);
 });
 
 test('readiness monitor pauses transient blockers and reports them once', async () => {
@@ -45,7 +42,7 @@ test('readiness monitor pauses transient blockers and reports them once', async 
     },
     snapshotProvider: async () => ({
       readyToArm: false,
-      blockers: ['GMGN_RECENT_429'],
+      blockers: ['GMGN_SCHEDULER_NOT_HEALTHY'],
       snapshotHash: 'snapshot-1'
     }),
     onDisarm: async (details) => alerts.push(details)
@@ -53,7 +50,7 @@ test('readiness monitor pauses transient blockers and reports them once', async 
   const result = await monitor.checkOnce();
   assert.equal(result.status, 'paused_transient');
   assert.equal(armed, false);
-  assert.deepEqual(alerts[0].blockers, ['GMGN_RECENT_429']);
+  assert.deepEqual(alerts[0].blockers, ['GMGN_SCHEDULER_NOT_HEALTHY']);
 });
 
 test('readiness monitor automatically faults critical blockers', async () => {
@@ -142,7 +139,7 @@ test('readiness monitor reminds but never faults while a transient blocker persi
     },
     snapshotProvider: async () => ({
       readyToArm: false,
-      blockers: ['GMGN_RECENT_429'],
+      blockers: ['GMGN_SCHEDULER_NOT_HEALTHY'],
       snapshotHash: 'snapshot-cooling'
     }),
     onDisarm: async () => {},

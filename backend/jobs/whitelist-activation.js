@@ -1,12 +1,7 @@
 const crypto = require('crypto');
 const db = require('../lib/db');
 const logger = require('../lib/logger');
-const gmgnHttp = require('../lib/gmgn-http');
-const gmgnAdapter = require('../lib/gmgn-adapter');
-const { decimalToRaw } = require('../lib/decimal-units');
-const { loadCachedContext } = require('../domains/trade/fast-path-context');
 const { compileExitStrategy } = require('../domains/trade/exit-strategy-compiler');
-const { probeRpc } = require('../domains/trade/chain-receipt-service');
 const { validateTokenAddress } = require('../domains/trade/chain-adapters');
 const {
   enqueueWatchSyncForHandles,
@@ -52,6 +47,13 @@ async function loadActivationContext(whitelistId, executor = db) {
                 FROM x_actor_dynamic_policies AS policy
                 WHERE whitelist.source = 'dynamic_keyword'
                   AND whitelist.actor_policy_id = policy.id
+                  AND policy.enabled = true AND policy.mode <> 'paused'
+                UNION
+                SELECT policy.kol_id
+                FROM follow_discovery_policies AS policy
+                WHERE whitelist.source = 'follow_discovery'
+                  AND whitelist.follow_discovery_policy_id = policy.id
+                  AND policy.archived_at IS NULL
                   AND policy.enabled = true AND policy.mode <> 'paused'
               ) AS trigger
               JOIN x_kol_accounts AS actor ON actor.id = trigger.actor_id AND actor.enabled = true
@@ -112,44 +114,19 @@ async function assertWatchesInSync(whitelist, executor = db) {
 }
 
 async function probeWhitelist(whitelist, dependencies = {}) {
-  const loadContext = dependencies.loadCachedContext || loadCachedContext;
-  const context = await loadContext(whitelist, { fresh: true });
-  const rpcProbe = await (dependencies.probeRpc || probeRpc)(context.chain.id, {
-    walletAddress: context.wallet.address
-  });
-  if (!rpcProbe.ok) {
-    const error = new Error(`Chain RPC probe failed: ${rpcProbe.error}`);
-    error.code = rpcProbe.error || 'CHAIN_RPC_UNAVAILABLE';
-    throw error;
-  }
-  const inputAmountRaw = decimalToRaw(whitelist.budget_per_trade, context.chain.decimals);
-  const quote = gmgnAdapter.normalizeQuote(await (dependencies.quoteOrder || gmgnHttp.quoteOrder)(
-    context.chain.id,
-    context.wallet.address,
-    context.chain.nativeToken,
-    whitelist.contract_address,
-    inputAmountRaw,
-    Number(whitelist.slippage)
-  ));
-  if (!quote.outputAmountRaw || BigInt(quote.outputAmountRaw) <= 0n) {
-    const error = new Error('Activation quote has no output amount');
-    error.code = 'ACTIVATION_QUOTE_EMPTY';
-    throw error;
-  }
+  void dependencies;
   return fingerprint({
+    boundary: 'p24_local_activation',
     whitelistId: Number(whitelist.id),
     activationVersion: Number(whitelist.activation_version),
-    chain: context.chain.id,
+    chain: whitelist.chain_id,
     contractAddress: whitelist.contract_address,
     budgetPerTrade: String(whitelist.budget_per_trade),
     totalBudget: String(whitelist.total_budget),
     slippage: String(whitelist.slippage),
     exitStrategy: whitelist.exit_strategy,
     exitStrategyVersion: Number(whitelist.exit_strategy_version),
-    actorHandles: [...whitelist.actor_handles].sort(),
-    wallet: context.wallet.address,
-    rpcIdentity: rpcProbe.identity || null,
-    quoteOutputAmountRaw: quote.outputAmountRaw
+    actorHandles: [...whitelist.actor_handles].sort()
   });
 }
 

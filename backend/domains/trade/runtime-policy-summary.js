@@ -3,11 +3,54 @@ const engineState = require('../../lib/engine-state');
 const { CHAIN_REGISTRY } = require('../../lib/chain-config');
 const { getTradingMode } = require('../../lib/runtime-mode');
 const livePolicy = require('../signal/live-policy');
+const runtimeScopeService = require('./runtime-scope-service');
 
 function positiveInteger(value, fallback, maximum) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.min(parsed, maximum);
+}
+
+function hasScopeFilter(filters = {}) {
+  return Object.prototype.hasOwnProperty.call(filters, 'scope_type')
+    || Object.prototype.hasOwnProperty.call(filters, 'scope_id')
+    || Object.prototype.hasOwnProperty.call(filters, 'scope_chain_ids');
+}
+
+function parseScopeChainIds(value) {
+  if (Array.isArray(value)) return value;
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+async function resolveDetailScope(filters, executor) {
+  const manifest = await runtimeScopeService.resolveScope({
+    scope_type: filters.scope_type || 'combined',
+    scope_id: filters.scope_id ?? null,
+    chain_ids: parseScopeChainIds(filters.scope_chain_ids)
+  }, executor);
+  const fixedWhitelistIds = manifest.whitelist_ids || [];
+  const dynamicPolicyIds = manifest.dynamic_policy_ids || [];
+  const followPolicyIds = manifest.follow_policy_ids || [];
+  const result = await executor.query(
+    `SELECT whitelist.id
+     FROM ca_whitelist AS whitelist
+     WHERE whitelist.status = 'active'
+       AND whitelist.live_activation_state = 'live_ready'
+       AND (whitelist.expires_at IS NULL OR whitelist.expires_at > NOW())
+       AND (
+         whitelist.id = ANY($1::bigint[])
+         OR whitelist.actor_policy_id = ANY($2::bigint[])
+         OR whitelist.follow_discovery_policy_id = ANY($3::bigint[])
+       )
+     ORDER BY whitelist.id`,
+    [fixedWhitelistIds.length ? fixedWhitelistIds : [-1],
+      dynamicPolicyIds.length ? dynamicPolicyIds : [-1],
+      followPolicyIds.length ? followPolicyIds : [-1]]
+  );
+  return {
+    manifest,
+    whitelistIds: result.rows.map((row) => Number(row.id))
+  };
 }
 
 async function getRuntimeSummary(executor = db) {
@@ -72,7 +115,7 @@ async function getRuntimeSummary(executor = db) {
         chain,
         name: CHAIN_REGISTRY[chain]?.name || chain.toUpperCase(),
         ready: Boolean(readiness?.implemented
-          && readiness?.contract_tested
+        && (readiness?.contract_tested || readiness?.production_approved)
           && readiness?.production_approved)
       };
     })
@@ -80,7 +123,9 @@ async function getRuntimeSummary(executor = db) {
 }
 
 async function getRuntimePolicyDetail(filters = {}, executor = db) {
-  const policy = await livePolicy.getPolicy(executor);
+  const scoped = hasScopeFilter(filters);
+  const scope = scoped ? await resolveDetailScope(filters, executor) : null;
+  const policy = scoped ? null : await livePolicy.getPolicy(executor);
   const page = positiveInteger(filters.page, 1, 1000000);
   const pageSize = positiveInteger(filters.page_size || filters.pageSize, 20, 100);
   const chain = String(filters.chain || '').trim().toLowerCase();
@@ -90,7 +135,8 @@ async function getRuntimePolicyDetail(filters = {}, executor = db) {
     throw error;
   }
   const search = String(filters.search || '').trim();
-  const params = [policy.whitelistIds.length > 0 ? policy.whitelistIds : [-1]];
+  const whitelistIds = scoped ? scope.whitelistIds : policy.whitelistIds;
+  const params = [whitelistIds.length > 0 ? whitelistIds : [-1]];
   let where = `WHERE whitelist.id = ANY($1::int[])
     AND whitelist.status = 'active'
     AND whitelist.live_activation_state = 'live_ready'`;
@@ -149,7 +195,8 @@ async function getRuntimePolicyDetail(filters = {}, executor = db) {
     items: result.rows,
     total: Number(countResult.rows[0]?.count || 0),
     page,
-    page_size: pageSize
+    page_size: pageSize,
+    scope: scope?.manifest || null
   };
 }
 

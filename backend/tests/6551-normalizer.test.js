@@ -139,6 +139,7 @@ test('normalizes the real 6551 follow direction from monitored actor to content 
   assert.equal(follow.actorHandle, 'wanshenme');
   assert.equal(follow.activityType, 'follow');
   assert.deepEqual(follow.targetHandles, ['neet_sol']);
+  assert.equal(follow.targetUserId, '42');
   assert.equal(follow.semanticKey, 'follow:wanshenme:neet_sol');
   assert.equal(unfollow.activityType, 'unfollow');
 });

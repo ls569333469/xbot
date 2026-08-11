@@ -290,7 +290,7 @@ async function releaseIntentBudget(executor, intentId, attemptId, reason) {
         ledgerUsdAmount(item, item.amount_native, unusedFee), reason
       ]
     );
-    await require('../dynamic-signal/dynamic-authorization')
+    await require('./runtime-signal-authorization')
       .releaseUsageByAttempt(attemptId, executor);
   }
   return released.rows[0] || null;

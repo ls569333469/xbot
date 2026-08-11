@@ -15,6 +15,16 @@ const {
   sanitizeUsage
 } = require('../domains/research/xai-client');
 const { candidateEvidenceSnapshot, upsertActorCandidate } = require('../domains/research/service');
+const { schedulerAllowsResearch } = require('../domains/research/queue');
+
+test('research queue stays out of GMGN while live execution is armed', () => {
+  assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
+    liveArmed: true
+  }), false);
+  assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
+    liveArmed: false
+  }), true);
+});
 
 test('research sanitizers reject private URLs and normalize provider metadata', () => {
   assert.equal(safeUrl('http://127.0.0.1/admin'), null);
@@ -171,6 +181,12 @@ test('xAI usage and Retry-After values are bounded for audit and retry', () => {
   assert.deepEqual(sanitizeUsage({ input_tokens: '10', output_tokens: 5, ignored: 9 }), {
     input_tokens: 10,
     output_tokens: 5
+  });
+  assert.deepEqual(sanitizeUsage({ total_tokens: 10, server_side_tool_usage_details: {
+    x_search_calls: 2, web_search_calls: 1, ignored: 9
+  } }), {
+    total_tokens: 10,
+    server_side_tool_usage_details: { x_search_calls: 2, web_search_calls: 1 }
   });
   assert.equal(retryAfterMs('2'), 2000);
   assert.equal(retryAfterMs(new Date(10_000).toUTCString(), 9_000), 1000);

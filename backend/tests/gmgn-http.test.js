@@ -56,6 +56,54 @@ test('exist auth uses official headers and Unix-second auth query', async () => 
   }
 });
 
+test('GMGN HTTP uses the isolated test credential profile when selected', async () => {
+  const originalFetch = global.fetch;
+  let captured;
+  global.fetch = async (url, options) => {
+    captured = { url: String(url), options };
+    return jsonResponse({ code: 0, data: { symbol: 'TEST' } });
+  };
+
+  try {
+    await withEnv({
+      GMGN_CREDENTIAL_PROFILE: 'test',
+      GMGN_API_KEY: 'gmgn-primary',
+      GMGN_TEST_API_KEY: 'gmgn-test'
+    }, () => gmgnHttp.getTokenInfo('sol', 'TokenAddress'));
+    assert.equal(captured.options.headers['X-APIKEY'], 'gmgn-test');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('GMGN request events preserve P21 business provenance without secrets', async () => {
+  const originalFetch = global.fetch;
+  let event;
+  const listener = (value) => { event = value; };
+  gmgnHttp.requestEvents.on('request', listener);
+  global.fetch = async () => jsonResponse({ code: 0, data: { symbol: 'TEST' } });
+  try {
+    await withEnv({ GMGN_API_KEY: 'gmgn-test-key', XBOT_PROCESS_ROLE: 'execution' }, () => (
+      gmgnHttp.getTokenInfo('bsc', '0x1111111111111111111111111111111111111111', {
+        requestContext: {
+          source: 'p21_follow_discovery_verify', processRole: 'execution',
+          signalId: 12, policyId: 3, whitelistId: 8,
+          context: { event_id: 9 }
+        }
+      })
+    ));
+    assert.equal(event.source, 'p21_follow_discovery_verify');
+    assert.equal(event.processRole, 'execution');
+    assert.equal(event.signalId, 12);
+    assert.equal(event.policyId, 3);
+    assert.equal(event.whitelistId, 8);
+    assert.deepEqual(event.context, { event_id: 9 });
+  } finally {
+    gmgnHttp.requestEvents.off('request', listener);
+    global.fetch = originalFetch;
+  }
+});
+
 test('signed auth signs the exact official path, sorted query, body, and timestamp', async () => {
   const originalFetch = global.fetch;
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
@@ -101,6 +149,33 @@ test('signed auth signs the exact official path, sorted query, body, and timesta
     );
     assert.deepEqual(JSON.parse(captured.options.body), params);
   } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('auth timestamp is created after a queued rate lease is granted', async () => {
+  const originalFetch = global.fetch;
+  const originalAcquire = gmgnHttp.scheduler.acquire;
+  const { privateKey } = crypto.generateKeyPairSync('ed25519');
+  const privateKeyPem = privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+  let sentAt;
+  let sentTimestamp;
+  gmgnHttp.scheduler.acquire = async (...args) => {
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    return originalAcquire.apply(gmgnHttp.scheduler, args);
+  };
+  global.fetch = async (url) => {
+    sentAt = Math.floor(Date.now() / 1000);
+    sentTimestamp = Number(new URL(String(url)).searchParams.get('timestamp'));
+    return jsonResponse({ code: 0, data: {} });
+  };
+  try {
+    await withEnv({ GMGN_API_KEY: 'gmgn-test-key', GMGN_PRIVATE_KEY: privateKeyPem }, () => (
+      gmgnHttp.getGasPrice('sol')
+    ));
+    assert.ok(Math.abs(sentAt - sentTimestamp) <= 1);
+  } finally {
+    gmgnHttp.scheduler.acquire = originalAcquire;
     global.fetch = originalFetch;
   }
 });

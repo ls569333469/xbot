@@ -4,6 +4,20 @@ const engineState = require('../../lib/engine-state');
 const { getTradingMode } = require('../../lib/runtime-mode');
 const executionService = require('./execution-service');
 
+function scopeFilter(scope = {}, alias = 'signal', startIndex = 1) {
+  const type = String(scope.scope_type || 'combined');
+  if (type === 'dynamic_policy' && Number.isInteger(Number(scope.scope_id))) {
+    return { sql: `${alias}.actor_policy_id = $${startIndex}`, params: [Number(scope.scope_id)] };
+  }
+  if (type === 'follow_discovery' && Number.isInteger(Number(scope.scope_id))) {
+    return { sql: `${alias}.follow_discovery_policy_id = $${startIndex}`, params: [Number(scope.scope_id)] };
+  }
+  if (type === 'fixed_ca' && Number.isInteger(Number(scope.scope_id))) {
+    return { sql: `${alias}.whitelist_id = $${startIndex}`, params: [Number(scope.scope_id)] };
+  }
+  return { sql: 'TRUE', params: [] };
+}
+
 class LiveExecutionQueue {
   constructor(options = {}) {
     this.db = options.db || db;
@@ -57,6 +71,7 @@ class LiveExecutionQueue {
     this.scanRunning = true;
     try {
       const maxAgeSeconds = Math.max(1, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300));
+      const scopeGate = scopeFilter(this.engine.getScopeInput?.() || {}, 'signal', 2);
       await this.db.query(
         `UPDATE trade_signals AS signal
          SET status = 'expired',
@@ -67,7 +82,7 @@ class LiveExecutionQueue {
              END,
              updated_at = NOW()
          FROM x_activities AS activity
-         WHERE signal.status = 'recorded' AND signal.execution_mode = 'live'
+           WHERE signal.status = 'recorded' AND signal.execution_mode = 'live'
            AND activity.id = signal.activity_id
            AND (
              (lower(COALESCE(activity.provider, '')) = '6551' AND activity.source_created_at IS NULL)
@@ -75,7 +90,7 @@ class LiveExecutionQueue {
                THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END
                < NOW() - ($1 * INTERVAL '1 second')
            )`,
-        [maxAgeSeconds]
+         [maxAgeSeconds]
       );
       const result = await this.db.query(
         `SELECT signal.id, signal.execution_mode
@@ -89,9 +104,10 @@ class LiveExecutionQueue {
              OR signal.activation_wait_version = whitelist.activation_version)
            AND CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
              THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END >= $1
+           AND ${scopeGate.sql}
          ORDER BY COALESCE(activity.source_created_at, signal.created_at) ASC
          LIMIT 20`,
-        [armedAt]
+        [armedAt, ...scopeGate.params]
       );
       return { status: 'completed', found: result.rows.length, enqueued: this.enqueue(result.rows) };
     } finally {
@@ -226,6 +242,7 @@ class LiveExecutionQueue {
     );
     const armedAt = this.engine.getArmedAt?.();
     if (!armedAt) return null;
+    const scopeGate = scopeFilter(this.engine.getScopeInput?.() || {}, 'signal', 3);
     const result = await this.db.query(
       `WITH claimed AS (
          UPDATE trade_signals AS signal
@@ -240,6 +257,7 @@ class LiveExecutionQueue {
              OR signal.activation_wait_version = whitelist.activation_version)
            AND CASE WHEN lower(COALESCE(activity.provider, '')) = '6551'
              THEN activity.source_created_at ELSE COALESCE(activity.source_created_at, signal.created_at) END >= $2
+           AND ${scopeGate.sql}
          RETURNING signal.*
        ), timing AS (
          UPDATE x_provider_events AS provider_event
@@ -254,7 +272,7 @@ class LiveExecutionQueue {
        SELECT claimed.*, whitelist.chain_id
        FROM claimed
        JOIN ca_whitelist AS whitelist ON whitelist.id = claimed.whitelist_id`,
-      [signalId, armedAt]
+      [signalId, armedAt, ...scopeGate.params]
     );
     return result.rows[0] || null;
   }
@@ -281,7 +299,7 @@ class LiveExecutionQueue {
         {
           chainId: signal.chain_id,
           traceId: signal.trace_id,
-          dynamicScope: Boolean(signal.actor_policy_id && signal.dynamic_target_id)
+          strategyScope: require('./runtime-signal-authorization').scoped(signal)
         }
       );
       this.recordSuccess();
@@ -293,6 +311,19 @@ class LiveExecutionQueue {
       return { status: 'submitted', result };
     } catch (error) {
       this.recordError(error);
+      if (error?.providerWait === true && error?.retryable === true) {
+        await this.db.query(
+          `UPDATE trade_signals
+           SET status = 'recorded', reject_reason = $2, updated_at = NOW()
+           WHERE id = $1 AND status = 'pending'`,
+          [item.signalId, error.code || 'GMGN_PROVIDER_WAIT']
+        );
+        this.logger.warn(
+          'live-execution-queue',
+          `Signal ${item.signalId} deferred until the GMGN cooldown clears: ${error.message}`
+        );
+        return { status: 'provider_wait', reason: error.code || 'GMGN_PROVIDER_WAIT' };
+      }
       await this.db.query(
         `UPDATE trade_signals SET status = 'rejected', reject_reason = $2, updated_at = NOW()
          WHERE id = $1 AND status = 'pending'`,
@@ -367,4 +398,4 @@ class LiveExecutionQueue {
 
 const liveExecutionQueue = new LiveExecutionQueue();
 
-module.exports = { LiveExecutionQueue, liveExecutionQueue };
+module.exports = { LiveExecutionQueue, liveExecutionQueue, scopeFilter };

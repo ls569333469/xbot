@@ -34,6 +34,21 @@ class TtlCache {
     return promise;
   }
 
+  async getOrLoadFresh(key, loader) {
+    if (this.inflight.has(key)) return this.inflight.get(key);
+    const promise = Promise.resolve()
+      .then(loader)
+      .then((value) => ({
+        value,
+        version: `fresh-${Date.now()}`,
+        cacheHit: false,
+        ageMs: 0
+      }))
+      .finally(() => this.inflight.delete(key));
+    this.inflight.set(key, promise);
+    return promise;
+  }
+
   invalidate(prefix = '') {
     for (const key of this.entries.keys()) {
       if (!prefix || key.startsWith(prefix)) this.entries.delete(key);

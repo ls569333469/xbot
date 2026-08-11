@@ -1,4 +1,5 @@
 const db = require('../../lib/db');
+const { parseResetAt } = require('../../lib/gmgn-rate-scheduler');
 
 async function enqueueWhitelistActivation(whitelistId, executor = db, options = {}) {
   const increment = options.increment !== false;
@@ -60,7 +61,15 @@ async function claimActivationBatch(limit = 2, executor = db) {
 
 async function deferActivation(row, error, executor = db) {
   const attemptCount = Number(row.attempt_count || 0) + 1;
-  const delaySeconds = Math.min(30, 2 ** Math.min(5, attemptCount));
+  const explicitDelay = Number(error.retryAfterSeconds);
+  const resetAt = error.resetAt == null ? null : parseResetAt(error.resetAt);
+  const resetDelay = Number.isFinite(resetAt)
+    ? Math.ceil((resetAt - Date.now()) / 1000) + 1
+    : null;
+  const fallbackDelay = String(error.code || '').includes('RATE_LIMIT_BANNED')
+    ? 300 : 2 ** Math.min(5, attemptCount);
+  const delaySeconds = Math.min(900, Math.max(15,
+    Number.isFinite(explicitDelay) ? explicitDelay : resetDelay ?? fallbackDelay));
   const code = String(error.code || 'ACTIVATION_CHECK_FAILED').slice(0, 120);
   const detail = String(error.message || code).slice(0, 1000);
   await executor.query(

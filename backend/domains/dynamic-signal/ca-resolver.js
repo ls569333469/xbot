@@ -7,8 +7,9 @@ const {
   normalizeChain
 } = require('./candidate-index');
 const { RESOLUTION_CODES, applyResolutionPolicy } = require('./resolution-policy');
+const { resolveContractChain } = require('../../lib/contract-chain-resolver');
 
-const RESOLVER_REVISION = 'p20.1-resolver-v2';
+const RESOLVER_REVISION = 'p25-deterministic-chain-v1';
 const DEFAULT_MAX_CANDIDATES = 25;
 const DEFAULT_VERIFY_CONCURRENCY = 4;
 const DEFAULT_MARKET_DOMINANCE_MIN_RATIO = 2;
@@ -27,18 +28,63 @@ function filterResolutionTerms(extraction, allowedTermTypes) {
   };
 }
 
-function transientCandidates(extraction, allowedChains) {
+function transientCandidates(extraction, allowedChains, options = {}) {
   const chains = [...new Set((allowedChains || []).map(normalizeChain).filter(Boolean))];
   const evmChains = chains.filter((chain) => chain !== 'sol');
   const candidates = [];
   for (const term of extraction.authorOwnedTerms.filter((item) => item.type === 'ca')) {
     if (term.addressType === 'sol' && chains.includes('sol')) {
-      candidates.push({ chainId: 'sol', contractAddress: term.normalized, sources: ['tweet_ca'] });
-    } else if (term.addressType === 'evm' && evmChains.length === 1) {
-      candidates.push({ chainId: evmChains[0], contractAddress: term.normalized, sources: ['tweet_ca'] });
+      candidates.push({ chainId: 'sol', contractAddress: term.normalized, sources: ['tweet_ca'],
+        localEventCa: true, providerStatus: 'local_event', tradableStatus: 'unknown' });
+    } else if (options.includeEvm !== false && term.addressType === 'evm' && evmChains.length === 1) {
+      candidates.push({ chainId: evmChains[0], contractAddress: term.normalized, sources: ['tweet_ca'],
+        localEventCa: true, providerStatus: 'local_event', tradableStatus: 'unknown' });
     }
   }
   return candidates;
+}
+
+function directEvmTerms(extraction) {
+  return [...new Set((extraction.authorOwnedTerms || [])
+    .filter((term) => term.type === 'ca' && term.addressType === 'evm')
+    .map((term) => term.normalized))];
+}
+
+function chainFailureCode(resolutions = []) {
+  if (resolutions.some((item) => item.status === 'unavailable')) {
+    return RESOLUTION_CODES.CHAIN_UNAVAILABLE;
+  }
+  if (resolutions.some((item) => item.status === 'ambiguous')) {
+    return RESOLUTION_CODES.CHAIN_AMBIGUOUS;
+  }
+  if (resolutions.some((item) => item.status === 'not_allowed')) {
+    return RESOLUTION_CODES.POLICY_BLOCKED;
+  }
+  return RESOLUTION_CODES.NOT_FOUND;
+}
+
+async function resolveUnknownEvmCandidates(extraction, allowedChains, indexedCandidates, dependencies) {
+  const candidates = [];
+  const resolutions = [];
+  const resolver = dependencies.resolveContractChain || resolveContractChain;
+  for (const address of directEvmTerms(extraction)) {
+    const indexed = indexedCandidates.filter((candidate) => candidate.contractAddress === address);
+    if (indexed.length > 0) continue;
+    const resolution = await resolver(address, allowedChains, dependencies.chainResolutionOptions || {});
+    resolutions.push(resolution);
+    if (resolution.status === 'resolved') {
+      candidates.push({
+        chainId: resolution.chainId,
+        contractAddress: resolution.contractAddress,
+        sources: ['tweet_ca', 'rpc_contract_code'],
+        localEventCa: true,
+        chainResolutionSource: resolution.source,
+        providerStatus: 'local_rpc',
+        tradableStatus: 'unknown'
+      });
+    }
+  }
+  return { candidates, resolutions };
 }
 
 function mergeCandidates(values) {
@@ -111,6 +157,8 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
 
   const allowedChains = [...new Set((input.allowedChains || input.allowed_chain_ids || [])
     .map(normalizeChain).filter(Boolean))];
+  const fastLive = String(input.executionMode || input.mode || '').toLowerCase() === 'live'
+    && input.fullVerification !== true;
   const resolutionExtraction = filterResolutionTerms(
     extraction,
     input.allowedTermTypes ?? input.allowed_term_types
@@ -118,18 +166,35 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
   const indexResult = dependencies.candidateIndex
     ? dependencies.candidateIndex.lookupTerms(resolutionExtraction.authorOwnedTerms, { allowedChains })
     : { candidates: [], coverage: {} };
+  const indexedCandidates = (indexResult.candidates || []).map((candidate) => ({
+    ...candidate,
+    ...(fastLive ? {
+      localIndexCandidate: true,
+      chainResolutionSource: 'candidate_index'
+    } : {})
+  }));
+  const chainResolution = fastLive
+    ? await resolveUnknownEvmCandidates(
+      resolutionExtraction,
+      allowedChains,
+      indexedCandidates,
+      dependencies
+    )
+    : { candidates: [], resolutions: [] };
   const candidates = mergeCandidates([
-    ...(indexResult.candidates || []),
-    ...transientCandidates(resolutionExtraction, allowedChains)
+    ...indexedCandidates,
+    ...transientCandidates(resolutionExtraction, allowedChains, { includeEvm: !fastLive }),
+    ...chainResolution.candidates
   ]);
   const maxCandidates = Math.max(1, Number(input.maxCandidates || DEFAULT_MAX_CANDIDATES));
   if (candidates.length === 0) {
     return {
       ...base,
       status: 'not_found',
-      failureCode: RESOLUTION_CODES.NOT_FOUND,
+      failureCode: chainFailureCode(chainResolution.resolutions),
       candidates: [],
       selectedCandidate: null,
+      chainResolution: chainResolution.resolutions,
       candidateCoverage: { ...indexResult.coverage, candidate_count: 0 },
       timing: { total_ms: Date.now() - startedAt }
     };
@@ -142,6 +207,28 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
       candidates,
       selectedCandidate: null,
       candidateCoverage: { ...indexResult.coverage, candidate_count: candidates.length },
+      timing: { total_ms: Date.now() - startedAt }
+    };
+  }
+
+  if (fastLive) {
+    const policy = applyResolutionPolicy(candidates, {
+      extraction: resolutionExtraction,
+      allowedChains,
+      allowDeterministicLocalCandidate: true
+    });
+    return {
+      ...base,
+      mode: 'live',
+      canTrade: policy.status === 'resolved',
+      ...policy,
+      chainResolution: chainResolution.resolutions,
+      candidateCoverage: {
+        ...indexResult.coverage,
+        candidate_count: candidates.length,
+        provider_verified_count: 0,
+        local_event_ca_count: candidates.filter((candidate) => candidate.localEventCa).length
+      },
       timing: { total_ms: Date.now() - startedAt }
     };
   }
@@ -212,7 +299,10 @@ module.exports = {
   mapConcurrent,
   mergeCandidates,
   providerFailureCode,
+  chainFailureCode,
+  directEvmTerms,
   filterResolutionTerms,
+  resolveUnknownEvmCandidates,
   resolveDynamicSignal,
   transientCandidates
 };

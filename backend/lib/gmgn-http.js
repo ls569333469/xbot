@@ -6,6 +6,8 @@ const {
   parseResetAt,
   scheduler
 } = require('./gmgn-rate-scheduler');
+const { getGmgnCredentials } = require('./gmgn-credentials');
+const { scopeKey, sharedRateLimiter } = require('./gmgn-shared-rate-limit');
 
 const BASE_URL = String(process.env.GMGN_API_HOST || 'https://openapi.gmgn.ai').replace(/\/$/, '');
 const USER_AGENT = 'xbot/1.0.0';
@@ -29,9 +31,10 @@ class GmgnOpenApiError extends Error {
 }
 
 function requireApiKey() {
-  const apiKey = String(process.env.GMGN_API_KEY || '').trim();
+  const credentials = getGmgnCredentials();
+  const apiKey = credentials.apiKey;
   if (!apiKey) {
-    const error = new Error('GMGN_API_KEY is required');
+    const error = new Error(`GMGN API key is required for the ${credentials.profile} credential profile`);
     error.code = 'GMGN_KEY_MISSING';
     throw error;
   }
@@ -39,9 +42,10 @@ function requireApiKey() {
 }
 
 function requirePrivateKey() {
-  const privateKeyPem = String(process.env.GMGN_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  const credentials = getGmgnCredentials();
+  const privateKeyPem = credentials.privateKey;
   if (!privateKeyPem) {
-    const error = new Error('GMGN_PRIVATE_KEY is required for signed GMGN requests');
+    const error = new Error(`GMGN private key is required for signed requests in the ${credentials.profile} credential profile`);
     error.code = 'GMGN_PRIVATE_KEY_MISSING';
     throw error;
   }
@@ -108,7 +112,31 @@ function formatApiError(method, path, status, envelope) {
   return parts.join(' ');
 }
 
-function getResponseMeta(response, method, path, weight, startedAt, authQuery) {
+function requestContext(options = {}) {
+  const context = options.requestContext || options.context || {};
+  const text = (value, limit = 160) => {
+    const normalized = String(value || '').trim();
+    return normalized ? normalized.slice(0, limit) : null;
+  };
+  return {
+    source: String(options.source || context.source || 'unspecified').slice(0, 120),
+    processRole: String(options.processRole || context.processRole || process.env.XBOT_PROCESS_ROLE || 'all').slice(0, 40),
+    signalId: Number.isFinite(Number(options.signalId ?? context.signalId))
+      ? Number(options.signalId ?? context.signalId) : null,
+    policyId: Number.isFinite(Number(options.policyId ?? context.policyId))
+      ? Number(options.policyId ?? context.policyId) : null,
+    whitelistId: Number.isFinite(Number(options.whitelistId ?? context.whitelistId))
+      ? Number(options.whitelistId ?? context.whitelistId) : null,
+    traceId: text(options.traceId ?? context.traceId ?? context.trace_id),
+    stage: text(options.stage ?? context.stage, 80),
+    executionSessionId: text(options.executionSessionId
+      ?? context.executionSessionId ?? context.execution_session_id),
+    rateScope: text(options.rateScope ?? context.rateScope ?? context.rate_scope ?? scopeKey()),
+    context: context.context && typeof context.context === 'object' ? context.context : {}
+  };
+}
+
+function getResponseMeta(response, method, path, weight, startedAt, authQuery, context) {
   const resetHeader = response.headers.get('X-RateLimit-Reset');
   const remainingHeader = response.headers.get('X-RateLimit-Remaining');
   return {
@@ -119,7 +147,8 @@ function getResponseMeta(response, method, path, weight, startedAt, authQuery) {
     latencyMs: Date.now() - startedAt,
     remaining: remainingHeader === null ? null : Number(remainingHeader),
     resetAt: resetHeader ? parseResetAt(resetHeader) : null,
-    authClientId: authQuery.client_id
+    authClientId: authQuery.client_id,
+    ...context
   };
 }
 
@@ -130,9 +159,29 @@ function emitRequestEvent(meta, errorCode = null) {
 async function request(method, path, query = {}, body = null, options = {}) {
   const weight = Number(options.weight || endpointWeight(method, path));
   const apiKey = requireApiKey();
+  const bodyString = body === null ? '' : JSON.stringify(body);
+  const context = requestContext(options);
+
+  const ownsRateLease = !options.rateLease;
+  const rateLease = options.rateLease || await scheduler.acquire(weight, {
+    priority: options.priority ?? PRIORITIES.CACHE_WARMUP,
+    deadlineAt: options.deadlineAt,
+    context: { method, path, ...context }
+  });
+  rateLease.consume(weight);
+  try {
+    await sharedRateLimiter.acquire(weight, {
+      priority: options.priority ?? PRIORITIES.CACHE_WARMUP,
+      deadlineAt: options.deadlineAt
+    });
+  } catch (error) {
+    if (ownsRateLease) rateLease.release();
+    throw error;
+  }
+
+  // Generate auth data after queueing so a cooldown cannot expire the signature.
   const authQuery = buildAuthQuery();
   const fullQuery = { ...query, ...authQuery };
-  const bodyString = body === null ? '' : JSON.stringify(body);
   const headers = {
     'X-APIKEY': apiKey,
     'Content-Type': 'application/json',
@@ -144,13 +193,6 @@ async function request(method, path, query = {}, body = null, options = {}) {
     const message = buildSignatureMessage(path, fullQuery, bodyString, authQuery.timestamp);
     headers['X-Signature'] = signMessage(message, privateKeyPem);
   }
-
-  const rateLease = options.rateLease || await scheduler.acquire(weight, {
-    priority: options.priority ?? PRIORITIES.CACHE_WARMUP,
-    deadlineAt: options.deadlineAt,
-    context: { method, path }
-  });
-  rateLease.consume(weight);
 
   let response;
   const startedAt = Date.now();
@@ -175,12 +217,13 @@ async function request(method, path, query = {}, body = null, options = {}) {
       latencyMs: Date.now() - startedAt,
       remaining: null,
       resetAt: null,
-      authClientId: authQuery.client_id
+      authClientId: authQuery.client_id,
+      ...context
     }, error.code);
     throw error;
   }
 
-  const responseMeta = getResponseMeta(response, method, path, weight, startedAt, authQuery);
+  const responseMeta = getResponseMeta(response, method, path, weight, startedAt, authQuery, context);
 
   let envelope;
   try {
@@ -199,9 +242,11 @@ async function request(method, path, query = {}, body = null, options = {}) {
     const resetAt = envelope.reset_at
       ? parseResetAt(envelope.reset_at)
       : responseMeta.resetAt;
-    scheduler.observe429(resetAt, {
+    const cooldownOptions = {
       minimumCooldownMs: envelope.error === 'RATE_LIMIT_BANNED' ? 5 * 60_000 : 60_000
-    });
+    };
+    scheduler.observe429(resetAt, cooldownOptions);
+    await sharedRateLimiter.observe429(resetAt, cooldownOptions);
     responseMeta.resetAt = resetAt || scheduler.getStatus().resetAt;
   }
 
@@ -291,7 +336,10 @@ function quoteOrder(chain, fromAddress, inputToken, outputToken, inputAmount, sl
     output_token: outputToken,
     input_amount: String(inputAmount),
     slippage: Number(slippage)
-  }, null, options);
+  }, null, {
+    ...options,
+    priority: options.priority ?? PRIORITIES.NEW_TRADE
+  });
 }
 
 function swap(params, options = {}) {
@@ -314,8 +362,8 @@ function queryOrder(orderId, chain, options = {}) {
   });
 }
 
-function getGasPrice(chain) {
-  return request('GET', '/v1/trade/gas_price', { chain });
+function getGasPrice(chain, options = {}) {
+  return request('GET', '/v1/trade/gas_price', { chain }, null, options);
 }
 
 function submitStrategyOrder(_chain, params, options = {}) {

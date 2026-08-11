@@ -14,12 +14,14 @@
     "start": "node scripts/supervisor.js",
     "start:all": "node server.js --role=all",
     "start:supervised": "node scripts/supervisor.js",
+    "migrate": "node scripts/run-migrations.js",
     "start:execution": "node server.js --role=execution",
     "start:ingestion": "node server.js --role=ingestion",
     "test": "node --test --test-concurrency=1",
     "test:integration": "node scripts/run-integration-tests.js",
     "test:p20:record-smoke": "node scripts/run-p20-record-smoke.js",
     "test:p20:paper-smoke": "node scripts/run-p20-paper-smoke.js",
+    "test:p25:live": "node scripts/run-p25-live-acceptance.js",
     "test:migration:p12": "node scripts/rehearse-p12-migration.js",
     "test:migration:p13": "node scripts/rehearse-p12-migration.js",
     "test:migration:p16": "node scripts/rehearse-p16-migration.js",
@@ -35,7 +37,6 @@
     "ethers": "^6.17.0",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
-    "node-cron": "^4.6.0",
     "pg": "^8.22.0",
     "ws": "^8.21.1"
   }

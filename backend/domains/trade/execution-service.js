@@ -1,4 +1,4 @@
-const gmgnHttp = require('../../lib/gmgn-http');
+const gmgnAccess = require('../../lib/gmgn-access-service').accessFor('trade_execution');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { decimalToRaw, rawToDecimal } = require('../../lib/decimal-units');
 const engineState = require('../../lib/engine-state');
@@ -21,6 +21,21 @@ const { classifyWriteError } = require('./gmgn-write-error-classifier');
 const { probeRpc } = require('./chain-receipt-service');
 const { executionGateService } = require('./execution-gate-service');
 const { createExecutionTrace } = require('./execution-trace');
+const runtimeAuthorization = require('./runtime-signal-authorization');
+const { PRIORITIES, endpointWeight } = require('../../lib/gmgn-rate-scheduler');
+const { scopeKey } = require('../../lib/gmgn-shared-rate-limit');
+const {
+  buildTriggeredProviderContext,
+  mergeTriggeredTokenInfo,
+  requiresProviderGasPrice
+} = require('./triggered-provider-context');
+
+function runtimeReadinessOptions(options = {}) {
+  return {
+    ...options,
+    scope: options.scope || engineState.getScopeInput?.() || { scope_type: 'combined' }
+  };
+}
 
 function wakeOrderReconciliation(orderId) {
   const { reconciler } = require('./reconciliation-service');
@@ -94,6 +109,9 @@ function feeReserve(chainId) {
 }
 
 function derivePriceImpactPct(context) {
+  if (!context?.quote || typeof context.quote !== 'object') {
+    return { value: null, source: 'unavailable' };
+  }
   if (context.quote.priceImpactPct !== null) {
     return { value: context.quote.priceImpactPct, source: 'provider' };
   }
@@ -132,7 +150,8 @@ function taxAdjustedPriceImpact(priceImpact, buyTax) {
 
 function assertTargetChainReady(readiness, chainId, options = {}) {
   const chain = readiness?.chains?.find((item) => item.chain === chainId);
-  const targetReady = options.dynamicScope
+  const strategyScope = Boolean(options.strategyScope ?? options.dynamicScope);
+  const targetReady = strategyScope
     ? Boolean(chain?.infrastructureReady ?? chain?.infrastructure_ready)
     : Boolean(chain?.ready);
   if (!targetReady) {
@@ -149,16 +168,34 @@ function boundedEvidenceDeadline(tradeDeadlineAt, now = Date.now()) {
   return Math.min(Number(tradeDeadlineAt), Number(now) + 1500);
 }
 
+function isProviderWaitError(error) {
+  const code = String(error?.code || '');
+  return Number(error?.status) === 429
+    || code.includes('RATE_LIMIT')
+    || code === 'GMGN_RATE_DEADLINE_EXPIRED';
+}
+
+function annotateProviderWait(error) {
+  if (isProviderWaitError(error)) {
+    error.retryable = true;
+    error.providerWait = true;
+  }
+  return error;
+}
+
 function evaluateRisk(context) {
   const reasons = [];
   const warnings = [];
-  const security = context.security;
-  const liquidity = context.pool.liquidityUsd ?? context.token.liquidityUsd;
-  const rugRatio = security.rugRatio ?? context.token.rugRatio;
+  const security = context.security || {};
+  const pool = context.pool || {};
+  const token = context.token || {};
+  const quote = context.quote || {};
+  const liquidity = pool.liquidityUsd ?? token.liquidityUsd ?? null;
+  const rugRatio = security.rugRatio ?? token.rugRatio ?? null;
   const grossPriceImpact = derivePriceImpactPct(context);
   const priceImpact = taxAdjustedPriceImpact(grossPriceImpact, security.buyTax);
 
-  if (security.isHoneypot === true) warnings.push('HONEYPOT_REPORTED_BY_PROVIDER');
+  if (security.isHoneypot === true) reasons.push('GMGN_SECURITY_HONEYPOT');
   if (security.isHoneypot === null && context.chain.id !== 'sol') warnings.push('HONEYPOT_UNKNOWN');
   if (security.isHoneypot === null && context.chain.id === 'sol') warnings.push('HONEYPOT_FIELD_UNAVAILABLE_SOL');
   if (context.chain.id !== 'sol' && security.buyTax === null) warnings.push('BUY_TAX_UNKNOWN');
@@ -169,7 +206,10 @@ function evaluateRisk(context) {
   if (context.chain.id === 'sol' && security.renouncedMint === null) warnings.push('MINT_AUTHORITY_UNKNOWN_SOL');
   if (context.chain.id === 'sol' && security.renouncedFreeze === false) warnings.push('FREEZE_AUTHORITY_ACTIVE');
   if (context.chain.id === 'sol' && security.renouncedFreeze === null) warnings.push('FREEZE_AUTHORITY_UNKNOWN_SOL');
-  if (rugRatio === null) warnings.push('RUG_RATIO_UNKNOWN');
+  if (rugRatio === null && context.chain.id === 'robinhood') {
+    warnings.push('RUG_RATIO_FIELD_UNAVAILABLE_ROBINHOOD');
+  } else if (rugRatio === null) reasons.push('GMGN_SECURITY_SCHEMA_INVALID');
+  else if (rugRatio > 0.3) reasons.push('GMGN_SECURITY_RUG_RISK');
   else if (rugRatio > 0) warnings.push('RUG_RATIO_REPORTED');
   if (liquidity === null) warnings.push('LIQUIDITY_UNKNOWN');
   if (priceImpact.value === null) warnings.push('PRICE_IMPACT_UNKNOWN');
@@ -180,8 +220,6 @@ function evaluateRisk(context) {
       || context.walletNativeBalance < requiredNativeBalance) {
     reasons.push('INSUFFICIENT_NATIVE_BALANCE');
   }
-  if (context.budgetUsdSnapshot === null) reasons.push('NATIVE_USD_PRICE_UNKNOWN');
-
   return {
     passed: reasons.length === 0,
     reasons,
@@ -201,6 +239,43 @@ function evaluateRisk(context) {
       required_native_balance: requiredNativeBalance,
       exit_gas_reserve: Number(context.exitGasReserve || 0)
     }
+  };
+}
+
+function terminalRequestWeight(chainId, options = {}) {
+  const endpoints = new Set(['POST /v1/trade/swap']);
+  if (requiresProviderGasPrice(chainId, options.gas || {}, options)) {
+    endpoints.add('GET /v1/trade/gas_price');
+  }
+  if (options.securityCheck === true) endpoints.add('GET /v1/token/security');
+  if (options.quoteRequired === true) endpoints.add('GET /v1/trade/quote');
+  if (options.tokenInfoRequired === true) endpoints.add('GET /v1/token/info');
+  return [...endpoints].reduce((total, endpoint) => {
+    const [method, path] = endpoint.split(' ');
+    return total + endpointWeight(method, path);
+  }, 0);
+}
+
+function reserveExecutionTrade(options = {}) {
+  return gmgnAccess.reserveTrade({
+    ...options,
+    weight: terminalRequestWeight(options.chainId, options)
+  });
+}
+
+function gmgnRequestContext(signal, stage, traceId = null) {
+  const follow = Number(signal.follow_discovery_policy_id || 0) > 0;
+  const dynamic = Number(signal.actor_policy_id || 0) > 0;
+  const signalId = Number(signal.signal_id || signal.id || 0) || null;
+  const executionSessionId = signalId ? `signal:${signalId}` : null;
+  return {
+    source: `${follow ? 'p21_follow_discovery' : dynamic ? 'p20_dynamic' : 'fixed_ca'}_${stage}`,
+    signalId,
+    policyId: Number(signal.follow_discovery_policy_id || signal.actor_policy_id || 0) || null,
+    whitelistId: Number(signal.whitelist_id || 0) || null,
+    traceId: traceId || signal.trace_id || executionSessionId,
+    executionSessionId,
+    rateScope: scopeKey()
   };
 }
 
@@ -224,13 +299,36 @@ async function buildPrepared(signalId, options = {}) {
       ? Math.min(configuredSlippage, slippageCap)
       : configuredSlippage
   };
-  const cached = await loadCachedContext(signal, { fresh: Boolean(options.forceRefresh) });
+  const requestTraceId = options.trace?.traceId || signal.trace_id || null;
+  const cached = await loadCachedContext(signal, {
+    fresh: Boolean(options.forceRefresh),
+    verificationSnapshot: signal.provider_verification_snapshot,
+    requestOptions: {
+      priority: PRIORITIES.NEW_TRADE,
+      ...(options.deadlineAt ? { deadlineAt: options.deadlineAt } : {}),
+      requestContext: gmgnRequestContext(signal, 'context', requestTraceId)
+    }
+  });
   options.trace?.mark('cache', {
     fallback: Object.values(cached.cacheMeta || {}).some((entry) => !entry.hit)
   });
   const inputAmountRaw = decimalToRaw(signal.budget_per_trade, cached.chain.decimals);
+  const providerPromise = buildTriggeredProviderContext({
+    cached,
+    signal,
+    inputAmountRaw,
+    slippage: signal.slippage,
+    rateLease: options.rateLease,
+    deadlineAt: options.deadlineAt,
+    mode: options.providerMode || 'none',
+    securityCheck: Boolean(options.securityCheck),
+    quoteRequired: Boolean(options.quoteRequired),
+    attemptNo: options.attemptNo || 1,
+    escalating: Boolean(options.escalating),
+    requestContext: (stage) => gmgnRequestContext(signal, stage, requestTraceId)
+  }, { gmgnAccess });
   const evidencePromise = options.captureEvidence
-    ? options.captureEvidence({
+    ? providerPromise.then((provider) => options.captureEvidence({
       side: 'buy',
       chain: cached.chain.id,
       wallet_address: cached.wallet.address,
@@ -240,24 +338,17 @@ async function buildPrepared(signalId, options = {}) {
       snapshot_version: 1
     }, {
       tokenDecimals: cached.token.decimals,
-      gas: cached.gas
-    })
+      gas: provider.gas,
+      requestContext: gmgnRequestContext(signal, 'pre_submit_evidence', requestTraceId)
+    }))
     : Promise.resolve(null);
-  const [quoteRaw, walletBalance, preSubmitSnapshot] = await Promise.all([
-    gmgnHttp.quoteOrder(
-      cached.chain.id,
-      cached.wallet.address,
-      cached.chain.nativeToken,
-      signal.contract_address,
-      inputAmountRaw,
-      Number(signal.slippage),
-      options.rateLease ? { rateLease: options.rateLease, deadlineAt: options.deadlineAt } : {}
-    ),
+  const [providerContext, walletBalance, preSubmitSnapshot] = await Promise.all([
+    providerPromise,
     resolveWalletNativeBalance(cached, options),
     evidencePromise
   ]);
-  options.trace?.mark('quote');
-  const quote = gmgnAdapter.normalizeQuote(quoteRaw);
+  options.trace?.mark('provider_context');
+  const quote = providerContext.quote;
   const budgetNative = String(signal.budget_per_trade);
   const walletNativeBalance = walletBalance.value;
   const nativeUsd = resolveNativePriceUsd(cached);
@@ -395,8 +486,10 @@ async function buildPrepared(signalId, options = {}) {
       required_wallet_balance: requiredNativeBalance,
       total_usd_reserved: budgetUsdSnapshot,
       output_token: `${cached.token.symbol || signal.symbol} (${signal.contract_address})`,
-      estimated_output: rawToDecimal(quote.outputAmountRaw, cached.token.decimals, 8),
-      minimum_output: rawToDecimal(quote.minOutputAmountRaw, cached.token.decimals, 8),
+      estimated_output: /^\d+$/.test(String(quote.outputAmountRaw || ''))
+        ? rawToDecimal(quote.outputAmountRaw, cached.token.decimals, 8) : null,
+      minimum_output: /^\d+$/.test(String(quote.minOutputAmountRaw || ''))
+        ? rawToDecimal(quote.minOutputAmountRaw, cached.token.decimals, 8) : null,
       slippage_pct: Number(signal.slippage),
       risk_passed: risk.passed,
       risk_reasons: risk.reasons,
@@ -422,7 +515,7 @@ async function prepare(signalId, operatorId) {
 
 async function execute(signalId, prepareToken, operatorId) {
   assertLiveMode(engineState);
-  const readiness = await readinessService.getSnapshot();
+  const readiness = await readinessService.getSnapshot(runtimeReadinessOptions());
   if (!readiness.readyToArm) {
     const error = new Error(`Live readiness failed: ${readiness.blockers.join(', ')}`);
     error.code = 'LIVE_READINESS_FAILED';
@@ -437,23 +530,32 @@ async function execute(signalId, prepareToken, operatorId) {
   }
 
   const deadlineAt = Date.now() + Math.max(1000, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300) * 1000);
-  const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
+  const signalForLease = await repository.getSignalForExecution(signalId);
+  const rateLease = await reserveExecutionTrade({
+    chainId: signalForLease?.chain_id,
+    deadlineAt,
+    requestContext: gmgnRequestContext({ signal_id: signalId }, 'provider_lease')
+  });
   let attempt = null;
   let swapStarted = false;
   try {
-    const prepared = await buildPrepared(signalId, { rateLease, deadlineAt });
-    assertTargetChainReady(readiness, prepared.chain.id);
+    const prepared = await buildPrepared(signalId, {
+      rateLease, deadlineAt, providerMode: 'terminal'
+    });
+    if (!engineState.scopeAllowsSignal(prepared.signal)) {
+      const error = new Error('Signal is outside the armed runtime scope');
+      error.code = 'LIVE_SCOPE_SIGNAL_NOT_ALLOWED';
+      throw error;
+    }
+    assertTargetChainReady(readiness, prepared.chain.id, {
+      strategyScope: runtimeAuthorization.scoped(prepared.signal)
+    });
     if (prepared.snapshotHash !== consumed.snapshot_hash) {
       const error = new Error('Risk, wallet, policy, or budget snapshot changed; prepare again');
       error.code = 'PREPARE_SNAPSHOT_CHANGED';
       throw error;
     }
     await livePolicy.evaluate(prepared.signal, { throwOnFailure: true });
-    if (!prepared.risk.passed) {
-      const error = new Error(`Risk rejected signal: ${prepared.risk.reasons.join(', ')}`);
-      error.code = prepared.risk.reasons[0] || 'RISK_REJECTED';
-      throw error;
-    }
     const created = await repository.createBuyAttempt(prepared);
     if (created.merged || created.duplicate) {
       rateLease.release();
@@ -493,7 +595,11 @@ async function execute(signalId, prepareToken, operatorId) {
       timing: prepared.timing
     });
     swapStarted = true;
-    const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
+    const response = await gmgnAccess.swap(swapParams, {
+      rateLease, returnMeta: true, deadlineAt,
+      requestContext: gmgnRequestContext(prepared.signal, 'swap', prepared.traceId)
+    });
+    rateLease.release();
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
     if (!normalizedOrder.providerOrderId) {
       const error = new Error('GMGN swap response did not include order_id');
@@ -537,60 +643,56 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
   assertLiveMode(engineState);
   const trace = createExecutionTrace({ traceId: options.traceId });
   trace.mark('claim');
+  const strategyScope = Boolean(options.strategyScope ?? options.dynamicScope);
   let gate;
   try {
     gate = executionGateService.assertReady(options.chainId, {
-      dynamicScope: Boolean(options.dynamicScope)
+      strategyScope
     });
   } catch (error) {
     if (error.code !== 'EXECUTION_GATE_STALE') throw error;
-    const readiness = await readinessService.getSnapshot();
+    const readiness = await readinessService.getSnapshot(runtimeReadinessOptions());
+    executionGateService.update(readiness);
     gate = executionGateService.assertReady(options.chainId, {
-      dynamicScope: Boolean(options.dynamicScope)
+      strategyScope
     });
-    if (!readiness.readyToArm) throw error;
   }
   trace.mark('gate');
 
   const deadlineAt = Date.now()
     + Math.max(1000, Number(process.env.SIGNAL_MAX_AGE_SECONDS || 300) * 1000);
-  const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
+  let rateLease = null;
   let attempt = null;
   let swapStarted = false;
   try {
+    const signalForLease = await repository.getSignalForExecution(signalId);
+    rateLease = await reserveExecutionTrade({
+      chainId: signalForLease?.chain_id || options.chainId,
+      deadlineAt,
+      requestContext: gmgnRequestContext(
+        { signal_id: signalId },
+        'provider_lease',
+        trace.traceId
+      )
+    });
     const prepared = await buildPrepared(signalId, {
       rateLease,
       deadlineAt,
       trace,
-      captureEvidence: async (provisionalAttempt, context) => {
-        const evidenceDeadlineAt = boundedEvidenceDeadline(deadlineAt);
-        const evidenceLease = await gmgnHttp.scheduler.reserveTradeEvidence({
-          deadlineAt: evidenceDeadlineAt,
-          context: { signalId, kind: 'pre_submit_evidence' }
-        });
-        try {
-          const snapshot = await tradeFailureEvidenceService.capturePreSubmitSnapshot(
-            provisionalAttempt,
-            { ...context, rateLease: evidenceLease, deadlineAt: evidenceDeadlineAt }
-          );
-          trace.mark('evidence');
-          return snapshot;
-        } finally {
-          evidenceLease.release();
-        }
-      }
+      captureEvidence: null,
+      providerMode: 'terminal'
     });
+    if (!engineState.scopeAllowsSignal(prepared.signal)) {
+      const error = new Error('Signal is outside the armed runtime scope');
+      error.code = 'LIVE_SCOPE_SIGNAL_NOT_ALLOWED';
+      throw error;
+    }
     assertTargetChainReady(gate, prepared.chain.id, {
-      dynamicScope: Boolean(options.dynamicScope)
+      strategyScope
     });
     if (!prepared.livePolicy.allowed) {
       const error = new Error(`Live policy rejected signal: ${prepared.livePolicy.blockers.join(', ')}`);
       error.code = prepared.livePolicy.blockers[0] || 'LIVE_POLICY_REJECTED';
-      throw error;
-    }
-    if (!prepared.risk.passed) {
-      const error = new Error(`Risk rejected signal: ${prepared.risk.reasons.join(', ')}`);
-      error.code = prepared.risk.reasons[0] || 'RISK_REJECTED';
       throw error;
     }
     const created = await repository.createBuyAttempt({
@@ -608,6 +710,13 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
     }
     attempt = created.attempt;
     trace.mark('attempt');
+    const preSubmitSnapshot = await tradeFailureEvidenceService.capturePreSubmitSnapshot(attempt, {
+      tokenDecimals: prepared.token.decimals,
+      quote: prepared.quote,
+      gas: prepared.gas,
+      nativeUsd: prepared.nativeUsd,
+      config: created.intent.config_snapshot_json
+    });
     const swapParams = buildSwapParams({
       chain: prepared.chain.id,
       walletAddress: prepared.wallet.address,
@@ -621,7 +730,7 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
       retryConfig: created.intent.config_snapshot_json?.chain_config
     });
     await repository.beginBuySubmission(attempt.id, {
-      snapshot: prepared.preSubmitSnapshot,
+      snapshot: preSubmitSnapshot,
       estimatedFeeNative: prepared.feeReserveNative,
       configurationFingerprint: gate.configurationFingerprint,
       activationVersion: prepared.signal.activation_version,
@@ -632,7 +741,11 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
     trace.mark('lane');
     trace.mark('swap');
     swapStarted = true;
-    const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
+    const response = await gmgnAccess.swap(swapParams, {
+      rateLease, returnMeta: true, deadlineAt,
+      requestContext: gmgnRequestContext(prepared.signal, 'swap', prepared.traceId)
+    });
+    rateLease.release();
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
     if (!normalizedOrder.providerOrderId) {
       const error = new Error('GMGN swap response did not include order_id');
@@ -658,8 +771,8 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
       trace_id: trace.traceId
     };
   } catch (error) {
-    rateLease.release();
-    if (!attempt) throw error;
+    rateLease?.release();
+    if (!attempt) throw annotateProviderWait(error);
     const classification = classifyWriteError(error, { writeStarted: swapStarted });
     if (classification.kind === 'uncertain') {
       await repository.markSubmissionUncertain(attempt.id, error);
@@ -684,14 +797,22 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     error.code = 'RETRY_RUNTIME_DISABLED';
     throw error;
   }
-  const readiness = await readinessService.getSnapshot();
+  const readiness = await readinessService.getSnapshot(runtimeReadinessOptions());
   if (!readiness.readyToArm) {
     const error = new Error('Live readiness changed before retry');
     error.code = 'LIVE_READINESS_FAILED';
     throw error;
   }
   const deadlineAt = new Date(intent.expires_at).getTime();
-  const rateLease = await gmgnHttp.scheduler.reserveTrade({ deadlineAt });
+  const rateLease = await reserveExecutionTrade({
+    chainId: intent.chain,
+    deadlineAt,
+    requestContext: gmgnRequestContext({
+      signal_id: intent.signal_id,
+      trace_id: intent.trace_id || null,
+      whitelist_id: intent.whitelist_id || null
+    }, 'provider_lease')
+  });
   let attempt = null;
   let swapStarted = false;
   try {
@@ -700,18 +821,20 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       deadlineAt,
       forceRefresh: true,
       slippageCap: Number(intent.slippage_cap),
-      policyPhase: 'live'
+      policyPhase: 'live',
+      providerMode: 'terminal',
+      attemptNo: Number(intent.retry_count || 0) + 1,
+      escalating: true
     });
-    assertTargetChainReady(readiness, intent.chain, {
-      dynamicScope: Boolean(prepared.signal.actor_policy_id
-        && prepared.signal.dynamic_target_id)
-    });
-    await livePolicy.evaluate(prepared.signal, { throwOnFailure: true });
-    if (!prepared.risk.passed) {
-      const error = new Error(`Retry risk rejected: ${prepared.risk.reasons.join(', ')}`);
-      error.code = prepared.risk.reasons[0] || 'RISK_REJECTED';
+    if (!engineState.scopeAllowsSignal(prepared.signal)) {
+      const error = new Error('Signal is outside the armed runtime scope');
+      error.code = 'LIVE_SCOPE_SIGNAL_NOT_ALLOWED';
       throw error;
     }
+    assertTargetChainReady(readiness, intent.chain, {
+      strategyScope: runtimeAuthorization.scoped(prepared.signal)
+    });
+    await livePolicy.evaluate(prepared.signal, { throwOnFailure: true });
     if (String(prepared.inputAmountRaw) !== String(intent.principal_amount_raw)) {
       const error = new Error('Retry principal differs from the original Trade Intent');
       error.code = 'RETRY_PRINCIPAL_CHANGED';
@@ -770,7 +893,11 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       timing: prepared.timing
     });
     swapStarted = true;
-    const response = await gmgnHttp.swap(swapParams, { rateLease, returnMeta: true, deadlineAt });
+    const response = await gmgnAccess.swap(swapParams, {
+      rateLease, returnMeta: true, deadlineAt,
+      requestContext: gmgnRequestContext(prepared.signal, 'swap', prepared.traceId)
+    });
+    rateLease.release();
     const normalizedOrder = gmgnAdapter.normalizeOrder(response.data);
     if (!normalizedOrder.providerOrderId) {
       const error = new Error('GMGN retry response did not include order_id');
@@ -816,6 +943,8 @@ module.exports = {
   execute,
   executeAutomatic,
   feeReserve,
+  gmgnRequestContext,
+  mergeTriggeredTokenInfo,
   loadCachedContext,
   nativeBalance,
   nativePriceUsd,

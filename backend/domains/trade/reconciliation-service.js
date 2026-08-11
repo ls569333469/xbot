@@ -1,7 +1,8 @@
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
 const crypto = require('crypto');
-const gmgnHttp = require('../../lib/gmgn-http');
+const defaultGmgnAccess = require('../../lib/gmgn-access-service').accessFor('trade_reconciliation');
+const { scopeKey } = require('../../lib/gmgn-shared-rate-limit');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const receiptService = require('./chain-receipt-service');
 const repository = require('./trade-repository');
@@ -11,6 +12,32 @@ const { decimalToRaw } = require('../../lib/decimal-units');
 const { tradeFailureEvidenceService } = require('./trade-failure-evidence-service');
 
 const RECONCILER_LOCK = 'xbot:trade-reconciler';
+
+function recoveryRequest(row, stage, options = {}) {
+  const requestContext = options.requestContext || {};
+  const signalId = Number(options.signalId || row?.signal_id || 0) || null;
+  const attemptId = Number(options.attemptId || row?.attempt_id || 0) || null;
+  const positionId = Number(options.positionId || row?.position_id || 0) || null;
+  const executionSessionId = options.executionSessionId
+    || (signalId ? `signal:${signalId}`
+      : attemptId ? `attempt:${attemptId}:recovery`
+        : positionId ? `position:${positionId}:recovery` : null);
+  const { requestContext: _ignored, ...requestOptions } = options;
+  return {
+    ...requestOptions,
+    requestContext: {
+      source: 'trade_reconciliation',
+      stage,
+      signalId,
+      policyId: Number(options.policyId || row?.policy_id || 0) || null,
+      whitelistId: Number(options.whitelistId || row?.whitelist_id || 0) || null,
+      traceId: options.traceId || row?.trace_id || null,
+      executionSessionId,
+      rateScope: scopeKey(),
+      ...requestContext
+    }
+  };
+}
 
 function pollingIntervalMs(submittedAt, state, random = Math.random) {
   if (['closing', 'triggered'].includes(state)) return 1000;
@@ -30,8 +57,10 @@ function nextQueryAt(order, state, random) {
 
 function strategyPollingIntervalMs(state, random = Math.random) {
   if (['triggered', 'cancelling'].includes(state)) return 1000;
-  if (state === 'unknown') return 5000;
-  return Math.round(10_000 + random() * 20_000);
+  if (state === 'unknown') return 60_000;
+  // GMGN executes protection orders remotely. Open-order polling only keeps
+  // local position state fresh, so it must not become a continuous rate load.
+  return Math.round(5 * 60_000 + random() * 5 * 60_000);
 }
 
 function nextStrategyQueryAt(state, random) {
@@ -108,9 +137,34 @@ function receiptMatchesTradedAmount(row, normalizedOrder, receipt) {
   if (!/^\d+$/.test(String(expected || ''))) return false;
   const actual = receiptTradedAmountRaw(row, receipt);
   if (!/^\d+$/.test(String(actual || ''))) return false;
-  return row.side === 'sell'
-    ? BigInt(actual) === BigInt(expected)
-    : BigInt(actual) >= BigInt(expected);
+  if (row.side === 'sell') return BigInt(actual) === BigInt(expected);
+  if (BigInt(actual) >= BigInt(expected)) return true;
+
+  // Robinhood may report an aggregate swap output rounded up by one raw unit.
+  // The managed-wallet ERC-20 Transfer remains the settlement authority.
+  return row.chain === 'robinhood' && BigInt(expected) - BigInt(actual) <= 1n;
+}
+
+function orderWithReceiptTradedAmount(row, normalizedOrder, receipt) {
+  if (row.side === 'sell') return normalizedOrder;
+  const actual = receiptTradedAmountRaw(row, receipt);
+  if (!/^\d+$/.test(String(actual || ''))) return normalizedOrder;
+  const reported = normalizedOrder.report.outputAmountRaw || row.output_amount_raw || null;
+  return {
+    ...normalizedOrder,
+    report: {
+      ...normalizedOrder.report,
+      outputAmountRaw: actual
+    },
+    raw: {
+      ...(normalizedOrder.raw || {}),
+      xbot_receipt_settlement: {
+        source: 'managed_wallet_token_transfer',
+        provider_output_amount_raw: reported,
+        receipt_output_amount_raw: actual
+      }
+    }
+  };
 }
 
 function receiptHasVerifiableNativeProceeds(row, receipt) {
@@ -164,7 +218,8 @@ function strategyMatchesConfirmedOrder(row, normalizedOrder, strategy, windowMs 
 class TradeReconciler {
   constructor(options = {}) {
     this.db = options.db || db;
-    this.gmgnHttp = options.gmgnHttp || gmgnHttp;
+    // Keep the injection seam for unit tests while production uses the guarded access object.
+    this.gmgnAccess = options.gmgnAccess || options.gmgnHttp || defaultGmgnAccess;
     this.receiptService = options.receiptService || receiptService;
     this.repository = options.repository || repository;
     this.failureEvidenceService = options.failureEvidenceService || tradeFailureEvidenceService;
@@ -201,7 +256,11 @@ class TradeReconciler {
     if (row.normalized_status === 'chain_verifying') {
       normalized = orderFromStoredRow(row);
     } else {
-      const response = await this.gmgnHttp.queryOrder(row.provider_order_id, row.chain);
+      const response = await this.gmgnAccess.queryOrder(
+        row.provider_order_id,
+        row.chain,
+        recoveryRequest(row, 'order_query')
+      );
       normalized = gmgnAdapter.normalizeOrder(response);
       normalized = await this.resolveProtectionStrategy(row, normalized);
       const terminalAudit = row.normalized_status === 'definitive_failed_no_fill';
@@ -257,18 +316,20 @@ class TradeReconciler {
         const errorCode = !receiptHasVerifiableNativeProceeds(row, receipt)
           ? 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
           : 'CHAIN_TOKEN_TRANSFER_AMOUNT_MISMATCH';
-        await this.repository.transitionAttempt(
-          row.attempt_id,
-          ['submitted', 'confirming', 'reconciliation_required'],
-          'reconciliation_required',
-          {
-            errorCode,
-            requiresManualReview: true,
-            alertTopic: errorCode === 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
-              ? 'trade.chain_native_proceeds_unverified'
-              : 'trade.chain_transfer_mismatch'
-          }
-        );
+        if (row.attempt_status !== 'reconciliation_required') {
+          await this.repository.transitionAttempt(
+            row.attempt_id,
+            ['submitted', 'confirming'],
+            'reconciliation_required',
+            {
+              errorCode,
+              requiresManualReview: true,
+              alertTopic: errorCode === 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
+                ? 'trade.chain_native_proceeds_unverified'
+                : 'trade.chain_transfer_mismatch'
+            }
+          );
+        }
         return {
           orderId: row.id,
           status: errorCode === 'CHAIN_NATIVE_PROCEEDS_UNVERIFIED'
@@ -276,7 +337,8 @@ class TradeReconciler {
             : 'transfer_mismatch'
         };
       }
-      const position = await this.repository.finalizeConfirmedOrder(row.id, normalized, receipt);
+      const settledOrder = orderWithReceiptTradedAmount(row, normalized, receipt);
+      const position = await this.repository.finalizeConfirmedOrder(row.id, settledOrder, receipt);
       await this.repository.recordConfirmationTiming?.(row.id);
       return { orderId: row.id, status: 'confirmed', positionId: position.id };
     }
@@ -303,7 +365,7 @@ class TradeReconciler {
   }
 
   wakeOrder(orderId) {
-    const delays = [0, 350, 850];
+    const delays = [0];
     for (const delay of delays) {
       const timer = setTimeout(() => {
         this.hotTimers.delete(timer);
@@ -325,7 +387,11 @@ class TradeReconciler {
 
   async recoverEvmReplacement(row, previousOrder, previousReceipt) {
     if (!row.provider_order_id || !previousOrder.txHash) return null;
-    const response = await this.gmgnHttp.queryOrder(row.provider_order_id, row.chain);
+    const response = await this.gmgnAccess.queryOrder(
+      row.provider_order_id,
+      row.chain,
+      recoveryRequest(row, 'replacement_order_query')
+    );
     let refreshed = gmgnAdapter.normalizeOrder(response);
     refreshed = await this.resolveProtectionStrategy(row, refreshed);
     const oldHash = String(previousOrder.txHash).toLowerCase();
@@ -370,10 +436,12 @@ class TradeReconciler {
     };
     const candidates = new Map();
     for (const type of ['open', 'history']) {
-      const response = await this.gmgnHttp.getStrategyOrders(
+      const response = await this.gmgnAccess.getStrategyOrders(
         row.chain,
         { ...filters, type },
-        { priority: PRIORITIES.STRATEGY_ACTION }
+        recoveryRequest(row, 'strategy_association', {
+          priority: PRIORITIES.STRATEGY_ACTION
+        })
       );
       for (const item of strategyRows(response)) {
         const strategy = gmgnAdapter.normalizeStrategy(item);
@@ -381,6 +449,7 @@ class TradeReconciler {
           candidates.set(strategy.providerOrderId, strategy);
         }
       }
+      if (candidates.size > 0) break;
     }
     const matches = [...candidates.values()];
     const association = matches.length === 1
@@ -398,11 +467,15 @@ class TradeReconciler {
   }
 
   async fetchStrategy(row) {
-    if (!this.gmgnHttp.getStrategyOrders && this.gmgnHttp.queryStrategyOrder) {
-      const raw = await this.gmgnHttp.queryStrategyOrder(
+    if (!this.gmgnAccess.getStrategyOrders && this.gmgnAccess.queryStrategyOrder) {
+      const raw = await this.gmgnAccess.queryStrategyOrder(
         row.chain_id,
         row.provider_order_id,
-        row.wallet_address
+        row.wallet_address,
+        {},
+        recoveryRequest(row, 'strategy_query', {
+          executionSessionId: `strategy:${Number(row.id)}:recovery`
+        })
       );
       return strategyRows(raw)
         .map((item) => gmgnAdapter.normalizeStrategy(item))
@@ -420,10 +493,13 @@ class TradeReconciler {
         : PRIORITIES.STABLE_RECONCILIATION
     };
     for (const type of ['open', 'history']) {
-      const raw = await this.gmgnHttp.getStrategyOrders(
+      const raw = await this.gmgnAccess.getStrategyOrders(
         row.chain_id,
         { ...filters, type },
-        requestOptions
+        recoveryRequest(row, 'strategy_query', {
+          ...requestOptions,
+          executionSessionId: `strategy:${Number(row.id)}:recovery`
+        })
       );
       const found = strategyRows(raw)
         .map((item) => gmgnAdapter.normalizeStrategy(item))
@@ -477,10 +553,16 @@ class TradeReconciler {
     if (!state || BigInt(state.remaining_amount_raw.split('.')[0]) === 0n) {
       return { positionId: row.id, status: 'no_open_lot' };
     }
-    const balanceResponse = await this.gmgnHttp.getWalletTokenBalance(
+    const balanceResponse = await this.gmgnAccess.getWalletTokenBalance(
       state.chain_id,
       state.wallet_address,
-      state.contract_address
+      state.contract_address,
+      recoveryRequest({ ...row, ...state }, 'position_balance_recovery', {
+        positionId: row.id,
+        signalId: state.signal_id,
+        traceId: state.trace_id,
+        executionSessionId: `position:${Number(row.id)}:recovery`
+      })
     );
     const normalizedBalance = gmgnAdapter.normalizeWalletTokenBalance(
       balanceResponse,
@@ -509,10 +591,16 @@ class TradeReconciler {
       return { positionId: row.id, status: 'active_strategy_conflict' };
     }
 
-    const activityResponse = await this.gmgnHttp.getWalletActivity(
+    const activityResponse = await this.gmgnAccess.getWalletActivity(
       state.chain_id,
       state.wallet_address,
-      { token_address: state.contract_address, limit: 100 }
+      { token_address: state.contract_address, limit: 100 },
+      recoveryRequest({ ...row, ...state }, 'position_activity_recovery', {
+        positionId: row.id,
+        signalId: state.signal_id,
+        traceId: state.trace_id,
+        executionSessionId: `position:${Number(row.id)}:recovery`
+      })
     );
     const candidates = (activityResponse.activities || []).filter((activity) => {
       if (String(activity.event_type || '').toLowerCase() !== 'sell') return false;
@@ -582,11 +670,16 @@ class TradeReconciler {
 
     const strategyEvidence = [];
     for (const group of groups) {
-      const response = await this.gmgnHttp.queryStrategyOrder(
+      const response = await this.gmgnAccess.queryStrategyOrder(
         attempt.chain,
         group.provider_order_id,
         walletAddress,
-        { baseToken: attempt.input_token }
+        { baseToken: attempt.input_token },
+        recoveryRequest(attempt, 'cancelled_close_strategy_recovery', {
+          attemptId: attempt.id,
+          positionId: attempt.position_id,
+          executionSessionId: `attempt:${Number(attempt.id)}:recovery`
+        })
       );
       const normalized = strategyRows(response)
         .map((item) => gmgnAdapter.normalizeStrategy(item))
@@ -595,10 +688,15 @@ class TradeReconciler {
       strategyEvidence.push({ groupId: group.id, normalized });
     }
 
-    const balanceResponse = await this.gmgnHttp.getWalletTokenBalance(
+    const balanceResponse = await this.gmgnAccess.getWalletTokenBalance(
       attempt.chain,
       walletAddress,
-      attempt.input_token
+      attempt.input_token,
+      recoveryRequest(attempt, 'cancelled_close_balance_recovery', {
+        attemptId: attempt.id,
+        positionId: attempt.position_id,
+        executionSessionId: `attempt:${Number(attempt.id)}:recovery`
+      })
     );
     const balance = gmgnAdapter.normalizeWalletTokenBalance(balanceResponse, tokenDecimals);
     if (Number(balance.decimals) !== tokenDecimals) return null;
@@ -662,22 +760,10 @@ class TradeReconciler {
           results.push({ strategyGroupId: strategy.id, status: 'error', error: error.code || error.message });
         }
       }
-      const balanceChecks = await this.repository.listDuePositionBalances(10);
-      for (const position of balanceChecks) {
-        try {
-          const result = await this.reconcilePositionBalance(position);
-          results.push(result);
-          this.processed += 1;
-          this.wsBroadcast?.({ type: 'trade:position-balance-updated', payload: result });
-        } catch (error) {
-          this.lastError = error.message;
-          this.logger.error(
-            'trade-reconciler',
-            `Position ${position.id} balance reconciliation failed: ${error.message}`
-          );
-          results.push({ positionId: position.id, status: 'error', error: error.code || error.message });
-        }
-      }
+      // Position balance checks are explicit recovery work. Running them for
+      // every open position creates a background GMGN stream unrelated to an
+      // active order or exit event.
+      const balanceChecks = [];
       const uncertainAttempts = await this.repository.listUncertainAttempts(10);
       for (const attempt of uncertainAttempts) {
         try {
@@ -688,14 +774,6 @@ class TradeReconciler {
             this.wsBroadcast?.({ type: 'trade:attempt-recovered', payload: recovered });
             continue;
           }
-          await this.gmgnHttp.getWalletActivity(
-            attempt.chain,
-            attempt.wallet_address,
-            {
-              token_address: attempt.side === 'sell' ? attempt.input_token : attempt.output_token,
-              limit: 20
-            }
-          );
           await this.repository.touchAttemptReconciliation(attempt.id);
           if (Date.now() - new Date(attempt.created_at).getTime() >= 120_000) {
             await this.repository.transitionAttempt(
@@ -825,6 +903,7 @@ module.exports = {
   receiptHasVerifiableNativeProceeds,
   receiptMatchesTradedAmount,
   receiptTradedAmountRaw,
+  orderWithReceiptTradedAmount,
   strategyPollingIntervalMs,
   strategyMatchesConfirmedOrder,
   reconciler

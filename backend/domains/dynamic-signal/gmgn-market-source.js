@@ -1,4 +1,4 @@
-const gmgnHttp = require('../../lib/gmgn-http');
+const gmgnAccess = require('../../lib/gmgn-access-service');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { requireChain, validateTokenAddress } = require('../trade/chain-adapters');
 
@@ -12,6 +12,10 @@ const HOLDER_TAGS = new Set([
   'bundler', 'transfer_in', 'dex_bot', 'bluechip_owner'
 ]);
 
+function marketAccess(dependencies = {}, scenario = 'research_market') {
+  return dependencies.http || gmgnAccess.accessFor(scenario);
+}
+
 async function fetchKline(input = {}, dependencies = {}) {
   const chain = requireChain(input.chain).id;
   const address = validateTokenAddress(chain, input.address);
@@ -23,7 +27,7 @@ async function fetchKline(input = {}, dependencies = {}) {
     error.code = 'GMGN_MARKET_ARGUMENT_INVALID';
     throw error;
   }
-  const http = dependencies.http || gmgnHttp;
+  const http = marketAccess(dependencies, 'research_kline');
   const data = await http.getTokenKline(chain, address, resolution, from, to, input.requestOptions || {});
   const rows = gmgnAdapter.normalizeKline(data);
   return { source: 'gmgn_token_kline', rows, coverage: { returned_count: rows.length, complete: rows.length > 0 } };
@@ -70,7 +74,7 @@ async function fetchRank(input = {}, dependencies = {}) {
   const chain = requireChain(input.chain).id;
   const interval = validInterval(input.interval, '24h');
   const limit = boundedInteger(input.limit, 100, 1, 100);
-  const http = dependencies.http || gmgnHttp;
+  const http = marketAccess(dependencies, 'research_rank');
   const data = await http.getMarketRank(chain, interval, {
     limit,
     ...(input.orderBy ? { order_by: String(input.orderBy) } : {}),
@@ -100,7 +104,7 @@ function normalizeHotParams(params) {
 
 async function fetchHotSearches(input = {}, dependencies = {}) {
   const params = normalizeHotParams(input.params);
-  const http = dependencies.http || gmgnHttp;
+  const http = marketAccess(dependencies, 'research_hot');
   const data = await http.getMarketHotSearches(params, input.requestOptions || {});
   return sourceResult('gmgn_hot', gmgnAdapter.normalizeMarketCollection(data));
 }
@@ -137,7 +141,7 @@ function buildTrenchesBody(input = {}) {
 async function fetchTrenches(input = {}, dependencies = {}) {
   const chain = requireChain(input.chain).id;
   const body = buildTrenchesBody(input);
-  const http = dependencies.http || gmgnHttp;
+  const http = marketAccess(dependencies, 'research_trenches');
   const data = await http.getMarketTrenches(chain, body, input.requestOptions || {});
   return sourceResult('gmgn_trenches', gmgnAdapter.normalizeMarketCollection(data, { chain }));
 }
@@ -145,7 +149,7 @@ async function fetchTrenches(input = {}, dependencies = {}) {
 async function fetchTopHolders(input = {}, dependencies = {}) {
   const chain = requireChain(input.chain).id;
   const address = validateTokenAddress(chain, input.address);
-  const http = dependencies.http || gmgnHttp;
+  const http = marketAccess(dependencies, 'research_holders');
   const orderBy = String(input.orderBy || 'amount_percentage');
   const direction = String(input.direction || 'desc').toLowerCase();
   const tag = input.tag ? String(input.tag) : null;
@@ -182,13 +186,20 @@ function settledValue(result, normalizer) {
   }
 }
 
+function isProviderRateLimit(error) {
+  const code = String(error?.code || error?.apiError || '').toUpperCase();
+  return error?.status === 429 || code.includes('RATE_LIMIT') || error?.resetAt != null;
+}
+
 async function verifyCandidate(candidate, options = {}) {
   const chain = requireChain(candidate.chainId ?? candidate.chain_id ?? candidate.chain).id;
   const address = validateTokenAddress(
     chain,
     candidate.contractAddress ?? candidate.contract_address ?? candidate.address
   );
-  const http = options.http || gmgnHttp;
+  const http = options.http || gmgnAccess.accessFor(
+    options.requestOptions?.requestContext?.source || 'dynamic_candidate_verification'
+  );
   const [infoResult, securityResult, poolResult] = await Promise.allSettled([
     http.getTokenInfo(chain, address, options.requestOptions || {}),
     http.getTokenSecurity(chain, address, options.requestOptions || {}),
@@ -196,6 +207,10 @@ async function verifyCandidate(candidate, options = {}) {
   ]);
   const info = settledValue(infoResult, gmgnAdapter.normalizeTokenInfo);
   if (info.error) throw info.error;
+  const rateLimitResult = [securityResult, poolResult].find((result) => (
+    result.status === 'rejected' && isProviderRateLimit(result.reason)
+  ));
+  if (rateLimitResult) throw rateLimitResult.reason;
   const security = settledValue(securityResult, (value) => gmgnAdapter.normalizeSecurity(value, chain));
   const pool = settledValue(poolResult, gmgnAdapter.normalizePool);
   const providerAddress = String(info.value.address || '').trim();

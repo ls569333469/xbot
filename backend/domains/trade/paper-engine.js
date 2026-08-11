@@ -1,8 +1,54 @@
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
-const gmgnHttp = require('../../lib/gmgn-http');
-const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { requireChain } = require('./chain-adapters');
+
+function numberFromSnapshot(snapshot, paths) {
+  for (const path of paths) {
+    let current = snapshot;
+    for (const part of path.split('.')) current = current?.[part];
+    const value = Number(current);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function paperSnapshot(signal = {}, whitelist = {}) {
+  const candidates = [
+    signal.paper_snapshot,
+    signal.paperSnapshot,
+    signal.provider_verification_snapshot,
+    whitelist.provider_verification_snapshot
+  ];
+  return candidates.find((value) => value && typeof value === 'object') || {};
+}
+
+function configuredPaperPrice(name, fallback = 1) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function resolvePaperEntryContext(signal, whitelist) {
+  const snapshot = paperSnapshot(signal, whitelist);
+  return {
+    entryPriceUsd: numberFromSnapshot(snapshot, [
+      'info.priceUsd', 'info.price_usd', 'info.price.price',
+      'priceUsd', 'price_usd', 'price.price', 'market.price_usd'
+    ]) || configuredPaperPrice('PAPER_DEFAULT_ENTRY_PRICE_USD'),
+    nativePriceUsd: numberFromSnapshot(snapshot, [
+      'nativePriceUsd', 'native_price_usd', 'gas.native_token_usd_price',
+      'native_token_price_usd'
+    ]) || configuredPaperPrice('PAPER_DEFAULT_NATIVE_PRICE_USD'),
+    source: Object.keys(snapshot).length > 0 ? 'local_snapshot' : 'paper_default'
+  };
+}
+
+function resolvePaperExitPrice(position, requestedPrice) {
+  const requested = Number(requestedPrice);
+  if (Number.isFinite(requested) && requested > 0) return requested;
+  const entry = Number(position?.entry_price);
+  if (Number.isFinite(entry) && entry > 0) return entry;
+  return configuredPaperPrice('PAPER_DEFAULT_EXIT_PRICE_USD');
+}
 
 /**
  * 虚拟模拟买入（开仓）
@@ -18,26 +64,11 @@ async function openSimulatedPosition(signal, wsBroadcast) {
     const preview = previewResult.rows[0];
     if (!preview) throw new Error('Whitelist entry not found');
 
-    // 所有外部请求在事务外完成，避免持有白名单锁等待网络。
-    const [tokenRaw, userRaw] = await Promise.all([
-      gmgnHttp.getTokenInfo(preview.chain_id, preview.contract_address),
-      gmgnHttp.getUserInfo()
-    ]);
-    const tokenInfo = gmgnAdapter.normalizeTokenInfo(tokenRaw);
     const chain = requireChain(preview.chain_id);
-    const wallet = gmgnAdapter.selectWallet(userRaw, chain.id);
-    const entryPriceUsd = tokenInfo.priceUsd;
-    if (!Number.isFinite(entryPriceUsd) || entryPriceUsd <= 0) {
-      const error = new Error('Paper entry rejected because token price is unavailable');
-      error.code = 'PAPER_PRICE_UNAVAILABLE';
-      throw error;
-    }
-    const nativePrice = gmgnAdapter.walletNativePriceUsd(wallet, chain.nativeSymbol);
-    if (!Number.isFinite(nativePrice) || nativePrice <= 0) {
-      const error = new Error('Paper entry rejected because native USD price is unavailable');
-      error.code = 'PAPER_NATIVE_PRICE_UNAVAILABLE';
-      throw error;
-    }
+    // Paper uses a persisted snapshot or deterministic test defaults. It never reads live GMGN.
+    const paperContext = resolvePaperEntryContext(signal, preview);
+    const entryPriceUsd = paperContext.entryPriceUsd;
+    const nativePrice = paperContext.nativePriceUsd;
 
     client = await db.pool.connect();
     await client.query('BEGIN');
@@ -91,7 +122,10 @@ async function openSimulatedPosition(signal, wsBroadcast) {
 
     await client.query('COMMIT');
     transactionOpen = false;
-    logger.trade('paper-engine', `模拟开仓成功: ${wl.symbol} (${wl.contract_address}) on ${wl.chain_id} | 入场价: $${entryPriceUsd} | 数量: ${amountOut}`, { position });
+    logger.trade('paper-engine', `模拟开仓成功: ${wl.symbol} (${wl.contract_address}) on ${wl.chain_id} | 入场价: $${entryPriceUsd} | 数量: ${amountOut}`, {
+      position,
+      priceSource: paperContext.source
+    });
 
     // 6. 广播推送
     if (wsBroadcast) {
@@ -191,5 +225,8 @@ async function closeSimulatedPosition(positionId, exitPriceUsd, statusReason, ws
 
 module.exports = {
   openSimulatedPosition,
-  closeSimulatedPosition
+  closeSimulatedPosition,
+  paperSnapshot,
+  resolvePaperEntryContext,
+  resolvePaperExitPrice
 };

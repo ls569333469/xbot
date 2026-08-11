@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const queries = require('../domains/whitelist/queries');
 
-test('fixed whitelist list excludes dynamic compatibility records', async () => {
+test('fixed whitelist list excludes system-generated compatibility records', async () => {
   const calls = [];
   const executor = {
     async query(sql, params) {
@@ -19,11 +19,11 @@ test('fixed whitelist list excludes dynamic compatibility records', async () => 
 
   assert.equal(result.total, 1);
   const listQuery = calls.find((item) => /SELECT \* FROM ca_whitelist/.test(item.sql));
-  assert.match(listQuery.sql, /source <> 'dynamic_keyword'/);
-  assert.match(calls[0].sql, /source <> 'dynamic_keyword'/);
+  assert.match(listQuery.sql, /source NOT IN \('dynamic_keyword', 'follow_discovery'\)/);
+  assert.match(calls[0].sql, /source NOT IN \('dynamic_keyword', 'follow_discovery'\)/);
 });
 
-test('fixed CA lookup does not select a dynamic compatibility record', async () => {
+test('fixed CA lookup does not select a system-generated compatibility record', async () => {
   let query = '';
   const executor = {
     async query(sql) {
@@ -38,5 +38,5 @@ test('fixed CA lookup does not select a dynamic compatibility record', async () 
     executor
   );
 
-  assert.match(query, /source <> 'dynamic_keyword'/);
+  assert.match(query, /source NOT IN \('dynamic_keyword', 'follow_discovery'\)/);
 });

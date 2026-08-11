@@ -57,7 +57,12 @@ async function main() {
       '032_p20_dynamic_chain_budget_matrix.sql',
       '033_p20_dynamic_policy_templates.sql',
       '034_p20_approved_term_intent_and_index_bounds.sql',
-      '035_p20_split_implicit_asset_families.sql']]
+      '035_p20_split_implicit_asset_families.sql',
+      '036_p21_follow_discovery.sql', '037_p21_follow_discovery_candidate_source.sql',
+      '038_p22_gmgn_shared_rate_state_and_audit.sql', '039_p22_follow_verification_snapshot.sql',
+      '040_p23_runtime_scope_readiness_snapshot.sql',
+      '041_p24_local_event_provider_status.sql',
+      '042_p25_gmgn_terminal_execution.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -69,6 +74,13 @@ async function main() {
   if (!migrations.has('033_p20_dynamic_policy_templates.sql')) throw new Error('Migration 033 is not applied');
   if (!migrations.has('034_p20_approved_term_intent_and_index_bounds.sql')) throw new Error('Migration 034 is not applied');
   if (!migrations.has('035_p20_split_implicit_asset_families.sql')) throw new Error('Migration 035 is not applied');
+  if (!migrations.has('036_p21_follow_discovery.sql')) throw new Error('Migration 036 is not applied');
+  if (!migrations.has('037_p21_follow_discovery_candidate_source.sql')) throw new Error('Migration 037 is not applied');
+  if (!migrations.has('038_p22_gmgn_shared_rate_state_and_audit.sql')) throw new Error('Migration 038 is not applied');
+  if (!migrations.has('039_p22_follow_verification_snapshot.sql')) throw new Error('Migration 039 is not applied');
+  if (!migrations.has('040_p23_runtime_scope_readiness_snapshot.sql')) throw new Error('Migration 040 is not applied');
+  if (!migrations.has('041_p24_local_event_provider_status.sql')) throw new Error('Migration 041 is not applied');
+  if (!migrations.has('042_p25_gmgn_terminal_execution.sql')) throw new Error('Migration 042 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',
@@ -93,7 +105,9 @@ async function main() {
   await requireColumns('arm_preparations', [
     'token_hash', 'configuration_fingerprint', 'policy_fingerprint',
     'activation_versions', 'compact_summary', 'status', 'expires_at', 'consumed_at',
-    'failed_at', 'failure_code', 'failure_detail'
+    'failed_at', 'failure_code', 'failure_detail', 'scope_type', 'scope_id',
+    'scope_chain_ids', 'scope_revision', 'scope_manifest_hash', 'readiness_snapshot',
+    'probe_requested'
   ]);
   await requireColumns('whitelist_activation_outbox', [
     'whitelist_id', 'desired_version', 'status', 'attempt_count', 'locked_at'
@@ -124,11 +138,42 @@ async function main() {
   await requireColumns('dynamic_paper_evaluations', [
     'paper_session_id', 'dynamic_target_id', 'signal_id', 'position_id', 'status', 'failure_code'
   ]);
+  await requireColumns('follow_discovery_policies', [
+    'kol_id', 'mode', 'enabled', 'allowed_chain_ids', 'trade_template_id',
+    'trade_config_snapshot', 'resolver_options', 'revision', 'context_hash',
+    'baseline_at', 'archived_at'
+  ]);
+  await requireColumns('follow_discovery_events', [
+    'policy_id', 'policy_revision', 'mode', 'actor_user_id', 'target_user_id',
+    'behavior_key', 'provider_created_at', 'status', 'stage', 'chain_id',
+    'contract_address', 'whitelist_id', 'signal_id', 'failure_code'
+  ]);
+  await requireColumns('follow_discovery_usage_daily_by_chain', [
+    'policy_id', 'usage_date', 'chain_id', 'spent_native', 'reserved_native',
+    'new_token_count', 'signal_count'
+  ]);
+  await requireColumns('follow_discovery_usage_events', [
+    'policy_id', 'signal_id', 'chain_id', 'contract_address', 'amount_native',
+    'counts_new_token', 'status'
+  ]);
+  await requireColumns('ca_whitelist', [
+    'follow_discovery_policy_id', 'follow_discovery_event_id', 'provider_verification_snapshot'
+  ]);
+  await requireColumns('provider_rate_events', [
+    'source', 'process_role', 'signal_id', 'policy_id', 'whitelist_id', 'context_json'
+  ]);
+  await requireColumns('trade_signals', [
+    'follow_discovery_policy_id', 'follow_discovery_event_id',
+    'follow_discovery_policy_revision', 'follow_discovery_context_hash'
+  ]);
   await requireIndexes([
     'uq_dynamic_resolution_job',
     'uq_dynamic_paper_session_running',
     'uq_whitelist_dynamic_actor_ca_chain_active',
-    'uq_trade_signal_dynamic_resolution'
+    'uq_trade_signal_dynamic_resolution',
+    'uq_follow_discovery_policy_kol_current',
+    'uq_whitelist_follow_discovery_active',
+    'uq_trade_signal_follow_discovery_event'
   ]);
 
   const invalidActivation = await client.query(

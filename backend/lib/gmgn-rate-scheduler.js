@@ -3,8 +3,11 @@ const { EventEmitter } = require('events');
 const OFFICIAL_RATE = 20;
 const OFFICIAL_CAPACITY = 20;
 const INTERNAL_RATE = 5;
-const INTERNAL_CAPACITY = 7;
-const TRADE_RESERVATION_WEIGHT = 7;
+const INTERNAL_CAPACITY = 10;
+// A live buy reserves only the provider requests it can actually make. The
+// swap is the minimum reservation; chain-specific reads are added explicitly.
+const TRADE_RESERVATION_WEIGHT = 5;
+const TRADE_MAX_RESERVATION_WEIGHT = 6;
 const TRADE_EVIDENCE_WEIGHT = 4;
 
 const ENDPOINT_WEIGHTS = new Map([
@@ -38,6 +41,10 @@ const PRIORITIES = Object.freeze({
   CACHE_WARMUP: 5
 });
 
+// Keep explicit reconciliation and trade actions available; reject only
+// background/cache work that can safely wait for a later event.
+const COOLDOWN_REJECT_PRIORITY = PRIORITIES.CACHE_WARMUP;
+
 function endpointWeight(method, path) {
   return ENDPOINT_WEIGHTS.get(`${String(method).toUpperCase()} ${path}`) || 5;
 }
@@ -50,6 +57,16 @@ function parseResetAt(value, fallbackNow = Date.now()) {
   }
   const parsed = Date.parse(String(value || ''));
   return Number.isFinite(parsed) ? parsed : fallbackNow + 60_000;
+}
+
+function cooldownError(resetAt, now = Date.now()) {
+  const error = new Error('GMGN request rejected during provider rate-limit cooldown');
+  error.code = 'GMGN_RATE_LIMIT_COOLDOWN';
+  error.resetAt = resetAt || null;
+  error.retryAfterSeconds = resetAt
+    ? Math.max(1, Math.ceil((Number(resetAt) - now) / 1000))
+    : null;
+  return error;
 }
 
 class RateLease {
@@ -138,6 +155,13 @@ class WeightedRateScheduler extends EventEmitter {
       item.reject(error);
       return false;
     });
+    if (this.cooldownUntil > now) {
+      this.queue = this.queue.filter((item) => {
+        if (item.priority < COOLDOWN_REJECT_PRIORITY) return true;
+        item.reject(cooldownError(this.cooldownUntil, now));
+        return false;
+      });
+    }
     if (this.queue.length === 0) return;
 
     this.queue.sort((left, right) => (
@@ -174,10 +198,15 @@ class WeightedRateScheduler extends EventEmitter {
       error.code = 'GMGN_RATE_WEIGHT_INVALID';
       return Promise.reject(error);
     }
+    const priority = Number(options.priority ?? PRIORITIES.CACHE_WARMUP);
+    const now = this.now();
+    if (this.cooldownUntil > now && priority >= COOLDOWN_REJECT_PRIORITY) {
+      return Promise.reject(cooldownError(this.cooldownUntil, now));
+    }
     return new Promise((resolve, reject) => {
       this.queue.push({
         weight: amount,
-        priority: Number(options.priority ?? PRIORITIES.CACHE_WARMUP),
+        priority,
         deadlineAt: options.deadlineAt ? Number(options.deadlineAt) : null,
         context: options.context || {},
         sequence: this.sequence++,
@@ -189,7 +218,8 @@ class WeightedRateScheduler extends EventEmitter {
   }
 
   reserveTrade(options = {}) {
-    return this.acquire(TRADE_RESERVATION_WEIGHT, {
+    const weight = Number(options.weight ?? TRADE_RESERVATION_WEIGHT);
+    return this.acquire(weight, {
       ...options,
       priority: PRIORITIES.NEW_TRADE
     });
@@ -297,6 +327,7 @@ class WeightedRateScheduler extends EventEmitter {
 const scheduler = new WeightedRateScheduler();
 
 module.exports = {
+  COOLDOWN_REJECT_PRIORITY,
   ENDPOINT_WEIGHTS,
   INTERNAL_CAPACITY,
   INTERNAL_RATE,
@@ -304,6 +335,7 @@ module.exports = {
   OFFICIAL_RATE,
   PRIORITIES,
   TRADE_RESERVATION_WEIGHT,
+  TRADE_MAX_RESERVATION_WEIGHT,
   TRADE_EVIDENCE_WEIGHT,
   WeightedRateScheduler,
   endpointWeight,

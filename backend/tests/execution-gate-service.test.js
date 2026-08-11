@@ -32,7 +32,7 @@ test('execution gate fails closed on a configuration fingerprint mismatch', () =
   assert.throws(() => gate.assertReady('robinhood'), { code: 'LIVE_CONFIGURATION_CHANGED' });
 });
 
-test('execution gate permits infrastructure-ready chains only for dynamic scope', () => {
+test('execution gate permits infrastructure-ready chains only for strategy scope', () => {
   const gate = new ExecutionGateService({ engine: engine(), maxAgeMs: 1500 });
   gate.update({
     readyToArm: true,
@@ -48,7 +48,29 @@ test('execution gate permits infrastructure-ready chains only for dynamic scope'
 
   assert.throws(() => gate.assertReady('bsc'), { code: 'LIVE_CHAIN_READINESS_FAILED' });
   assert.equal(
-    gate.assertReady('bsc', { dynamicScope: true }).configurationFingerprint,
+    gate.assertReady('bsc', { strategyScope: true }).configurationFingerprint,
     'config-1'
+  );
+});
+
+test('execution gate rejects a readiness snapshot from another runtime scope', () => {
+  const scopedEngine = {
+    getArmed: () => true,
+    getStatus: () => ({
+      status: 'running', configurationFingerprint: 'config-1',
+      scope: { scope_type: 'follow_discovery', scope_id: 2 }
+    })
+  };
+  const gate = new ExecutionGateService({ engine: scopedEngine });
+  gate.update({
+    readyToArm: true,
+    blockers: [],
+    configurationFingerprint: 'config-1',
+    scope: { scope_type: 'dynamic_policy', scope_id: 2 },
+    chains: [{ chain: 'sol', ready: true, infrastructure_ready: true, blockers: [] }]
+  });
+  assert.throws(
+    () => gate.assertReady('sol', { strategyScope: true }),
+    { code: 'LIVE_SCOPE_SNAPSHOT_MISMATCH' }
   );
 });

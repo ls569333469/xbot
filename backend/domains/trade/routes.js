@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const queries = require('./queries');
-const gmgnHttp = require('../../lib/gmgn-http');
 const logger = require('../../lib/logger');
 const db = require('../../lib/db');
 const paperEngine = require('./paper-engine');
@@ -18,6 +17,9 @@ const { tradeCircuitBreaker } = require('./trade-circuit-breaker');
 const { legacyPaperEnabled } = require('../../lib/legacy-features');
 const liveApproval = require('./live-approval-service');
 const { getRuntimePolicyDetail } = require('./runtime-policy-summary');
+const providerAudit = require('./provider-audit-service');
+const engineState = require('../../lib/engine-state');
+const { TRADE_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
 
 const ACTIVE_POSITION_STATUSES = [
   'open', 'open_unprotected', 'open_protected', 'partially_closed', 'closing',
@@ -59,9 +61,8 @@ router.get('/positions', async (req, res) => {
 
 router.get('/runtime-policy', async (req, res) => {
   try {
-    const cachedReadiness = readinessService.getLatestSnapshot(5000);
     const [readiness, acceptanceScope] = await Promise.all([
-      cachedReadiness || readinessService.getSnapshot(),
+      readinessService.getSnapshot({ scope: engineState.getScopeInput() }),
       liveApproval.getAcceptanceScope()
     ]);
     res.json({
@@ -73,7 +74,7 @@ router.get('/runtime-policy', async (req, res) => {
         live_queue: liveExecutionQueue.getStatus(),
         shadow: shadowLiveEvaluator.getStatus(),
         endpoint_weights: readiness.scheduler.endpointWeights,
-        new_trade_reservation_weight: 7,
+        new_trade_reservation_weight: TRADE_RESERVATION_WEIGHT,
         acceptance_scope: acceptanceScope
       }
     });
@@ -172,6 +173,20 @@ router.post('/chains/:chain/approve', async (req, res) => {
 router.get('/reconciliation', async (req, res) => {
   try {
     res.json({ ok: true, data: await reconciler.getStatus() });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.get('/provider-audit', async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      data: await providerAudit.getAuditSummary({
+        hours: req.query.hours,
+        limit: req.query.limit
+      })
+    });
   } catch (error) {
     sendError(res, error);
   }
@@ -346,9 +361,8 @@ router.post('/positions/:id/close', async (req, res) => {
       });
     }
 
-    // 2. 获取当前实时价格进行平仓
-    const tokenInfo = await gmgnHttp.getTokenInfo(pos.chain_id, pos.contract_address);
-    const exitPriceUsd = Number(tokenInfo.price_usd || tokenInfo.price || 0);
+    // Paper close uses an explicit or local deterministic price; it never touches live GMGN.
+    const exitPriceUsd = paperEngine.resolvePaperExitPrice(pos, req.body?.exit_price_usd);
 
     if (exitPriceUsd <= 0) {
       return res.status(400).json({ ok: false, error: 'Failed to fetch current token price for closing' });

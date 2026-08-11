@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const db = require('../../lib/db');
-const gmgnHttp = require('../../lib/gmgn-http');
+const researchAccess = require('../../lib/gmgn-access-service').accessFor('research');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { cache, cacheTtls } = require('../../lib/gmgn-cache');
 const { requireChain, validateTokenAddress } = require('../trade/chain-adapters');
@@ -30,7 +30,14 @@ async function getTokenMetadata(chainId, addressValue, options = {}) {
   const entry = await cache.getOrLoad(
     `research:token:${chain.id}:${address}`,
     cacheTtls().token,
-    () => gmgnHttp.getTokenInfo(chain.id, address, options)
+    () => researchAccess.getTokenInfo(chain.id, address, {
+      ...options,
+      requestContext: {
+        source: 'research',
+        stage: 'token_info',
+        ...(options.requestContext || {})
+      }
+    })
   );
   return sanitizeTokenMetadata(chain.id, address, entry.value);
 }
@@ -247,10 +254,14 @@ async function createReport(input) {
   const { chain, address } = normalizeRequest(input.chain_id, input.contract_address);
   const metadata = await getTokenMetadata(chain.id, address);
   const [securityResult, poolResult, officialCandidate] = await Promise.all([
-    gmgnHttp.getTokenSecurity(chain.id, address)
+    researchAccess.getTokenSecurity(chain.id, address, {
+      requestContext: { source: 'research', stage: 'security' }
+    })
       .then((value) => gmgnAdapter.normalizeSecurity(value, chain.id))
       .catch((error) => ({ error: error.code || 'GMGN_SECURITY_UNAVAILABLE' })),
-    gmgnHttp.getTokenPoolInfo(chain.id, address)
+    researchAccess.getTokenPoolInfo(chain.id, address, {
+      requestContext: { source: 'research', stage: 'pool' }
+    })
       .then((value) => gmgnAdapter.normalizePool(value))
       .catch((error) => ({ error: error.code || 'GMGN_POOL_UNAVAILABLE' })),
     verifyOfficialCandidate(metadata)

@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P23 三策略项目执行思维导图</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090c10;
+      --surface: #10151b;
+      --surface-raised: #151c23;
+      --surface-deep: #0d1217;
+      --line: #29353e;
+      --line-strong: #46545d;
+      --text: #edf2f3;
+      --text-secondary: #b5c0c4;
+      --muted: #7e8b92;
+      --cyan: #64c9da;
+      --cyan-soft: #113039;
+      --green: #6ad5a7;
+      --green-soft: #12352c;
+      --amber: #e6b965;
+      --amber-soft: #362c19;
+      --red: #ee858c;
+      --red-soft: #3a2026;
+      --blue: #88afe8;
+      --blue-soft: #172b43;
+      --radius: 7px;
+      --font: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { background: var(--bg); }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+      font: 14px/1.5 var(--font);
+      letter-spacing: 0;
+    }
+    h1, h2, h3, p { margin: 0; }
+    button { font: inherit; letter-spacing: 0; }
+    button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      min-height: 60px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 30px;
+      border-bottom: 1px solid #1d252b;
+      background: rgba(9, 12, 16, 0.97);
+      backdrop-filter: blur(10px);
+    }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark {
+      display: grid;
+      width: 31px;
+      height: 31px;
+      place-items: center;
+      border: 1px solid rgba(100, 201, 218, 0.48);
+      border-radius: 5px;
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .brand-copy strong { display: block; font-size: 14px; font-weight: 720; }
+    .brand-copy span { display: block; color: var(--muted); font-size: 11px; }
+    .top-status {
+      display: inline-flex;
+      min-height: 30px;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid rgba(230, 185, 101, 0.4);
+      border-radius: 5px;
+      color: var(--amber);
+      background: var(--amber-soft);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .top-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    main { width: min(1720px, 100%); margin: 0 auto; padding: 26px 30px 54px; }
+    .eyebrow {
+      margin-bottom: 7px;
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+    .page-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+    .page-head h1 { font-size: 28px; line-height: 1.2; font-weight: 720; }
+    .page-head p { max-width: 860px; margin-top: 9px; color: var(--text-secondary); }
+    .head-chips { display: flex; gap: 7px; flex-wrap: wrap; justify-content: end; }
+    .chip {
+      display: inline-flex;
+      min-height: 28px;
+      align-items: center;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      background: var(--surface);
+      font-family: var(--mono);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .chip strong { color: var(--green); font-weight: 700; }
+
+    .thesis {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .thesis-card {
+      min-height: 78px;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .thesis-card.primary { border-color: rgba(100, 201, 218, 0.37); background: var(--cyan-soft); }
+    .thesis-card h2 { font-size: 15px; font-weight: 700; }
+    .thesis-card p { margin-top: 5px; color: var(--text-secondary); font-size: 12px; }
+    .thesis-card.primary h2 { color: var(--cyan); }
+    .thesis-card strong { color: var(--text); }
+
+    .legend-bar {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      flex-wrap: wrap;
+      margin-bottom: 11px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .legend-title { color: var(--text-secondary); font-weight: 680; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+    .legend-dot.trigger { background: var(--cyan); }
+    .legend-dot.strategy { background: var(--blue); }
+    .legend-dot.provider { background: var(--amber); }
+    .legend-dot.problem { background: var(--red); }
+    .legend-dot.fixed { background: var(--green); }
+
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
+      margin-bottom: 13px;
+    }
+    .filter-label { margin-right: 3px; color: var(--muted); font-size: 12px; }
+    .filter {
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .filter:hover { border-color: var(--cyan); color: var(--text); }
+    .filter.active { border-color: rgba(100, 201, 218, 0.65); color: var(--cyan); background: var(--cyan-soft); }
+
+    .maps-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .map-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .map-card.current { border-color: rgba(238, 133, 140, 0.4); }
+    .map-card.target { border-color: rgba(106, 213, 167, 0.42); }
+    .map-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 62px;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-raised);
+    }
+    .map-head h2 { font-size: 17px; font-weight: 710; }
+    .map-head p { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .map-badge {
+      display: inline-flex;
+      min-height: 24px;
+      align-items: center;
+      padding: 0 8px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .current .map-badge { color: var(--red); background: var(--red-soft); }
+    .target .map-badge { color: var(--green); background: var(--green-soft); }
+    .map-viewport { overflow: auto; padding: 13px; background: var(--surface-deep); }
+    svg.mindmap { display: block; width: 100%; min-width: 780px; height: auto; }
+    .svg-bg { fill: #0b1015; stroke: var(--line); stroke-width: 1; }
+    .svg-grid { fill: url(#grid); opacity: 0.18; }
+    .svg-edge { fill: none; stroke: #4c5c65; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+    .svg-edge.soft { stroke: #314047; stroke-dasharray: 5 5; }
+    .svg-edge.problem { stroke: var(--red); marker-end: url(#arrow-red); }
+    .svg-edge.target { stroke: var(--green); marker-end: url(#arrow-green); }
+    .svg-root { fill: #14343b; stroke: var(--cyan); stroke-width: 1.5; }
+    .svg-hub { fill: #162a36; stroke: #6f9db0; stroke-width: 1.2; }
+    .svg-strategy { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 1.2; }
+    .svg-step { fill: #131a20; stroke: var(--line-strong); stroke-width: 1; }
+    .svg-step.trigger { fill: #122d35; stroke: var(--cyan); }
+    .svg-step.problem { fill: var(--red-soft); stroke: var(--red); }
+    .svg-step.provider { fill: var(--amber-soft); stroke: var(--amber); }
+    .svg-step.target { fill: var(--green-soft); stroke: var(--green); }
+    .svg-merge { fill: #162c27; stroke: var(--green); stroke-width: 1.3; }
+    .svg-output { fill: #18252b; stroke: #77aebe; stroke-width: 1.2; }
+    .svg-buy { fill: var(--amber-soft); stroke: var(--amber); stroke-width: 1.5; }
+    .svg-title { fill: var(--text); font-size: 14px; font-weight: 700; }
+    .svg-subtitle { fill: var(--text-secondary); font-size: 11px; }
+    .svg-label { fill: var(--muted); font-family: var(--mono); font-size: 9px; }
+    .svg-label.trigger { fill: var(--cyan); }
+    .svg-label.provider { fill: var(--amber); }
+    .svg-label.problem { fill: var(--red); }
+    .svg-label.target { fill: var(--green); }
+    .svg-center { text-anchor: middle; }
+    .branch-dim { opacity: 0.21; }
+    .branch-highlight .svg-strategy, .branch-highlight .svg-step { filter: drop-shadow(0 0 5px rgba(100, 201, 218, 0.38)); }
+
+    .bottom-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(106, 213, 167, 0.36);
+      border-radius: var(--radius);
+      background: var(--green-soft);
+    }
+    .bottom-item { position: relative; min-height: 58px; padding: 10px 9px; border: 1px solid rgba(106, 213, 167, 0.31); border-radius: 5px; background: rgba(9, 12, 16, 0.38); text-align: center; }
+    .bottom-item:not(:last-child)::after { position: absolute; top: 28px; right: -8px; width: 7px; height: 1px; background: var(--green); content: ""; }
+    .bottom-item strong { display: block; font-size: 12px; font-weight: 700; }
+    .bottom-item span { display: block; margin-top: 3px; color: var(--text-secondary); font-family: var(--mono); font-size: 10px; }
+    .bottom-item.provider { border-color: rgba(230, 185, 101, 0.42); background: var(--amber-soft); }
+    .bottom-item.provider strong { color: var(--amber); }
+
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 17px;
+    }
+    .note-card { min-height: 91px; padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .note-card h3 { font-size: 13px; font-weight: 700; }
+    .note-card p { margin-top: 5px; color: var(--text-secondary); font-size: 12px; }
+    .note-card strong { color: var(--green); }
+    .note-card.warning strong { color: var(--red); }
+    .footer-note { margin-top: 16px; color: var(--muted); font-size: 11px; }
+    .footer-note code { color: var(--text-secondary); font-family: var(--mono); }
+
+    @media (max-width: 1450px) {
+      .maps-grid { grid-template-columns: 1fr; }
+      .map-viewport { max-height: none; }
+    }
+    @media (max-width: 760px) {
+      .topbar { padding: 0 18px; }
+      main { padding: 22px 18px 42px; }
+      .page-head { display: block; }
+      .page-head h1 { font-size: 23px; }
+      .head-chips { justify-content: start; margin-top: 13px; }
+      .thesis, .notes { grid-template-columns: 1fr; }
+      .map-head { align-items: start; }
+      .map-head p { max-width: 240px; }
+      .bottom-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .bottom-item:nth-child(2n)::after { display: none; }
+      .bottom-item:nth-child(odd)::after { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">P23</div>
+      <div class="brand-copy">
+        <strong>XBOT 项目级执行思维导图</strong>
+        <span>三策略触发、激活与 GMGN 交易总链路</span>
+      </div>
+    </div>
+    <div class="top-status"><i></i>仅架构预览 · 不执行交易</div>
+  </header>
+
+  <main>
+    <section class="page-head">
+      <div>
+        <div class="eyebrow">P23 / PROJECT FLOW MIND MAP</div>
+        <h1>三策略项目执行总链路</h1>
+        <p>以一次事件从发生到买入为主线，查看三个策略如何被激活、如何汇聚到 GMGN，以及 P23 修复后哪些模块不再重复调用。</p>
+      </div>
+      <div class="head-chips">
+        <div class="chip">策略 <strong>固定 CA · P20 · P21</strong></div>
+        <div class="chip">交易入口 <strong>GMGN Buy</strong></div>
+      </div>
+    </section>
+
+    <section class="thesis">
+      <article class="thesis-card primary">
+        <h2>你描述的主流程</h2>
+        <p><strong>6551 / Grok 触发或激活策略</strong>，三种策略分别完成匹配或发现 CA，满足策略条件后进入 <strong>GMGN Quote -> 风控 -> GMGN 买入</strong>。</p>
+      </article>
+      <article class="thesis-card">
+        <h2>P23 的修复边界</h2>
+        <p>触发、搜索、低频候选验证、配置激活不再各自拥有交易权；每个事件最终只交给一个 <strong>ExecutionSession</strong> 调用 GMGN。</p>
+      </article>
+    </section>
+
+    <div class="legend-bar">
+      <span class="legend-title">图例</span>
+      <span class="legend-item"><i class="legend-dot trigger"></i>6551 / Grok 触发或研究</span>
+      <span class="legend-item"><i class="legend-dot strategy"></i>策略分支</span>
+      <span class="legend-item"><i class="legend-dot provider"></i>GMGN 调用</span>
+      <span class="legend-item"><i class="legend-dot fixed"></i>P23 收敛节点</span>
+      <span class="legend-item"><i class="legend-dot problem"></i>历史重复路径</span>
+    </div>
+
+    <div class="filter-bar" aria-label="策略高亮筛选">
+      <span class="filter-label">高亮策略</span>
+      <button class="filter active" type="button" data-filter="all">全部</button>
+      <button class="filter" type="button" data-filter="fixed">固定 CA</button>
+      <button class="filter" type="button" data-filter="p20">P20 动态</button>
+      <button class="filter" type="button" data-filter="p21">P21 关注</button>
+    </div>
+
+    <section class="maps-grid" aria-label="当前和修复后的项目流程导图">
+      <article class="map-card current">
+        <header class="map-head">
+          <div><h2>当前实现</h2><p>三条策略分别处理激活、验证和执行，GMGN 调用权分散</p></div>
+          <span class="map-badge">重复调用 / 429 风险</span>
+        </header>
+        <div id="current-map" class="map-viewport"></div>
+      </article>
+      <article class="map-card target">
+        <header class="map-head">
+          <div><h2>P23 修复后</h2><p>三条策略共享一条交易主干，GMGN 只由执行会话拥有</p></div>
+          <span class="map-badge">一事件 / 一会话 / 一 owner</span>
+        </header>
+        <div id="target-map" class="map-viewport"></div>
+      </article>
+    </section>
+
+    <section class="bottom-flow">
+      <div class="bottom-item"><strong>获得 CA + 本地门槛</strong><span>chain / auth / budget</span></div>
+      <div class="bottom-item"><strong>ExecutionSession</strong><span>唯一调用 owner</span></div>
+      <div class="bottom-item provider"><strong>GMGN Quote</strong><span>交易前价格与路由</span></div>
+      <div class="bottom-item"><strong>风险门禁</strong><span>预算 / 滑点 / 余额</span></div>
+      <div class="bottom-item provider"><strong>GMGN Swap / 买入</strong><span>Order / Receipt / Position</span></div>
+    </section>
+
+    <section class="notes">
+      <article class="note-card"><h3>Signal 是什么</h3><p><strong>本地交易意图记录</strong>，用于去重、审计和把 CA 交给执行队列，不是 GMGN 请求，也不是额外的交易步骤。</p></article>
+      <article class="note-card"><h3>Policy Snapshot 是什么</h3><p><strong>本地证据与策略快照</strong>。P21 用来保存 Grok 找到的 CA、关系和策略参数，不调用 GMGN，也不创建白名单激活。</p></article>
+      <article class="note-card warning"><h3>首次验证快照是什么</h3><p><strong>仅 P20 完整检查模式的可选旁路</strong>：新 CA 最多验证一次并缓存结果；快速实盘可直接进入 GMGN Quote，不应每次事件重复验证。</p></article>
+    </section>
+    <p class="footer-note">对应文档：<code>P23_three_strategy_execution_chain_revision.md</code> · 本页面仅展示架构，不修改业务代码、不启动真实交易。</p>
+  </main>
+
+  <script>
+    const NS = "http://www.w3.org/2000/svg";
+    const branches = [
+      {key:"fixed", title:"固定 CA", subtitle:"已配置资产", color:"blue", x:32, current:[
+        ["6551 事件", "监听触发", "trigger"], ["本地 CA / 关系匹配", "固定配置", "step"], ["白名单 Activation", "事件链路重复进入", "problem"], ["GMGN readiness / Quote", "激活阶段读取", "problem"]
+      ], target:[
+        ["6551 事件", "监听触发", "trigger"], ["本地 CA + 策略门槛", "去重 / 授权 / 预算", "target"], ["获得 CA，进入交易", "内部记录 Signal / Intent", "target"], ["GMGN ExecutionSession", "唯一交易 owner", "target"]
+      ]},
+      {key:"p20", title:"P20 动态喊单", subtitle:"内容发现 CA", color:"blue", x:320, current:[
+        ["6551 内容事件", "Tweet / Quote / Reply", "trigger"], ["解析候选 CA", "意图与内容提取", "step"], ["物化 ca_whitelist", "把候选当固定配置", "problem"], ["GMGN 验证 + Activation", "重复 Quote / readiness", "problem"]
+      ], target:[
+        ["6551 内容事件", "内容触发", "trigger"], ["候选 CA 解析", "命中新资产", "target"], ["获得 CA，进入交易", "快速模式不预热 GMGN", "target"], ["GMGN ExecutionSession", "Quote -> Swap", "target"]
+      ]},
+      {key:"p21", title:"P21 关注发现", subtitle:"关注行为发现项目", color:"blue", x:608, current:[
+        ["6551 Follow", "关注事件触发", "trigger"], ["Grok + x_search", "搜索项目 / CEO / CA", "trigger"], ["Resolver + 白名单", "再次进入 GMGN 验证", "problem"], ["Activation / readiness", "user / wallet / GMGN", "problem"]
+      ], target:[
+        ["6551 Follow", "关注事件触发", "trigger"], ["Grok 4.5 + x_search", "搜索项目 / CEO / CA", "trigger"], ["获得 CA，进入交易", "Policy Snapshot 仅本地留痕", "target"], ["GMGN ExecutionSession", "研究阶段 GMGN 0，交易时 Quote", "target"]
+      ]}
+    ];
+
+    function svgText(text, x, y, className, anchor) {
+      const node = document.createElementNS(NS, "text");
+      node.setAttribute("x", x);
+      node.setAttribute("y", y);
+      node.setAttribute("class", className);
+      if (anchor) node.setAttribute("text-anchor", anchor);
+      node.textContent = text;
+      return node.outerHTML;
+    }
+
+    function rect(x, y, w, h, className, branch) {
+      return `<rect class="${className}" data-branch="${branch || "common"}" x="${x}" y="${y}" width="${w}" height="${h}" rx="7" />`;
+    }
+
+    function node(x, y, w, h, title, subtitle, className, branch, tag) {
+      const tagText = tag ? svgText(tag, x + w - 10, y + 18, `svg-label ${className.includes("provider") ? "provider" : className.includes("problem") ? "problem" : className.includes("target") ? "target" : ""}`, "end") : "";
+      return `${rect(x, y, w, h, `svg-step ${className}`, branch)}${svgText(title, x + 12, y + 22, "svg-title")}${svgText(subtitle, x + 12, y + 41, "svg-subtitle")}${tagText}`;
+    }
+
+    function edge(x1, y1, x2, y2, className) {
+      return `<path class="svg-edge ${className || ""}" d="M ${x1} ${y1} C ${x1} ${y1 + 22}, ${x2} ${y2 - 22}, ${x2} ${y2}" />`;
+    }
+
+    function makeMap(mode) {
+      const target = mode === "target";
+      const rootTitle = target ? "P23 统一交易项目" : "XBOT 当前交易项目";
+      const hubTitle = target ? "6551 / Grok 触发策略" : "6551 / Grok 分段触发";
+      let html = `<svg class="mindmap" data-mode="${mode}" viewBox="0 0 900 1010" role="img" aria-label="${target ? "P23 修复后" : "当前实现"}三策略项目流程思维导图">
+        <defs>
+          <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M 24 0 L 0 0 0 24" fill="none" stroke="#29353e" stroke-width="1" /></pattern>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#4c5c65" /></marker>
+          <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ee858c" /></marker>
+          <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6ad5a7" /></marker>
+        </defs>
+        <rect class="svg-bg" x="0.5" y="0.5" width="899" height="1009" rx="7" />
+        <rect class="svg-grid" x="1" y="1" width="898" height="1008" rx="7" />
+        ${node(305, 22, 290, 55, rootTitle, "三种策略共享资金与持仓状态", "root", "common", "PROJECT")}
+        ${edge(450, 77, 450, 110, "target")}
+        ${node(325, 110, 250, 55, hubTitle, target ? "事件只负责触发 / 研究" : "事件进入多个独立准备模块", target ? "target" : "problem", "common", target ? "ONE OWNER" : "SPLIT")}`;
+
+      for (const branch of branches) {
+        const steps = target ? branch.target : branch.current;
+        const center = branch.x + 130;
+        const branchClass = target ? "target" : "problem";
+        html += edge(450, 165, center, 205, target ? "target" : "problem");
+        html += node(branch.x, 205, 260, 58, branch.title, branch.subtitle, "strategy", branch.key, branch.key.toUpperCase());
+        let prevBottom = 263;
+        for (let index = 0; index < steps.length; index += 1) {
+          const y = 284 + index * 70;
+          const [title, subtitle, style] = steps[index];
+          const tag = style === "trigger" ? (branch.key === "p21" && index === 1 ? "GROK" : "6551") : style === "problem" ? "GMGN" : style === "provider" ? "GMGN" : target && index === 2 && branch.key === "p21" ? "LOCAL" : "LOCAL";
+          html += edge(center, prevBottom, center, y, style === "problem" ? "problem" : target ? "target" : "soft");
+          html += node(branch.x, y, 260, 54, title, subtitle, style, branch.key, tag);
+          prevBottom = y + 54;
+        }
+        html += edge(center, prevBottom, 450, 610, target ? "target" : "problem");
+      }
+
+      if (target) {
+        html += node(315, 610, 270, 58, "三策略 CA 统一进入交易", "内部生成 Signal / Intent，不是额外交易步骤", "merge", "common", "LOCAL GATE");
+        html += edge(450, 668, 450, 704, "target");
+        html += node(315, 704, 270, 54, "ExecutionSession", "唯一 Provider 调用 owner", "target", "common", "OWNER");
+        html += edge(450, 758, 450, 786, "target");
+        html += node(315, 786, 270, 54, "GMGN Quote", "交易前价格、路由和可交易性", "provider", "common", "GMGN");
+        html += edge(450, 840, 450, 868, "target");
+        html += node(315, 868, 270, 54, "Risk Gate", "预算、滑点、余额和策略限制", "target", "common", "LOCAL");
+        html += edge(450, 922, 450, 950, "target");
+        html += node(315, 950, 270, 54, "GMGN Swap / 买入", "Order -> Receipt -> Position -> Exit", "buy", "common", "GMGN WRITE");
+      } else {
+        html += node(315, 610, 270, 58, "三套 Signal / Queue", "各模块分别把事件送入执行", "problem", "common", "SPLIT");
+        html += edge(450, 668, 450, 704, "problem");
+        html += node(315, 704, 270, 54, "执行 Context 重复读取", "user / token / gas / wallet / quote", "problem", "common", "RE-READ");
+        html += edge(450, 758, 450, 786, "problem");
+        html += node(315, 786, 270, 54, "GMGN Quote + readiness", "执行前继续发起低价值请求", "provider", "common", "GMGN READ");
+        html += edge(450, 840, 450, 868, "problem");
+        html += node(315, 868, 270, 54, "GMGN Swap / 买入", "Order -> Receipt -> Position -> Exit", "buy", "common", "GMGN WRITE");
+      }
+      html += `</svg>`;
+      return html;
+    }
+
+    document.querySelector("#current-map").innerHTML = makeMap("current");
+    document.querySelector("#target-map").innerHTML = makeMap("target");
+
+    document.querySelectorAll(".filter").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".filter").forEach((item) => item.classList.toggle("active", item === button));
+        const filter = button.dataset.filter;
+        document.querySelectorAll("[data-branch]").forEach((item) => {
+          const branch = item.dataset.branch;
+          const shouldDim = filter !== "all" && branch !== "common" && branch !== filter;
+          item.classList.toggle("branch-dim", shouldDim);
+        });
+        document.querySelectorAll(".mindmap").forEach((map) => map.classList.toggle("branch-highlight", filter !== "all"));
+      });
+    });
+  </script>
+</body>
+</html>

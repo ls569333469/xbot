@@ -3,7 +3,7 @@ const test = require('node:test');
 const { clonePreset } = require('../domains/trade/exit-strategy-compiler');
 const { createSignal, materialize } = require('../domains/dynamic-signal/dynamic-target-service');
 
-test('dynamic Live target waits for the existing activation outbox instead of self-marking live_ready', async () => {
+test('P24 dynamic Live target is locally ready without an activation outbox', async () => {
   const calls = [];
   const executor = {
     async query(sql, params = []) {
@@ -18,7 +18,7 @@ test('dynamic Live target waits for the existing activation outbox instead of se
       }
       if (sql.startsWith('INSERT INTO dynamic_targets')) return { rows: [{ id: 10 }] };
       if (sql.startsWith('INSERT INTO ca_whitelist')) {
-        return { rows: [{ id: 11, activation_version: 1, live_activation_state: 'syncing' }] };
+        return { rows: [{ id: 11, activation_version: 1, live_activation_state: 'live_ready' }] };
       }
       if (sql.includes('UPDATE ca_whitelist') && sql.includes('activation_version = activation_version')) {
         return { rows: [{ id: 11, activation_version: 1 }] };
@@ -41,15 +41,16 @@ test('dynamic Live target waits for the existing activation outbox instead of se
   };
 
   const target = await materialize(job, attempt, selected, executor);
-  assert.equal(target.whitelist.live_activation_state, 'syncing');
+  assert.equal(target.whitelist.live_activation_state, 'live_ready');
   assert.equal(target.activation_version, 1);
-  assert.ok(calls.some((item) => item.sql.startsWith('INSERT INTO whitelist_activation_outbox')));
-  assert.equal(calls.some((item) => item.sql.includes("live_activation_state = 'live_ready'")), false);
+  assert.equal(calls.some((item) => item.sql.startsWith('INSERT INTO whitelist_activation_outbox')), false);
+  const whitelistInsert = calls.find((item) => item.sql.startsWith('INSERT INTO ca_whitelist'));
+  assert.equal(whitelistInsert.params.at(-2), 'live_ready');
 
   await createSignal(job, attempt, target, {
     intent: { intentClass: 'buy_direct', reasonCodes: ['EXPLICIT_BUY_LANGUAGE'], ruleRevision: 'p20-test' },
     resolverRevision: 'p20-test', confidence: 1
   }, executor);
   const signalInsert = calls.find((item) => item.sql.startsWith('INSERT INTO trade_signals'));
-  assert.equal(signalInsert.params.at(-1), 1);
+  assert.equal(signalInsert.params.at(-1), null);
 });

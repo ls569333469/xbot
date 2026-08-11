@@ -13,6 +13,8 @@ const RESOLUTION_CODES = Object.freeze({
   CONTEXT_MISMATCH: 'DYNAMIC_CA_CONTEXT_MISMATCH',
   PROVIDER_UNKNOWN: 'DYNAMIC_CA_PROVIDER_UNKNOWN',
   PROVIDER_TIMEOUT: 'DYNAMIC_CA_PROVIDER_TIMEOUT',
+  CHAIN_UNAVAILABLE: 'DYNAMIC_CA_CHAIN_UNAVAILABLE',
+  CHAIN_AMBIGUOUS: 'DYNAMIC_CA_CHAIN_AMBIGUOUS',
   UNTRADABLE: 'DYNAMIC_CA_UNTRADABLE',
   POLICY_BLOCKED: 'DYNAMIC_CA_POLICY_BLOCKED'
 });
@@ -91,12 +93,24 @@ function evaluateCandidate(value, context) {
     rejectionReasonCodes.push('CHAIN_NOT_ALLOWED');
   }
   if (providerAddressMismatch(candidate)) rejectionReasonCodes.push('PROVIDER_ADDRESS_MISMATCH');
-  if (String(candidate.providerStatus || candidate.provider_status || 'unknown') !== 'verified') {
+  const providerStatus = String(candidate.providerStatus || candidate.provider_status || 'unknown');
+  const deterministicLocalCandidate = value.localEventCa === true
+    || value.localIndexCandidate === true
+    || value.chainResolutionSource === 'rpc_contract_code'
+    || candidate.chainId === 'sol' && directCaTerms(context.extraction).has(candidate.contractAddress);
+  if (!context.allowDeterministicLocalCandidate && providerStatus !== 'verified') {
     rejectionReasonCodes.push('PROVIDER_NOT_VERIFIED');
   }
   const tradableStatus = String(candidate.tradableStatus || candidate.tradable_status || 'unknown');
-  if (tradableStatus === 'untradable') rejectionReasonCodes.push('UNTRADABLE');
-  if (tradableStatus === 'unknown') rejectionReasonCodes.push('TRADABILITY_UNKNOWN');
+  if (!context.allowDeterministicLocalCandidate && tradableStatus === 'untradable') {
+    rejectionReasonCodes.push('UNTRADABLE');
+  }
+  if (!context.allowDeterministicLocalCandidate && tradableStatus === 'unknown') {
+    rejectionReasonCodes.push('TRADABILITY_UNKNOWN');
+  }
+  if (context.allowDeterministicLocalCandidate && !deterministicLocalCandidate) {
+    rejectionReasonCodes.push('DETERMINISTIC_LOCAL_CANDIDATE_REQUIRED');
+  }
   if (candidate.security?.isHoneypot === true || candidate.security?.is_honeypot === true) {
     rejectionReasonCodes.push('HONEYPOT');
   }
@@ -194,7 +208,9 @@ function applyResolutionPolicy(values = [], input = {}) {
     explicitPlatforms: explicitPlatforms(input.extraction?.actorText || '', candidates),
     minLiquidityUsd: input.minLiquidityUsd === undefined || input.minLiquidityUsd === null
       ? null
-      : Number(input.minLiquidityUsd)
+      : Number(input.minLiquidityUsd),
+    allowDeterministicLocalCandidate: input.allowDeterministicLocalCandidate === true
+      || input.allowLocalEventCandidate === true
   };
   const evaluated = candidates.map((candidate) => evaluateCandidate(candidate, context)).filter(Boolean);
   const survivors = evaluated.filter((candidate) => candidate.rejectionReasonCodes.length === 0);

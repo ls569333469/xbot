@@ -5,11 +5,12 @@ const path = require('path');
 const ENV_PATH = path.resolve(__dirname, '../../.env');
 const MASK = '********';
 const SECRET_KEYS = new Set([
-  'DB_PASSWORD', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'OPENNEWS_TOKEN',
+  'DB_PASSWORD', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY',
+  'GMGN_TEST_API_KEY', 'GMGN_TEST_PRIVATE_KEY', 'OPENNEWS_TOKEN',
   'XAI_API_KEY', 'ADMIN_TOKEN'
 ]);
 const CRITICAL_KEYS = new Set([
-  'TRADING_MODE', 'LIVE_TRADING_ENABLED', 'GMGN_PRIVATE_KEY', 'XBOT_PROCESS_ROLE'
+  'TRADING_MODE', 'LIVE_TRADING_ENABLED', 'GMGN_PRIVATE_KEY', 'GMGN_TEST_PRIVATE_KEY', 'XBOT_PROCESS_ROLE'
 ]);
 const IMPACT_PRIORITY = [
   'research_only', 'observability', 'cache_runtime', 'chain_scoped',
@@ -17,7 +18,10 @@ const IMPACT_PRIORITY = [
 ];
 const ALLOWED_KEYS = [
   'BACKEND_PORT', 'BACKEND_HOST', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD',
-  'TRADING_MODE', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'GMGN_KEY_EXCLUSIVE',
+  'TRADING_MODE', 'GMGN_CREDENTIAL_PROFILE', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY',
+  'GMGN_TEST_API_KEY', 'GMGN_TEST_PRIVATE_KEY', 'GMGN_KEY_EXCLUSIVE',
+  'GMGN_CACHE_WARMER_ENABLED', 'P20_CANDIDATE_WARMUP_ENABLED',
+  'P22_GMGN_SHARED_LIMIT_ENABLED', 'P22_GMGN_RATE_SCOPE',
   'GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS',
   'GMGN_MAX_FEE_RESERVE_SOL', 'GMGN_MAX_FEE_RESERVE_BSC', 'GMGN_MAX_FEE_RESERVE_BASE',
   'GMGN_MAX_FEE_RESERVE_ETH', 'GMGN_MAX_FEE_RESERVE_ROBINHOOD',
@@ -28,13 +32,17 @@ const ALLOWED_KEYS = [
   'TRADE_ALERTS_VERIFIED',
   'EMERGENCY_STOP',
   'OPENNEWS_TOKEN', 'XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL',
-  'SIGNAL_MAX_AGE_SECONDS', 'CRON_ENABLED',
+  'P21_FOLLOW_DISCOVERY_ENABLED',
+  'SIGNAL_MAX_AGE_SECONDS',
   'LIVE_TRADING_ENABLED', 'ADMIN_TOKEN', 'XBOT_PROCESS_ROLE'
 ];
 
 const BOOLEAN_KEYS = new Set([
   'GMGN_KEY_EXCLUSIVE', 'TRADE_ALERTS_VERIFIED',
-  'EMERGENCY_STOP', 'CRON_ENABLED', 'LIVE_TRADING_ENABLED'
+  'GMGN_CACHE_WARMER_ENABLED', 'P20_CANDIDATE_WARMUP_ENABLED',
+  'P22_GMGN_SHARED_LIMIT_ENABLED',
+  'EMERGENCY_STOP', 'LIVE_TRADING_ENABLED',
+  'P21_FOLLOW_DISCOVERY_ENABLED'
 ]);
 
 const NON_NEGATIVE_NUMBER_KEYS = new Set([
@@ -53,13 +61,19 @@ const POSITIVE_INTEGER_KEYS = new Set([
 function impactScopeForKey(key) {
   if (['XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL'].includes(key)) return 'research_only';
   if (key === 'TRADE_ALERTS_VERIFIED') return 'observability';
-  if (['GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS'].includes(key)) {
+  if (['GMGN_CACHE_WARMER_ENABLED', 'P20_CANDIDATE_WARMUP_ENABLED',
+    'P22_GMGN_SHARED_LIMIT_ENABLED', 'P22_GMGN_RATE_SCOPE',
+    'GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS'].includes(key)) {
     return 'cache_runtime';
   }
-  if (key === 'OPENNEWS_TOKEN') return 'monitoring_critical';
+  if (['OPENNEWS_TOKEN', 'P21_FOLLOW_DISCOVERY_ENABLED'].includes(key)) {
+    return 'monitoring_critical';
+  }
   if (key.endsWith('_RPC_URL') || key.startsWith('GMGN_MAX_FEE_RESERVE_')
       || key.startsWith('GMGN_MIN_GAS_RESERVE_')) return 'chain_scoped';
-  if (['GMGN_API_KEY', 'GMGN_PRIVATE_KEY', 'GMGN_KEY_EXCLUSIVE', 'SIGNAL_MAX_AGE_SECONDS'].includes(key)) {
+  if (['GMGN_CREDENTIAL_PROFILE', 'GMGN_API_KEY', 'GMGN_PRIVATE_KEY',
+    'GMGN_TEST_API_KEY', 'GMGN_TEST_PRIVATE_KEY', 'GMGN_KEY_EXCLUSIVE',
+    'SIGNAL_MAX_AGE_SECONDS'].includes(key)) {
     return 'global_execution';
   }
   if (['TRADING_MODE', 'LIVE_TRADING_ENABLED', 'EMERGENCY_STOP', 'XBOT_PROCESS_ROLE'].includes(key)) {
@@ -117,7 +131,7 @@ function validateValue(key, value) {
     throw error;
   }
   let normalized = String(value ?? '').trim();
-  if (key !== 'GMGN_PRIVATE_KEY' && /[\r\n]/.test(normalized)) {
+  if (!['GMGN_PRIVATE_KEY', 'GMGN_TEST_PRIVATE_KEY'].includes(key) && /[\r\n]/.test(normalized)) {
     const error = new Error(`${key} cannot contain newlines`);
     error.code = 'ENV_VALUE_INVALID';
     throw error;
@@ -174,6 +188,16 @@ function validateValue(key, value) {
   }
   if (key === 'GMGN_API_KEY' && normalized && normalized !== MASK && !normalized.startsWith('gmgn')) {
     const error = new Error('GMGN_API_KEY has an invalid format');
+    error.code = 'ENV_VALUE_INVALID';
+    throw error;
+  }
+  if (key === 'GMGN_TEST_API_KEY' && normalized && normalized !== MASK && !normalized.startsWith('gmgn')) {
+    const error = new Error('GMGN_TEST_API_KEY has an invalid format');
+    error.code = 'ENV_VALUE_INVALID';
+    throw error;
+  }
+  if (key === 'GMGN_CREDENTIAL_PROFILE' && !['primary', 'test'].includes(normalized.toLowerCase())) {
+    const error = new Error('GMGN_CREDENTIAL_PROFILE must be primary or test');
     error.code = 'ENV_VALUE_INVALID';
     throw error;
   }
@@ -252,10 +276,11 @@ function publicConfig() {
   const values = readEnv();
   const result = {};
   for (const key of ALLOWED_KEYS) {
-    if (key === 'GMGN_PRIVATE_KEY') continue;
+    if (['GMGN_PRIVATE_KEY', 'GMGN_TEST_PRIVATE_KEY'].includes(key)) continue;
     result[key] = SECRET_KEYS.has(key) ? (values[key] ? MASK : '') : (values[key] || '');
   }
   result.GMGN_PRIVATE_KEY_CONFIGURED = Boolean(values.GMGN_PRIVATE_KEY);
+  result.GMGN_TEST_PRIVATE_KEY_CONFIGURED = Boolean(values.GMGN_TEST_PRIVATE_KEY);
   return result;
 }
 

@@ -59,7 +59,7 @@ test('passed contract probes append evidence before enabling contract readiness'
   assert.ok(evidence.sol.validUntil);
 });
 
-test('failed contract probes record evidence without enabling the chain', async () => {
+test('failed contract probes record evidence without revoking production approval', async () => {
   const calls = [];
   const executor = {
     query: async (sql) => {
@@ -78,5 +78,7 @@ test('failed contract probes record evidence without enabling the chain', async 
   );
 
   assert.equal(evidence.sol.status, 'failed');
-  assert.equal(calls.some((sql) => sql.includes('UPDATE chain_live_readiness')), true);
+  const update = calls.find((sql) => sql.includes('UPDATE chain_live_readiness'));
+  assert.equal(Boolean(update), true);
+  assert.match(update, /CASE WHEN \$2 THEN true ELSE contract_tested END/);
 });

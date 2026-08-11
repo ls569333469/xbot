@@ -164,6 +164,19 @@ function nativeFeeFields(chainId, hasConditions, gas, retryOptions = {}) {
   };
 }
 
+function requiresProviderGasPrice(chainId, gas = {}, options = {}) {
+  const chain = requireChain(chainId);
+  if (!['bsc', 'base'].includes(chain.id)) return false;
+  const configured = normalizeGasPriceWei(
+    process.env[`GMGN_${chain.id.toUpperCase()}_GAS_PRICE`]
+  );
+  if (configured) return false;
+  const preferred = options.attemptNo > 1 && options.escalating ? 'high' : 'average';
+  return !normalizeGasPriceWei(
+    gas?.[preferred] ?? gas?.average ?? gas?.suggest_base_fee ?? gas?.high ?? gas?.low
+  );
+}
+
 function buildSwapParams(input) {
   const chain = requireChain(input.chain);
   const conditions = Array.isArray(input.conditionOrders) ? input.conditionOrders : [];
@@ -209,6 +222,7 @@ module.exports = {
   assertRetryFeeCap,
   estimatedGasUnits,
   nativeFeeFields,
+  requiresProviderGasPrice,
   normalizeGasPriceWei,
   requireChain,
   resolveGasPriceWei,

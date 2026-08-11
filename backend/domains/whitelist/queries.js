@@ -3,8 +3,8 @@ const { hydrateWhitelistRelations, hydrateWhitelistSummaries } = require('./rela
 
 async function getAll(filters, executor = db) {
   const baseWhere = filters.status === 'archived'
-    ? " WHERE source <> 'dynamic_keyword'"
-    : " WHERE status <> 'archived' AND source <> 'dynamic_keyword'";
+    ? " WHERE source NOT IN ('dynamic_keyword', 'follow_discovery')"
+    : " WHERE status <> 'archived' AND source NOT IN ('dynamic_keyword', 'follow_discovery')";
   let query = `SELECT * FROM ca_whitelist${baseWhere}`;
   let countQuery = `SELECT COUNT(*) FROM ca_whitelist${baseWhere}`;
   let params = [];
@@ -64,7 +64,7 @@ async function getActiveByContract(contractAddress, chainId, executor = db, opti
   const res = await executor.query(
     `SELECT * FROM ca_whitelist
       WHERE ${addressMatch} AND chain_id = $2 AND status = 'active'
-        AND source <> 'dynamic_keyword'
+        AND source NOT IN ('dynamic_keyword', 'follow_discovery')
      ORDER BY id LIMIT 1${lock}`,
     [contractAddress, chainId]
   );

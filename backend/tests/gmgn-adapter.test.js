@@ -5,6 +5,8 @@ const adapter = require('../lib/gmgn-adapter');
 test('adapter normalizes nested prices, nullable security, and processed orders', () => {
   assert.equal(adapter.normalizeTokenInfo({ decimals: 6, price: { price: '0.25' } }).priceUsd, 0.25);
   assert.equal(adapter.normalizeSecurity({ is_honeypot: null }, 'sol').isHoneypot, null);
+  assert.equal(adapter.normalizeSecurity({ is_honeypot: 'yes' }, 'base').isHoneypot, true);
+  assert.equal(adapter.normalizeSecurity({ is_honeypot: 'no' }, 'base').isHoneypot, false);
   assert.equal(adapter.normalizeOrderStatus('processed'), 'pending');
   assert.equal(adapter.normalizeStrategyStatus('open'), 'running');
   assert.equal(adapter.normalizeStrategyStatus('success'), 'triggered');
