@@ -37,7 +37,15 @@ async function setup() {
   }
 
   const { runMigrations } = require('../lib/migrations');
-  const applied = await runMigrations();
+  let applied;
+  try {
+    applied = await runMigrations();
+  } catch (error) {
+    if (error.code === 'MIGRATION_BASELINE_REQUIRED') {
+      console.error('P27 迁移基线尚未显式导入，数据库初始化已安全停止。');
+    }
+    throw error;
+  }
   console.log(`数据库迁移完成：${applied.length > 0 ? applied.join(', ') : '无待执行迁移'}`);
 
   // Seed 只允许写入完全空的配置表，避免覆盖生产设置。

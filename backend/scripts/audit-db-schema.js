@@ -63,7 +63,10 @@ async function main() {
       '040_p23_runtime_scope_readiness_snapshot.sql',
       '041_p24_local_event_provider_status.sql',
       '042_p25_gmgn_terminal_execution.sql',
-      '043_p26_local_rpc_provider_status.sql']]
+      '043_p26_local_rpc_provider_status.sql',
+      '044_p27_migration_manifest.sql',
+      '045_p27_signal_contract_snapshots.sql',
+      '046_p27_reliable_notification_outbox.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -83,6 +86,20 @@ async function main() {
   if (!migrations.has('041_p24_local_event_provider_status.sql')) throw new Error('Migration 041 is not applied');
   if (!migrations.has('042_p25_gmgn_terminal_execution.sql')) throw new Error('Migration 042 is not applied');
   if (!migrations.has('043_p26_local_rpc_provider_status.sql')) throw new Error('Migration 043 is not applied');
+  if (!migrations.has('044_p27_migration_manifest.sql')) throw new Error('Migration 044 is not applied');
+  if (!migrations.has('045_p27_signal_contract_snapshots.sql')) throw new Error('Migration 045 is not applied');
+  if (!migrations.has('046_p27_reliable_notification_outbox.sql')) throw new Error('Migration 046 is not applied');
+
+  await requireColumns('schema_migrations', [
+    'checksum_sha256', 'migration_manifest_id', 'release_sha'
+  ]);
+  await requireColumns('trade_signals', [
+    'asset_snapshot', 'authorization_snapshot', 'strategy_type'
+  ]);
+  await requireColumns('positions', ['asset_snapshot']);
+  await requireColumns('notification_outbox', [
+    'channel', 'dedupe_key', 'locked_at', 'locked_by'
+  ]);
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',
