@@ -1,10 +1,12 @@
 # P28 xiexiu 服务器部署与 GitHub 发布方案
 
-> 版本：v1.2
+> 版本：v1.3
 > 日期：2026-08-12
-> 状态：待执行；本文只定义 GitHub 发布、xiexiu 服务器部署、验收和回滚流程，不代表已经推送或部署
+> 状态：GitHub 发布与 xiexiu 技术部署已完成；生产保持冷启动，三策略真实资金验收待用户单独批准
 > 前置版本：P27 v1.3
 > 目标：将已验收的 P27 工作区固化为唯一 GitHub Release SHA，并把完全相同的版本安全部署到 `https://xiexiu.io/xbot/`
+
+> 执行校正：第 1-13 节保留部署前方案与控制边界，第 14-15 节记录 2026-08-12 的实际执行结果。若部署前快照与执行结果冲突，以第 14-15 节为准。
 
 ## 1. 当前事实与发布边界
 
@@ -460,20 +462,20 @@ P27 Migration `044-049` 均为 additive。应用代码故障时：
 
 | 证据 | 结果 |
 |---|---|
-| 本地 release SHA | 待填写 |
-| GitHub branch SHA | 待填写 |
-| GitHub production tag / SHA | 待填写 |
-| 服务器旧 SHA / 新 SHA | 待填写 |
-| P26 rollback SHA / 目录 | 待填写 |
-| 数据库备份路径 / SHA-256 | 待填写 |
-| Migration 最终版本 / 二次零变更 | 待填写 |
-| `/api/health` 版本字段 | 待填写 |
-| Supervisor/ingestion/execution PID | 待填写 |
-| Signal/Position 页面 GMGN 增量 | 待填写 |
-| GMGN 429 / 未知请求 / 重复 Swap | 待填写 |
-| `/xbot/` DOM 与 `/tg/` 回归 | 待填写 |
-| Fixed/P20/P21 真实闭环 | 待填写 |
-| 回滚目录和恢复命令已核对 | 待填写 |
+| 本地 release SHA | `9f019b498f2274e515524f5ff635632597fc2b7a` |
+| GitHub branch SHA | `codex/p26-production-hardening` -> `9f019b498f2274e515524f5ff635632597fc2b7a` |
+| GitHub production tag / SHA | `p27.1-production-20260812` -> `9f019b498f2274e515524f5ff635632597fc2b7a`；旧 `p27-production-20260812` 保留审计且禁止部署 |
+| 服务器旧 SHA / 新 SHA | `da5f853` -> `9f019b498f2274e515524f5ff635632597fc2b7a` |
+| P26 rollback SHA / 目录 | `80e9f5a77d62b84f930efd924aed329d4e047515` / `/opt/xbot-rollback-p26-80e9f5a77d62b84f930efd924aed329d4e047515` |
+| 数据库备份路径 / SHA-256 | `/var/backups/xbot/xbot-before-p28-20260812-220515.dump` / `74d7b12e2dd3f20e86b182fd6b318a32ca2ad83de648e933d2bf32b43b9f85d1`；`postgres:postgres 0600`，隔离恢复通过 |
+| Migration 最终版本 / 二次零变更 | `049_p27_metadata_enqueue_missing_only.sql`，共 50 条；第二次 `applied=[]`；生产 Schema Audit 通过 |
+| `/api/health` 版本字段 | `release_sha=9f019b...`、`code_version=p27.1-production-20260812+workspace-...`、`process_role=execution`、`contract_version=p27.v1`、`event_contract_version=p27.events.v1` |
+| Supervisor/ingestion/execution PID | 最终重启后 `737748 / 737768 / 737769`；仅一套双角色进程，监听 `127.0.0.1:3011` |
+| Signal/Position 页面 GMGN 增量 | 鉴权 GET 各刷新 5 次，GMGN 总调用增量 `0` |
+| GMGN 429 / 未知请求 / 重复 Swap | 本次刷新和最终重启验收窗口 429 增量 `0`；Engine 关闭期间没有创建 Swap。历史累计事件不作为本窗口新增错误 |
+| `/xbot/` DOM 与 `/tg/` 回归 | 公网均 HTTP 200；登录页桌面/`390x844` 无横向溢出、越界元素或控制台错误；`/tg/` 登录页正常。公网登录后业务页 DOM 因生产口令不得回显到自动化环境，待管理员登录后补验 |
+| Fixed/P20/P21 真实闭环 | 未执行；生产 `armed=false`、`desiredRunning=false`、`LIVE_TRADING_ENABLED=false`、`EMERGENCY_STOP=true`，等待用户单独批准 |
+| 回滚目录和恢复命令已核对 | 旧应用 `/opt/xbot-rollback-da5f853-20260812`、P26 回滚目录和数据库备份均已记录至 `/opt/xbot-releases/CURRENT` |
 
 只有同时满足以下条件才能宣布 P28 完成：
 
@@ -486,3 +488,38 @@ P27 Migration `044-049` 均为 additive。应用代码故障时：
 7. 所有证据写入最终部署报告，且未泄漏 Secret。
 
 批准本方案只代表可以开始 P28 GitHub 发布阶段，不代表已经批准 push、服务器登录、目录切换、Migration、数据库恢复或实盘启动。每个外部副作用阶段仍需按上文边界单独执行和记录。
+
+## 15. 2026-08-12 实际执行结论
+
+### 15.1 已完成
+
+1. 发布分支、生产 tag 和服务器运行版本统一为 `9f019b498f2274e515524f5ff635632597fc2b7a`。
+2. 服务器完成数据库备份、隔离恢复、依赖干净安装、前端生产构建、Migration `036-049`、manifest 导入、二次零变更和生产 Schema Audit。
+3. `/opt/xbot` 已切换到新版本；`/opt/xbot-releases/CURRENT` 已从旧 `da5f853` 记录修正为当前 commit、tag、回滚目录和数据库备份证据。
+4. `XBOT_CODE_VERSION` 已修正为 `p27.1-production-20260812`，`.env` 仍为 `xbot:xbot 0600`。
+5. Nginx 配置测试通过，PostgreSQL、Nginx、`xbot.service` 和 `/tg/` 均正常；最近 15 分钟 `xbot.service` 无 warning。
+6. 鉴权 API `/api/system/signals`、`/api/trade/positions`、`/api/trade/history`、`/api/system/env` 和 `/api/system/engine-status` 均返回 200；无鉴权业务 API 返回 401。
+7. Signal/Position 各刷新 5 次后 GMGN 调用增量为 0、429 增量为 0；最终重启没有启动预热、Research、6551 或交易。
+
+### 15.2 当前生产状态
+
+```dotenv
+XBOT_RELEASE_SHA=9f019b498f2274e515524f5ff635632597fc2b7a
+XBOT_CODE_VERSION=p27.1-production-20260812
+LIVE_TRADING_ENABLED=false
+EMERGENCY_STOP=true
+X_6551_WSS_ENABLED=false
+X_6551_WATCH_APPLY_ENABLED=false
+P21_FOLLOW_DISCOVERY_ENABLED=false
+GMGN_CREDENTIAL_PROFILE=primary
+```
+
+Engine 为 `armed=false`、`desiredRunning=false`、`status=stopped`。这代表技术部署完成，不代表实盘已经恢复。
+
+### 15.3 待单独批准
+
+1. 管理员登录公网 XBOT 后，对 `/signals`、`/positions`、`/history`、`/settings` 做最后一次桌面与移动端人工视觉确认。
+2. 按第 11 节顺序恢复唯一 6551 WSS、Watch Apply 和 Engine。
+3. 按 Fixed -> P20 -> P21 分别完成人工真实小额买入、保护策略和平仓闭环。
+
+因此，P28 的 GitHub 发布和服务器技术部署阶段已经完成；P28 的完整资金验收仍处于待批准状态，不能提前标记为全部完成。

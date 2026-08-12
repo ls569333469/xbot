@@ -1,7 +1,7 @@
 # XBOT 文档入口与当前迭代状态
 
 > 更新时间：2026-08-12
-> 当前执行基线：P26 三策略生产执行硬化已形成独立提交；P27 本地代码、可信 Migration `000-049`、共享 GMGN 元数据、数据库恢复演练和自动回归已完成。最新工作区尚未形成并推送唯一 release commit，xiexiu 服务器尚未部署 P27；凭据轮换和服务器发布验收完成前不得宣称同步完成。
+> 当前执行基线：P27 已以唯一 SHA `9f019b498f2274e515524f5ff635632597fc2b7a` 和 tag `p27.1-production-20260812` 发布并部署到 xiexiu；Migration `000-049`、双角色 Supervisor、备份恢复、Nginx/TGBOT 和页面刷新 GMGN 零增量验收已通过。生产保持冷启动，三策略真实资金闭环待用户单独批准。
 
 ## 当前事实
 
@@ -24,8 +24,8 @@
 | P22 | Migration 038-039、GMGN 共享限流状态、冷却治理和 P21 verification snapshot 已实现；限流回归已通过，真实 Provider 状态以服务器实时检查为准 |
 | P23 | 已完成全历史深度审计、第一批不可达旧代码清理、迁移职责收敛、Migration 000-040 演练、完整回归和隐私扫描；生产只读 Schema Audit、服务器发布和真实交易验收待执行 |
 | P24-P26 | 单 Signal GMGN 边界、三策略成交基线恢复、Attempt 幂等与双角色 Supervisor 已实现；P26 已作为 P27 的可回滚应用基线 |
-| P27 | Migration manifest `044`、Signal snapshot `045`、可靠 outbox `046`、精确本地回填 `047`、共享 GMGN 元数据 `048-049`、`p27.v1` REST 契约、可靠事件、设计系统和发布审计已在本地实施；页面刷新 GMGN 调用为 0、真实回填 429 为 0。GitHub 推送、凭据轮换和 xiexiu 服务器部署尚未完成 |
-| P28 | 已建立 GitHub 唯一 release SHA/tag、xiexiu 服务器备份与切换、Migration `044-049`、双角色 Supervisor、Nginx/TGBOT 验收、实盘恢复和回滚方案；当前仅完成方案，尚未执行 push 或服务器部署 |
+| P27 | Migration manifest `044`、Signal snapshot `045`、可靠 outbox `046`、精确本地回填 `047`、共享 GMGN 元数据 `048-049`、`p27.v1` REST 契约、可靠事件、设计系统和发布审计已实施并部署到 xiexiu |
+| P28 | GitHub 分支/tag、服务器备份与隔离恢复、Migration `036-049`、双角色 Supervisor、Nginx/TGBOT、鉴权 API 和页面刷新 GMGN 零增量均已验收；生产 Engine/6551 保持关闭，公网登录后人工 DOM 与三策略真实资金闭环待单独批准 |
 | P12 明确失败重试 | 核心代码和统一前端开关已实现；当前五链自动重试均关闭，只有用户主动开启后才生效 |
 
 运行时 `live_policy`、Engine Armed 状态和链开关会随测试变化，必须以数据库/API 实时结果为准，不能从历史文档推断。
@@ -42,7 +42,7 @@
 8. [P26 三策略生产硬化与人工验收方案](./00_系统架构与全局设计/P26_three_strategy_production_hardening_and_manual_acceptance_plan.md)：Attempt 幂等、双角色进程、恢复和人工实盘验收基线。
 9. [P27 服务器同步前全链路收口方案](./00_系统架构与全局设计/P27_server_sync_preflight_and_three_strategy_contract_convergence_plan.md)：统一字段、元数据、事件、前端设计、Migration trust、Secret 和服务器发布验收。
 10. [P27 自动验收报告](./00_系统架构与全局设计/P27_automated_acceptance_report_2026-08-12.md)：记录代码、Migration、数据库恢复、DOM、GMGN 调用与发布边界的自动验收证据。
-11. [P28 xiexiu 服务器部署与 GitHub 发布方案](./00_系统架构与全局设计/P28_xiexiu_server_deployment_and_github_release_plan.md)：当前 Active Plan，固定唯一 release SHA，完成 GitHub 分支/tag、服务器备份、Migration `044-049`、双角色 Supervisor、Nginx/TGBOT 验收和回滚。
+11. [P28 xiexiu 服务器部署与 GitHub 发布方案](./00_系统架构与全局设计/P28_xiexiu_server_deployment_and_github_release_plan.md)：记录唯一 release SHA、GitHub 分支/tag、服务器备份、Migration `036-049`、双角色 Supervisor、Nginx/TGBOT、冷启动验收和待执行实盘恢复。
 12. [维护工具登记表](./00_系统架构与全局设计/maintenance_tool_registry.md)：后台验收、事故恢复、Provider 补偿和 CLI 工具的长期唯一清单。
 13. [P14 历史生产收尾方案](./00_系统架构与全局设计/P14_p13_acceptance_robinhood_live_and_release_closure_plan.md)：已实施能力与历史验收证据。
 14. [P16 高级策略、模板与快速投研方案](./00_系统架构与全局设计/P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md)：当前实现、自动化验收和剩余真实验收清单。
