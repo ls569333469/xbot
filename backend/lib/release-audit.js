@@ -95,11 +95,24 @@ function secretCodes(value) {
   return SECRET_PATTERNS.filter((entry) => entry.pattern.test(text)).map((entry) => entry.code);
 }
 
+function invalidPackageLockEntries(value) {
+  const lock = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!lock || typeof lock !== 'object' || !lock.packages || typeof lock.packages !== 'object') {
+    return [{ path: '', reason: 'PACKAGES_MISSING' }];
+  }
+  return Object.entries(lock.packages).flatMap(([packagePath, metadata]) => {
+    if (!packagePath) return [];
+    const version = typeof metadata?.version === 'string' ? metadata.version.trim() : '';
+    return version ? [] : [{ path: normalizePath(packagePath), reason: 'VERSION_MISSING' }];
+  });
+}
+
 module.exports = {
   SECRET_PATTERNS,
   allowlistPatternRegex,
   contentAuditExcluded,
   forbiddenReleasePath,
+  invalidPackageLockEntries,
   normalizePath,
   parseReleaseAllowlist,
   releaseCandidates,

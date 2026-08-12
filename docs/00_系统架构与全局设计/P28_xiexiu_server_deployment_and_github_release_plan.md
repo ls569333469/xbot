@@ -1,6 +1,6 @@
 # P28 xiexiu 服务器部署与 GitHub 发布方案
 
-> 版本：v1.1
+> 版本：v1.2
 > 日期：2026-08-12
 > 状态：待执行；本文只定义 GitHub 发布、xiexiu 服务器部署、验收和回滚流程，不代表已经推送或部署
 > 前置版本：P27 v1.3
@@ -25,6 +25,8 @@
 | 数据库 | 独立 PostgreSQL `xbot` |
 | 服务器当前迁移 | `000-035`；P28 必须先应用 `036-044` 并在 `044` 停止，再导入 P26 签署基线，最后应用 `045-049` |
 | 服务器 GitHub 获取能力 | SSH Deploy Key 未配置；GitHub HTTPS 只读访问可用，发布只允许按不可变 production tag 获取并核对 40 位 SHA |
+| 首次发布候选 | `p27-production-20260812` 指向 `7f6a81ed42546f297b0443f8e08a28a35376a394`，服务器干净 `npm ci` 发现 lockfile 无版本节点，tag 保留审计但禁止部署 |
+| 修订发布 tag | `p27.1-production-20260812`；必须包含 lockfile 修复和 Release Audit 的 lock 节点完整性检查 |
 
 P28 把 GitHub 发布和服务器部署分成两个独立批准动作：
 
@@ -137,7 +139,7 @@ git status --short --branch
 
 ```text
 RELEASE_SHA = git rev-parse HEAD 的完整 40 位值
-RELEASE_TAG = p27-production-20260812
+RELEASE_TAG = p27.1-production-20260812
 RELEASE_BRANCH = codex/p26-production-hardening
 ```
 
@@ -152,12 +154,12 @@ RELEASE_BRANCH = codex/p26-production-hardening
 
 2. 使用 `git ls-remote` 核对 GitHub 分支 SHA 与 `RELEASE_SHA` 完全一致。
 3. 复核 GitHub diff、Release Audit 和测试证据。
-4. 创建 annotated tag `p27-production-20260812`，tag 必须指向同一 `RELEASE_SHA`：
+4. 创建 annotated tag `p27.1-production-20260812`，tag 必须指向同一 `RELEASE_SHA`：
 
    ```powershell
-   git tag -a p27-production-20260812 $releaseSha -m "P27 production release 2026-08-12"
-   git push origin refs/tags/p27-production-20260812
-   git ls-remote origin refs/tags/p27-production-20260812 'refs/tags/p27-production-20260812^{}'
+   git tag -a p27.1-production-20260812 $releaseSha -m "P27.1 production release 2026-08-12"
+   git push origin refs/tags/p27.1-production-20260812
+   git ls-remote origin refs/tags/p27.1-production-20260812 'refs/tags/p27.1-production-20260812^{}'
    ```
 
 5. 对 annotated tag 以 `^{}` 行的 commit SHA 为准，再次核对它等于 `RELEASE_SHA`。
@@ -255,7 +257,7 @@ sudo -u postgres pg_restore --exit-on-error --clean --if-exists \
 当前仓库允许服务器通过 GitHub HTTPS 只读获取。发布目录只能从 production tag 创建，禁止把 GitHub Token 写入 `.env`、clone URL 或命令历史；若仓库以后改为私有，再单独配置只读 Deploy Key。示例：
 
 ```bash
-git clone --filter=blob:none --single-branch --branch p27-production-20260812 \
+git clone --filter=blob:none --single-branch --branch p27.1-production-20260812 \
   https://github.com/ls569333469/xbot.git /opt/xbot-release-<RELEASE_SHA>
 ```
 
@@ -271,12 +273,12 @@ git tag --points-at HEAD 包含 RELEASE_TAG
 
 ```bash
 cd /opt/xbot-release-<RELEASE_SHA>/backend
-/opt/node-v24.11.1/bin/npm ci
-/opt/node-v24.11.1/bin/npm run audit:release
+PATH=/opt/node-v24.11.1/bin:$PATH /opt/node-v24.11.1/bin/npm ci
+PATH=/opt/node-v24.11.1/bin:$PATH /opt/node-v24.11.1/bin/npm run audit:release
 
 cd /opt/xbot-release-<RELEASE_SHA>/frontend
-VITE_PUBLIC_BASE=/xbot/ /opt/node-v24.11.1/bin/npm ci
-VITE_PUBLIC_BASE=/xbot/ /opt/node-v24.11.1/bin/npm run build
+PATH=/opt/node-v24.11.1/bin:$PATH VITE_PUBLIC_BASE=/xbot/ /opt/node-v24.11.1/bin/npm ci
+PATH=/opt/node-v24.11.1/bin:$PATH VITE_PUBLIC_BASE=/xbot/ /opt/node-v24.11.1/bin/npm run build
 ```
 
 把现有生产 `.env` 通过服务器本地受控复制放入新 release 的 `backend/.env`，再更新冷部署开关和 `XBOT_RELEASE_SHA`；不得从本地电脑或 GitHub 下载 `.env`。设置 `xbot:xbot` 和 `0600`。
@@ -314,7 +316,7 @@ VITE_PUBLIC_BASE=/xbot/ /opt/node-v24.11.1/bin/npm run build
 
 ```bash
 cd /opt/xbot/backend
-/opt/node-v24.11.1/bin/npm run migrate
+PATH=/opt/node-v24.11.1/bin:$PATH /opt/node-v24.11.1/bin/npm run migrate
 ```
 
 当前服务器从 Migration `035` 升级。第一次运行会依次应用 `036-044`，在应用 `044_p27_migration_manifest.sql` 后返回 `MIGRATION_BASELINE_REQUIRED` 并停止。此时必须确认输出的 `applied` 恰好为 `036-044`，再人工核对已签署 manifest 后执行：
@@ -332,9 +334,9 @@ cd /opt/xbot/backend
 随后执行：
 
 ```bash
-/opt/node-v24.11.1/bin/npm run migrate
-/opt/node-v24.11.1/bin/npm run migrate
-/opt/node-v24.11.1/bin/npm run audit:schema:production
+PATH=/opt/node-v24.11.1/bin:$PATH /opt/node-v24.11.1/bin/npm run migrate
+PATH=/opt/node-v24.11.1/bin:$PATH /opt/node-v24.11.1/bin/npm run migrate
+PATH=/opt/node-v24.11.1/bin:$PATH /opt/node-v24.11.1/bin/npm run audit:schema:production
 ```
 
 验收标准：

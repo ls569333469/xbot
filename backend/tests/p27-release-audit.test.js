@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   forbiddenReleasePath,
+  invalidPackageLockEntries,
   parseReleaseAllowlist,
   releaseCandidates,
   secretCodes
@@ -54,4 +55,19 @@ test('P27 release allowlist rejects unsafe, duplicate, and empty rules', () => {
   assert.throws(() => parseReleaseAllowlist('../backend/**'), { code: 'INVALID_RELEASE_ALLOWLIST_RULE' });
   assert.throws(() => parseReleaseAllowlist('backend/**\nbackend/**'), { code: 'DUPLICATE_RELEASE_ALLOWLIST_RULE' });
   assert.throws(() => parseReleaseAllowlist('# no includes\n!**/*.log'), { code: 'EMPTY_RELEASE_ALLOWLIST' });
+});
+
+test('P27 release audit rejects package-lock nodes without a version', () => {
+  assert.deepEqual(invalidPackageLockEntries({
+    packages: {
+      '': { name: 'root', version: '1.0.0' },
+      'node_modules/valid': { version: '2.0.0' }
+    }
+  }), []);
+  assert.deepEqual(invalidPackageLockEntries({
+    packages: {
+      '': { name: 'root', version: '1.0.0' },
+      'node_modules/invalid': { optional: true }
+    }
+  }), [{ path: 'node_modules/invalid', reason: 'VERSION_MISSING' }]);
 });

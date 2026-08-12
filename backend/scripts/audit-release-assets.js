@@ -4,6 +4,7 @@ const path = require('path');
 const {
   contentAuditExcluded,
   forbiddenReleasePath,
+  invalidPackageLockEntries,
   normalizePath,
   parseReleaseAllowlist,
   releaseCandidates,
@@ -64,6 +65,22 @@ function historicalSecretFindings() {
   return findings.sort((left, right) => `${left.file}:${left.object}`.localeCompare(`${right.file}:${right.object}`));
 }
 
+function packageLockFindings() {
+  return ['backend/package-lock.json', 'frontend/package-lock.json'].flatMap((file) => {
+    const target = path.join(repositoryRoot, file);
+    try {
+      return invalidPackageLockEntries(fs.readFileSync(target, 'utf8')).map((entry) => ({
+        code: 'INVALID_PACKAGE_LOCK_ENTRY',
+        file,
+        package_path: entry.path,
+        reason: entry.reason
+      }));
+    } catch (error) {
+      return [{ code: 'INVALID_PACKAGE_LOCK_JSON', file }];
+    }
+  });
+}
+
 function main() {
   const files = workspaceFiles();
   let allowlistRules = [];
@@ -82,6 +99,7 @@ function main() {
   const workspaceSecrets = workspaceSecretFindings(files);
   const historicalSecrets = process.argv.includes('--skip-history') ? [] : historicalSecretFindings();
   const removedLiveRunnerPresent = candidates.includes('backend/scripts/run-p25-live-acceptance.js');
+  const invalidPackageLocks = packageLockFindings();
   const failures = [
     ...allowlistFailures,
     ...unmatchedIncludes,
@@ -93,6 +111,7 @@ function main() {
       file: finding.file,
       object: finding.object
     })),
+    ...invalidPackageLocks,
     ...(removedLiveRunnerPresent
       ? [{ code: 'LIVE_ACCEPTANCE_RUNNER_IN_RELEASE', file: 'backend/scripts/run-p25-live-acceptance.js' }]
       : [])
@@ -110,4 +129,9 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { historicalSecretFindings, workspaceFiles, workspaceSecretFindings };
+module.exports = {
+  historicalSecretFindings,
+  packageLockFindings,
+  workspaceFiles,
+  workspaceSecretFindings
+};
