@@ -718,6 +718,27 @@ class TradeReconciler {
     if (attempt.side !== 'sell') return null;
     const details = await this.repository.getAttemptDetails(attempt.id);
     if (!details || details.orders.length > 0) return null;
+    const deterministicPreSubmitCodes = new Set([
+      'GMGN_RATE_RESERVATION_INVALID',
+      'GMGN_RATE_DEADLINE_EXPIRED',
+      'GMGN_RATE_LIMIT_COOLDOWN',
+      'GMGN_RATE_WEIGHT_INVALID'
+    ]);
+    const preSubmitEvent = details.events.find((event) => (
+      String(event.reason || '').toLowerCase().includes('gmgn rate reservation')
+        || String(event.reason || '').toLowerCase().includes('gmgn rate queue')
+    ));
+    const preSubmitReason = deterministicPreSubmitCodes.has(attempt.error_code)
+      ? attempt.error_code
+      : preSubmitEvent ? 'GMGN_RATE_RESERVATION_INVALID' : null;
+    if (preSubmitReason && typeof this.repository.recoverDeterministicPreSubmitSellAttempt === 'function') {
+      const recovered = await this.repository.recoverDeterministicPreSubmitSellAttempt(
+        attempt.id,
+        attempt.position_id,
+        preSubmitReason
+      );
+      if (recovered) return { ...recovered, status: 'pre_submit_failure_recovered' };
+    }
     const cancellationUncertainty = [
       'STRATEGY_CANCEL_UNCERTAIN',
       'STRATEGY_CANCEL_UNVERIFIED'

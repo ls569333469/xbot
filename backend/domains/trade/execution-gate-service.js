@@ -58,10 +58,13 @@ class ExecutionGateService {
       error.code = 'LIVE_ENGINE_NOT_ARMED';
       throw error;
     }
-    if (!snapshot.readyToArm) {
-      const error = new Error(`Execution gate is blocked: ${snapshot.blockers.join(', ')}`);
+    const globalBlockers = (snapshot.blockers || []).filter((blocker) => (
+      blocker !== 'UNPROTECTED_LIVE_POSITIONS'
+    ));
+    if (globalBlockers.length > 0) {
+      const error = new Error(`Execution gate is blocked: ${globalBlockers.join(', ')}`);
       error.code = 'LIVE_READINESS_FAILED';
-      error.details = snapshot;
+      error.details = { ...snapshot, blockers: globalBlockers };
       throw error;
     }
     if (!snapshot.configurationFingerprint

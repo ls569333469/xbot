@@ -559,3 +559,43 @@ test('cancelled strategy uncertainty recovers only when balance proves no sell o
   assert.equal(calls.length, 1);
   assert.equal(calls[0].evidence[0].normalized.status, 'cancelled');
 });
+
+test('deterministic pre-submit rate failure recovers without querying GMGN', async () => {
+  const calls = [];
+  const reconciler = new TradeReconciler({
+    gmgnHttp: {
+      queryStrategyOrder: async () => {
+        throw new Error('must not query provider for a local pre-submit failure');
+      },
+      getWalletTokenBalance: async () => {
+        throw new Error('must not query provider for a local pre-submit failure');
+      }
+    },
+    repository: {
+      getAttemptDetails: async () => ({
+        orders: [],
+        events: [{ reason: 'GMGN rate reservation is invalid or exhausted' }],
+        strategy_groups: [],
+        position_lots: []
+      }),
+      recoverDeterministicPreSubmitSellAttempt: async (attemptId, positionId, reason) => {
+        calls.push({ attemptId, positionId, reason });
+        return { attemptId, positionId, status: 'open_unprotected' };
+      }
+    },
+    logger: { error() {}, warn() {} }
+  });
+  const result = await reconciler.reconcileCancelledCloseAttempt({
+    id: 138,
+    position_id: 573,
+    side: 'sell',
+    status: 'reconciliation_required',
+    error_code: 'SUBMISSION_COULD_NOT_BE_UNIQUELY_RECONCILED'
+  });
+  assert.equal(result.status, 'pre_submit_failure_recovered');
+  assert.deepEqual(calls, [{
+    attemptId: 138,
+    positionId: 573,
+    reason: 'GMGN_RATE_RESERVATION_INVALID'
+  }]);
+});

@@ -96,3 +96,12 @@ test('readiness exposes confirmed orders and RPC receipts as per-chain evidence'
     lastConfirmedAt: null
   });
 });
+
+test('unprotected positions are advisory and do not become a global new-order blocker', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../domains/trade/readiness-service.js'),
+    'utf8'
+  );
+  assert.match(source, /advisories\.push\('UNPROTECTED_LIVE_POSITIONS'\)/);
+  assert.doesNotMatch(source, /blockers\.push\('UNPROTECTED_LIVE_POSITIONS'\)/);
+});

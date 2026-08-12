@@ -594,9 +594,11 @@ async function execute(signalId, prepareToken, operatorId) {
       operatorId,
       timing: prepared.timing
     });
-    swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
-      rateLease, returnMeta: true, deadlineAt,
+      rateLease,
+      returnMeta: true,
+      deadlineAt,
+      onRequestStart: () => { swapStarted = true; },
       requestContext: {
         ...gmgnRequestContext(prepared.signal, 'swap', prepared.traceId),
         attemptId: Number(attempt.id),
@@ -744,9 +746,11 @@ async function executeAutomatic(signalId, operatorId = '6551-live-worker', optio
     });
     trace.mark('lane');
     trace.mark('swap');
-    swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
-      rateLease, returnMeta: true, deadlineAt,
+      rateLease,
+      returnMeta: true,
+      deadlineAt,
+      onRequestStart: () => { swapStarted = true; },
       requestContext: {
         ...gmgnRequestContext(prepared.signal, 'swap', prepared.traceId),
         attemptId: Number(attempt.id),
@@ -900,9 +904,11 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       operatorId,
       timing: prepared.timing
     });
-    swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
-      rateLease, returnMeta: true, deadlineAt,
+      rateLease,
+      returnMeta: true,
+      deadlineAt,
+      onRequestStart: () => { swapStarted = true; },
       requestContext: {
         ...gmgnRequestContext(prepared.signal, 'swap', prepared.traceId),
         attemptId: Number(attempt.id),

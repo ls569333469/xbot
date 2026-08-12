@@ -74,3 +74,15 @@ test('execution gate rejects a readiness snapshot from another runtime scope', (
     { code: 'LIVE_SCOPE_SNAPSHOT_MISMATCH' }
   );
 });
+
+test('execution gate ignores the position-local unprotected advisory', () => {
+  const gate = new ExecutionGateService({ engine: engine(), maxAgeMs: 1500 });
+  gate.update({
+    readyToArm: false,
+    blockers: [],
+    advisories: ['UNPROTECTED_LIVE_POSITIONS'],
+    configurationFingerprint: 'config-1',
+    chains: [{ chain: 'robinhood', ready: true, blockers: [] }]
+  });
+  assert.equal(gate.assertReady('robinhood').configurationFingerprint, 'config-1');
+});

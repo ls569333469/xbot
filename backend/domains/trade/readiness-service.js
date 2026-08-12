@@ -1123,7 +1123,11 @@ async function getSnapshot(options = {}) {
   if (scopeIncludesFixed && acceptanceScope?.expired) blockers.push('LIVE_ACCEPTANCE_SCOPE_EXPIRED');
   if (Number(uncertainResult.rows[0].count) > 0) blockers.push('UNRESOLVED_TRADE_ATTEMPTS');
   if (Number(quarantineResult.rows[0].count) > 0) advisories.push('WALLET_QUARANTINE_ACTIVE');
-  if (Number(unprotectedResult.rows[0].count) > 0) blockers.push('UNPROTECTED_LIVE_POSITIONS');
+  if (Number(unprotectedResult.rows[0].count) > 0) {
+    // An unprotected position must remain visible and closable, but it is a
+    // position-local recovery problem. It must not stop unrelated new buys.
+    advisories.push('UNPROTECTED_LIVE_POSITIONS');
+  }
   const fixedPolicyConfigured = Array.isArray(policy.providers) && policy.providers.length > 0
     && Array.isArray(policy.eventTypes) && policy.eventTypes.length > 0
     && Array.isArray(policy.whitelistIds) && policy.whitelistIds.length > 0;

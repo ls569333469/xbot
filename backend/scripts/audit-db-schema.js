@@ -62,7 +62,8 @@ async function main() {
       '038_p22_gmgn_shared_rate_state_and_audit.sql', '039_p22_follow_verification_snapshot.sql',
       '040_p23_runtime_scope_readiness_snapshot.sql',
       '041_p24_local_event_provider_status.sql',
-      '042_p25_gmgn_terminal_execution.sql']]
+      '042_p25_gmgn_terminal_execution.sql',
+      '043_p26_local_rpc_provider_status.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -81,6 +82,7 @@ async function main() {
   if (!migrations.has('040_p23_runtime_scope_readiness_snapshot.sql')) throw new Error('Migration 040 is not applied');
   if (!migrations.has('041_p24_local_event_provider_status.sql')) throw new Error('Migration 041 is not applied');
   if (!migrations.has('042_p25_gmgn_terminal_execution.sql')) throw new Error('Migration 042 is not applied');
+  if (!migrations.has('043_p26_local_rpc_provider_status.sql')) throw new Error('Migration 043 is not applied');
 
   await requireColumns('ca_whitelist', [
     'live_activation_state', 'activation_version', 'activation_context_hash',

@@ -35,6 +35,16 @@ function finalProductionAuthorization(authorization, currentScopeContext = null)
   };
 }
 
+function productionAuthorizationForSignal(authorization, currentScopeContext, strategyScoped) {
+  if (strategyScoped) {
+    return {
+      allowed: Boolean(authorization?.live_enabled),
+      errorCode: 'CHAIN_PRODUCTION_NOT_APPROVED'
+    };
+  }
+  return finalProductionAuthorization(authorization, currentScopeContext);
+}
+
 function strategyLegAmountRaw(totalAmountRaw, condition = {}) {
   const total = BigInt(String(totalAmountRaw || '0'));
   const ratioValue = String(condition.sell_ratio ?? '100');
@@ -268,6 +278,7 @@ async function createBuyAttempt(prepared) {
       [prepared.chain.id]
     );
     const authorization = authorizationResult.rows[0];
+    const strategyScoped = runtimeAuthorization.scoped(signal);
     const hasAcceptanceScope = Boolean(authorization?.scope_chain);
     const acceptanceValid = hasAcceptanceScope
       && authorization.scope_chain === prepared.chain.id
@@ -277,10 +288,18 @@ async function createBuyAttempt(prepared) {
         prepared.chain.id,
         [whitelist]
       ).contextHash;
-    if ((!hasAcceptanceScope && !authorization?.live_enabled)
-        || (hasAcceptanceScope && !acceptanceValid)) {
+    // Fixed CA signals may use the explicit acceptance scope. Dynamic and
+    // follow-discovery signals have their own policy snapshot and must not be
+    // rejected by an unrelated fixed-CA acceptance record.
+    const productionAllowed = productionAuthorizationForSignal(
+      { live_enabled: authorization?.live_enabled, has_scope: hasAcceptanceScope,
+        scope_allowed: acceptanceValid, scope_context_hash: authorization?.scope_context_hash },
+      liveApproval.contractContext(prepared.chain.id, [whitelist]).contextHash,
+      strategyScoped
+    );
+    if (!productionAllowed.allowed) {
       const error = new Error('Chain or limited acceptance scope is not authorized for this buy');
-      error.code = hasAcceptanceScope ? 'ACCEPTANCE_SCOPE_MISMATCH' : 'CHAIN_PRODUCTION_NOT_APPROVED';
+      error.code = productionAllowed.errorCode;
       throw error;
     }
     if (String(process.env.EMERGENCY_STOP || 'false').toLowerCase() === 'true') {
@@ -596,9 +615,11 @@ async function beginBuySubmission(attemptId, options = {}) {
         ? liveApproval.contractContext(context.chain, whitelistContextResult.rows).contextHash
         : null;
     }
-    const productionAuthorization = finalProductionAuthorization(
+    const strategyScoped = runtimeAuthorization.scoped(context);
+    const productionAuthorization = productionAuthorizationForSignal(
       authorization,
-      currentScopeContext
+      currentScopeContext,
+      strategyScoped
     );
     if (!productionAuthorization.allowed) {
       const error = new Error('Chain production approval changed before submission');
@@ -1144,6 +1165,14 @@ async function listUncertainAttempts(limit = 10) {
      WHERE (
        attempt.status = 'submission_uncertain'
        OR attempt.error_code IN ('STRATEGY_CANCEL_UNCERTAIN','STRATEGY_CANCEL_UNVERIFIED')
+       OR (
+         attempt.status = 'reconciliation_required'
+         AND EXISTS (
+           SELECT 1 FROM trade_attempt_events AS event
+           WHERE event.attempt_id = attempt.id
+             AND event.reason ILIKE '%GMGN rate reservation%'
+         )
+       )
      )
        AND NOT EXISTS (SELECT 1 FROM trade_orders WHERE attempt_id = attempt.id)
        AND (attempt.last_reconciled_at IS NULL OR attempt.last_reconciled_at < NOW() - INTERVAL '5 minutes')
@@ -2002,6 +2031,107 @@ async function rejectSellAttempt(attemptId, positionId, error, fallbackStatus = 
   }
 }
 
+async function recoverDeterministicPreSubmitSellAttempt(attemptId, positionId, reasonCode) {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const attemptResult = await client.query(
+      `SELECT * FROM trade_attempts
+       WHERE id = $1 AND position_id = $2 AND side = 'sell'
+         AND status IN ('submission_uncertain','reconciliation_required')
+       FOR UPDATE`,
+      [attemptId, positionId]
+    );
+    const attempt = attemptResult.rows[0];
+    if (!attempt) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    const orderResult = await client.query(
+      'SELECT id FROM trade_orders WHERE attempt_id = $1 LIMIT 1',
+      [attemptId]
+    );
+    if (orderResult.rows.length > 0) {
+      const error = new Error('Pre-submit close recovery found a submitted provider order');
+      error.code = 'PRE_SUBMIT_RECOVERY_ORDER_EXISTS';
+      throw error;
+    }
+    const swapEventResult = await client.query(
+      `SELECT id FROM provider_rate_events
+       WHERE provider = 'gmgn'
+         AND context_json->>'attempt_id' = $1
+         AND context_json->>'stage' = 'swap'
+       LIMIT 1`,
+      [String(attemptId)]
+    );
+    if (swapEventResult.rows.length > 0) {
+      const error = new Error('Pre-submit close recovery found a GMGN swap request');
+      error.code = 'PRE_SUBMIT_RECOVERY_SWAP_EXISTS';
+      throw error;
+    }
+
+    await client.query(
+      `UPDATE trade_attempts
+       SET status = 'rejected', error_code = $2, error_class = NULL,
+           failure_class = NULL, requires_manual_review = false,
+           retry_eligible = false, last_reconciled_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [attemptId, reasonCode]
+    );
+    await client.query(
+      `UPDATE trade_intents
+       SET status = 'rejected', last_error_code = $2,
+           next_retry_at = NULL, retry_claimed_at = NULL,
+           completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [attempt.intent_id, reasonCode]
+    );
+    await client.query(
+      `UPDATE positions
+       SET status = CASE WHEN EXISTS (
+         SELECT 1 FROM strategy_groups
+         WHERE position_id = $1
+           AND status IN ('pending','running','partially_filled','triggered')
+       ) THEN 'open_protected' ELSE 'open_unprotected' END,
+           tpsl_status = CASE WHEN EXISTS (
+         SELECT 1 FROM strategy_groups
+         WHERE position_id = $1
+           AND status IN ('pending','running','partially_filled','triggered')
+       ) THEN tpsl_status ELSE 'failed' END,
+           updated_at = NOW()
+       WHERE id = $1 AND status = 'close_uncertain'`,
+      [positionId]
+    );
+    await client.query(
+      `UPDATE wallet_write_lanes
+       SET state = 'idle', owner_attempt_id = NULL, lease_expires_at = NULL,
+           reason_code = NULL, evidence_json = '{}'::jsonb,
+           released_at = NOW(), released_by = 'system',
+           release_reason = 'DETERMINISTIC_PRE_SUBMIT_FAILURE', updated_at = NOW()
+       WHERE owner_attempt_id = $1 AND state = 'quarantined'`,
+      [attemptId]
+    );
+    await addAttemptEvent(client, attemptId, attempt.status, 'rejected', {
+      reason: reasonCode,
+      provider_swap_request_found: false,
+      provider_order_found: false
+    });
+    await writeOutbox(client, 'position.close_pre_submit_recovered', 'position', positionId, {
+      position_id: Number(positionId),
+      attempt_id: Number(attemptId),
+      reason_code: reasonCode
+    });
+    await client.query('COMMIT');
+    return { attemptId: Number(attemptId), positionId: Number(positionId), status: 'open_unprotected' };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function resolveCancelledCloseAttempt(attemptId, positionId, strategyEvidence) {
   if (!Array.isArray(strategyEvidence) || strategyEvidence.length === 0) {
     const error = new Error('Cancelled strategy evidence is required');
@@ -2823,21 +2953,49 @@ async function claimExternalClose(positionId, activity) {
 }
 
 async function updateStrategyGroupStatus(groupId, expectedStatuses, nextStatus, providerParams = {}) {
+  const stateProjection = strategyGroupStatusProjection(nextStatus);
   const result = await db.query(
     `UPDATE strategy_groups
      SET status = $1,
+         provider_status = COALESCE($5, provider_status),
+         strategy_status = COALESCE($6, strategy_status),
          provider_params = provider_params || $2::jsonb,
          last_reconciled_at = NOW(), updated_at = NOW()
-     WHERE id = $3 AND status = ANY($4::text[])
-     RETURNING *`,
-    [nextStatus, providerParams, groupId, expectedStatuses]
+       WHERE id = $3 AND status = ANY($4::text[])
+       RETURNING *`,
+    [nextStatus, providerParams, groupId, expectedStatuses,
+      stateProjection.providerStatus, stateProjection.strategyStatus]
   );
   if (result.rows.length === 0) {
     const error = new Error(`Strategy group ${groupId} state changed concurrently`);
     error.code = 'STRATEGY_GROUP_CAS_FAILED';
     throw error;
   }
+  if (String(nextStatus).toLowerCase() === 'cancelled') {
+    await db.query(
+      `UPDATE strategy_legs
+       SET status = CASE
+             WHEN status IN ('success', 'failed') THEN status
+             ELSE 'cancelled'
+           END,
+           strategy_status = 'stopped',
+           last_reconciled_at = NOW(), updated_at = NOW()
+       WHERE group_id = $1`,
+      [groupId]
+    );
+  }
   return result.rows[0];
+}
+
+function strategyGroupStatusProjection(nextStatus) {
+  const status = String(nextStatus || '').toLowerCase();
+  if (status === 'cancelled') {
+    return { providerStatus: 'cancelled', strategyStatus: 'stopped' };
+  }
+  if (status === 'running') {
+    return { providerStatus: 'open', strategyStatus: 'running' };
+  }
+  return { providerStatus: null, strategyStatus: null };
 }
 
 async function failOrder(orderId, normalizedOrder) {
@@ -3000,6 +3158,7 @@ module.exports = {
   beginBuySubmission,
   createSellAttempt,
   finalProductionAuthorization,
+  productionAuthorizationForSignal,
   fingerprint,
   getAttempt,
   getAttemptDetails,
@@ -3027,6 +3186,7 @@ module.exports = {
   recordExecutionTiming,
   releaseRejectedAttempt,
   rejectSellAttempt,
+  recoverDeterministicPreSubmitSellAttempt,
   resolveCancelledCloseAttempt,
   saveChainReceipt,
   sellSettlementOutputRaw,
@@ -3034,6 +3194,7 @@ module.exports = {
   principalUsdCost,
   strategyLegAmountRaw,
   submittedOrderStatus,
+  strategyGroupStatusProjection,
   usesWhitelistLifetimeBudget,
   transitionAttempt,
   touchAttemptReconciliation,

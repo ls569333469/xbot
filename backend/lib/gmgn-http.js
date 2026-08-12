@@ -209,6 +209,9 @@ async function request(method, path, query = {}, body = null, options = {}) {
 
   let response;
   const startedAt = Date.now();
+  if (typeof options.onRequestStart === 'function') {
+    options.onRequestStart({ method, path, weight, context });
+  }
   try {
     response = await fetch(buildUrl(path, fullQuery), {
       method,

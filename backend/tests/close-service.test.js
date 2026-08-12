@@ -65,6 +65,19 @@ test('close service treats a non-definitive cancellation write failure as uncert
   assert.equal(normalizeCancellationWriteError(rejection), rejection);
 });
 
+test('local rate reservation failure is a definitive pre-submit rejection', () => {
+  const error = Object.assign(new Error('GMGN rate reservation is invalid or exhausted'), {
+    code: 'GMGN_RATE_RESERVATION_INVALID'
+  });
+  const { classifyWriteError } = require('../domains/trade/gmgn-write-error-classifier');
+  assert.deepEqual(classifyWriteError(error, { writeStarted: false }), {
+    kind: 'rejected',
+    code: 'GMGN_RATE_RESERVATION_INVALID',
+    retryEligible: false,
+    quarantine: false
+  });
+});
+
 test('close service never sells same-CA wallet balance outside tracked lots', () => {
   assert.equal(selectSellAmountRaw('150000000', '100000000', '150000000'), '100000000');
   assert.equal(selectSellAmountRaw('100000000', '100000000', '75000000'), '75000000');

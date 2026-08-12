@@ -2,7 +2,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { finalProductionAuthorization } = require('../domains/trade/trade-repository');
+const {
+  finalProductionAuthorization,
+  productionAuthorizationForSignal,
+  strategyGroupStatusProjection
+} = require('../domains/trade/trade-repository');
 
 test('final submission acceptance scope projects the context hash it validates', () => {
   const source = fs.readFileSync(
@@ -50,4 +54,32 @@ test('final production gate rejects acceptance context drift', () => {
     scope_allowed: true,
     scope_context_hash: 'context-1'
   }, 'context-2').allowed, false);
+});
+
+test('dynamic and follow signals use chain production approval instead of fixed acceptance scope', () => {
+  assert.deepEqual(productionAuthorizationForSignal({
+    live_enabled: true,
+    has_scope: true,
+    scope_allowed: false,
+    scope_context_hash: 'fixed-ca-context'
+  }, null, true), {
+    allowed: true,
+    errorCode: 'CHAIN_PRODUCTION_NOT_APPROVED'
+  });
+});
+
+test('cancelled protection strategies persist terminal provider and local states', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../domains/trade/trade-repository.js'),
+    'utf8'
+  );
+  assert.deepEqual(strategyGroupStatusProjection('cancelled'), {
+    providerStatus: 'cancelled',
+    strategyStatus: 'stopped'
+  });
+  assert.deepEqual(strategyGroupStatusProjection('running'), {
+    providerStatus: 'open',
+    strategyStatus: 'running'
+  });
+  assert.match(source, /UPDATE strategy_legs[\s\S]+strategy_status = 'stopped'/i);
 });

@@ -186,6 +186,22 @@ test('auth timestamp is created after a queued rate lease is granted', async () 
   }
 });
 
+test('request start callback fires only after local rate and auth gates pass', async () => {
+  const originalFetch = global.fetch;
+  const started = [];
+  global.fetch = async () => jsonResponse({ code: 0, data: { ok: true } });
+  try {
+    await withEnv({ GMGN_API_KEY: 'gmgn-test-key' }, () => gmgnHttp.getTokenInfo(
+      'sol',
+      'TokenAddress',
+      { onRequestStart: (details) => started.push(details.path) }
+    ));
+    assert.deepEqual(started, ['/v1/token/info']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('API business errors expose sanitized machine-readable fields', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => jsonResponse({

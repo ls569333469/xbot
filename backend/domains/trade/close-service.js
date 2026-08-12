@@ -436,7 +436,6 @@ async function execute(positionId, prepareToken, operatorId, options = {}) {
     prepared = await buildClosePrepared(positionId, {
       percent: consumed.snapshot_json?.percent,
       slippage: consumed.snapshot_json?.slippage ?? 0,
-      rateLease,
       deadlineAt
     });
     if (prepared.snapshotHash !== consumed.snapshot_hash) {
@@ -487,11 +486,11 @@ async function execute(positionId, prepareToken, operatorId, options = {}) {
       attemptId: attempt.id
     });
     await repository.transitionAttempt(attempt.id, ['preparing'], 'submitting', { actor: operatorId });
-    swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
       rateLease,
       returnMeta: true,
       deadlineAt,
+      onRequestStart: () => { swapStarted = true; },
       requestContext: {
         ...closeRequestContext(prepared.position, 'swap', {
           attemptId: attempt.id,
@@ -563,7 +562,6 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
     prepared = await buildClosePrepared(intent.position_id, {
       percent: 100,
       slippage: Number(intent.slippage_cap),
-      rateLease,
       deadlineAt
     });
     attempt = await intentRepository.createRetryAttempt(intent.id, {
@@ -617,11 +615,11 @@ async function retryIntent(intent, operatorId = 'retry-worker') {
       attemptId: attempt.id
     });
     await repository.transitionAttempt(attempt.id, ['preparing'], 'submitting', { actor: operatorId });
-    swapStarted = true;
     const response = await gmgnAccess.swap(swapParams, {
       rateLease,
       returnMeta: true,
       deadlineAt,
+      onRequestStart: () => { swapStarted = true; },
       requestContext: {
         ...closeRequestContext(prepared.position, 'swap', {
           attemptId: attempt.id,
