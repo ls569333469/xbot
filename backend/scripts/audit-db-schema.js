@@ -67,7 +67,9 @@ async function main() {
       '044_p27_migration_manifest.sql',
       '045_p27_signal_contract_snapshots.sql',
       '046_p27_reliable_notification_outbox.sql',
-      '047_p27_local_candidate_metadata_backfill.sql']]
+      '047_p27_local_candidate_metadata_backfill.sql',
+      '048_p27_shared_gmgn_asset_metadata.sql',
+      '049_p27_metadata_enqueue_missing_only.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -91,6 +93,8 @@ async function main() {
   if (!migrations.has('045_p27_signal_contract_snapshots.sql')) throw new Error('Migration 045 is not applied');
   if (!migrations.has('046_p27_reliable_notification_outbox.sql')) throw new Error('Migration 046 is not applied');
   if (!migrations.has('047_p27_local_candidate_metadata_backfill.sql')) throw new Error('Migration 047 is not applied');
+  if (!migrations.has('048_p27_shared_gmgn_asset_metadata.sql')) throw new Error('Migration 048 is not applied');
+  if (!migrations.has('049_p27_metadata_enqueue_missing_only.sql')) throw new Error('Migration 049 is not applied');
 
   await requireColumns('schema_migrations', [
     'checksum_sha256', 'migration_manifest_id', 'release_sha'
@@ -99,6 +103,12 @@ async function main() {
     'asset_snapshot', 'authorization_snapshot', 'strategy_type'
   ]);
   await requireColumns('positions', ['asset_snapshot']);
+  await requireColumns('asset_metadata', [
+    'chain_id', 'contract_address', 'contract_address_key', 'provider',
+    'name', 'symbol', 'logo_url', 'decimals', 'status', 'attempt_count',
+    'next_attempt_at', 'locked_at', 'locked_by', 'last_error',
+    'provider_snapshot', 'fetched_at'
+  ]);
   await requireColumns('notification_outbox', [
     'channel', 'dedupe_key', 'locked_at', 'locked_by'
   ]);
@@ -188,6 +198,8 @@ async function main() {
     'follow_discovery_policy_revision', 'follow_discovery_context_hash'
   ]);
   await requireIndexes([
+    'asset_metadata_chain_id_contract_address_key_key',
+    'idx_asset_metadata_claim',
     'uq_dynamic_resolution_job',
     'uq_dynamic_paper_session_running',
     'uq_whitelist_dynamic_actor_ca_chain_active',

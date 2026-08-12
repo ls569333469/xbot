@@ -32,6 +32,7 @@ const { dynamicSignalWorker } = require('./domains/dynamic-signal/event-worker')
 const { dynamicPaperSessionWorker } = require('./domains/dynamic-signal/paper-worker');
 const { actorScreeningWorker } = require('./domains/actor-screening/worker');
 const { followDiscoveryWorker } = require('./domains/follow-discovery/event-worker');
+const { assetMetadataWorker } = require('./domains/asset-metadata/worker');
 const { releaseInfo } = require('./lib/release-info');
 const processRole = getProcessRole();
 const capabilities = roleCapabilities(processRole);
@@ -128,6 +129,7 @@ async function gracefulShutdown(signal) {
     dynamicPaperSessionWorker.stop();
     actorScreeningWorker.stop();
     followDiscoveryWorker.stop();
+    assetMetadataWorker.stop();
     researchQueue.stop();
     reconciler.stop();
     tradeRetryOrchestrator.stop();
@@ -189,6 +191,7 @@ async function startServer() {
     dynamicPaperSessionWorker.start({ intervalMs: 60_000 });
     actorScreeningWorker.start({ intervalMs: 2000 });
     followDiscoveryWorker.start({ intervalMs: 1000 });
+    assetMetadataWorker.start({ intervalMs: 5000 });
   }
 
   if (capabilities.api) {
@@ -238,6 +241,7 @@ async function startServer() {
           whitelistActivation: whitelistActivationWorker.getStatus()
         },
         kolProfileEnrichment: kolProfileEnrichmentWorker.getStatus(),
+        assetMetadata: assetMetadataWorker.getStatus(),
         followDiscovery: followDiscoveryWorker.getStatus()
       } : {})
     })
@@ -275,6 +279,7 @@ startServer().catch(err => {
   whitelistActivationWorker.stop();
   kolProfileEnrichmentWorker.stop();
   followDiscoveryWorker.stop();
+  assetMetadataWorker.stop();
   providerRateRecorder.stop();
   shadowLiveEvaluator.stop();
   void serviceHeartbeat.stop();

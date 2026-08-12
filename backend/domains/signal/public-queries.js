@@ -14,6 +14,9 @@ const SIGNAL_SELECT = `
   ts.follow_discovery_policy_id, ts.follow_discovery_event_id,
   ts.follow_discovery_policy_revision, ts.follow_discovery_context_hash,
   ts.strategy_type, ts.asset_snapshot, ts.authorization_snapshot,
+  metadata.name AS gmgn_asset_name, metadata.symbol AS gmgn_asset_symbol,
+  metadata.logo_url AS gmgn_asset_logo_url, metadata.decimals AS gmgn_asset_decimals,
+  metadata.status AS gmgn_asset_metadata_status,
   ca.chain_id, ca.contract_address,
   xa.activity_type, xa.provider, xa.source_created_at,
   xa.observation_started_at, xa.observation_ended_at,
@@ -48,6 +51,11 @@ async function listSignals(filters = {}, executor = db) {
   }
   const from = `FROM trade_signals ts
     JOIN ca_whitelist ca ON ca.id = ts.whitelist_id
+    LEFT JOIN asset_metadata metadata
+      ON metadata.chain_id = lower(ca.chain_id)
+     AND metadata.contract_address_key = CASE WHEN lower(ca.chain_id) = 'sol'
+       THEN ca.contract_address ELSE lower(ca.contract_address) END
+     AND metadata.status = 'completed'
     LEFT JOIN x_activities xa ON xa.id = ts.activity_id
     LEFT JOIN LATERAL (
       SELECT intent.id AS trade_intent_id, intent.status AS trade_intent_status,

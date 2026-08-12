@@ -68,3 +68,12 @@ test('P27 trade detail modal exposes keyboard-accessible dialog semantics', () =
   assert.match(source, /event\.key === 'Escape'/);
   assert.match(source, /ref=\{detailCloseRef\}[\s\S]*?aria-label="关闭交易详情"/);
 });
+
+test('trade history uses fixed scan-friendly columns and nowrap short labels', () => {
+  const source = fs.readFileSync(tradeLogPath, 'utf8');
+  const css = fs.readFileSync(cssPath, 'utf8');
+  assert.match(source, /trade-attempt-table/);
+  assert.match(css, /\.trade-attempt-table\s*\{[^}]*min-width:\s*1240px[^}]*table-layout:\s*fixed/s);
+  assert.match(css, /\.trade-attempt-nowrap[\s\S]*white-space:\s*nowrap/);
+  assert.match(css, /\.trade-attempt-error\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+});

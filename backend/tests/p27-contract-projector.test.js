@@ -98,6 +98,28 @@ test('P27 Signal projector keeps legacy fields and adds one canonical contract',
   assert.equal(dto.signal_type, 'follow_discovery');
 });
 
+test('shared GMGN metadata overrides display fields without mutating the signal snapshot', () => {
+  const snapshot = {
+    snapshot_version: 'p27.asset.v1', contract_address: '0x1234567890abcdef',
+    symbol: null, name: null, logo_url: null
+  };
+  const row = {
+    id: 9, whitelist_id: 3, chain_id: 'robinhood',
+    contract_address: '0x1234567890abcdef', strategy_type: 'follow_discovery',
+    asset_snapshot: snapshot,
+    gmgn_asset_symbol: 'TOKEN', gmgn_asset_name: 'Token Name',
+    gmgn_asset_logo_url: 'https://gmgn.ai/token.webp', gmgn_asset_decimals: 18,
+    authorization_snapshot: {}
+  };
+  const projected = projectSignal(row);
+  assert.equal(projected.asset.symbol, 'TOKEN');
+  assert.equal(projected.asset.name, 'Token Name');
+  assert.equal(projected.asset.metadata_source, 'gmgn_shared');
+  assert.equal(projected.settlement.token_decimals, 18);
+  assert.equal(snapshot.symbol, null);
+  assert.equal(snapshot.name, null);
+});
+
 test('risk observations never become execution blockers unless execution proves it', () => {
   const observed = projectSignal({
     id: 31, whitelist_id: 4, strategy_type: 'fixed_ca', signal_type: 'handle_match',

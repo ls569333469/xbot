@@ -59,6 +59,12 @@ test('P27 migrations remain additive and install snapshots plus reliable outbox 
   const migration047 = fs.readFileSync(path.join(
     backendRoot, 'db/migrations/047_p27_local_candidate_metadata_backfill.sql'
   ), 'utf8');
+  const migration048 = fs.readFileSync(path.join(
+    backendRoot, 'db/migrations/048_p27_shared_gmgn_asset_metadata.sql'
+  ), 'utf8');
+  const migration049 = fs.readFileSync(path.join(
+    backendRoot, 'db/migrations/049_p27_metadata_enqueue_missing_only.sql'
+  ), 'utf8');
   assert.match(migration044, /release_migration_manifests/i);
   assert.match(migration044, /checksum_sha256/i);
   assert.match(migration045, /asset_snapshot/i);
@@ -71,7 +77,12 @@ test('P27 migrations remain additive and install snapshots plus reliable outbox 
   assert.match(migration047, /follow_discovery_event_id/i);
   assert.match(migration047, /historical_candidate_backfill/i);
   assert.doesNotMatch(migration047, /gmgn|grok|token\/info|security|pool_info/i);
-  for (const sql of [migration044, migration045, migration046, migration047]) {
+  assert.match(migration048, /UNIQUE\(chain_id, contract_address_key\)/i);
+  assert.match(migration048, /ON CONFLICT \(chain_id, contract_address_key\) DO NOTHING/i);
+  assert.match(migration049, /asset_snapshot->>'name'/i);
+  assert.match(migration049, /asset_snapshot->>'symbol'/i);
+  for (const sql of [migration044, migration045, migration046, migration047,
+    migration048, migration049]) {
     assert.doesNotMatch(sql, /DROP TABLE|DROP COLUMN|TRUNCATE/i);
   }
 });

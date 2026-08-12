@@ -45,7 +45,7 @@ GMGN `429`、`RATE_LIMIT_BANNED`、GMGN 调度器冷却、6551 短暂断流和�
 2. 轮换任何曾在聊天、截图、终端或外部日志中展示过的 API Key。生产必须使用 `GMGN_CREDENTIAL_PROFILE=primary`；`test` profile 会被启动检查拒绝。
 3. 备份 PostgreSQL，并在隔离数据库完成恢复校验。至少记录 `pg_dump` 文件 SHA-256、恢复库名、`schema_migrations` 数量和关键表行数。备份文件不得进入 Git 或发布包。
 4. 仅从同一 release SHA 的 `deploy/release-allowlist.txt` 生成发布包；执行后端全量测试、前端 lint/build、`npm run audit:release` 和 Migration 演练。
-5. P27 首次迁移必须执行 `044 -> 停止`。随后导入已签署的 `backend/db/manifests/p26_80e9f5a_migrations.json`，确认 release SHA `80e9f5a77d62b84f930efd924aed329d4e047515`，再执行 `045 -> 046 -> 047`。不得跳过 bootstrap 或自动接受 checksum 漂移。`047` 仅补齐精确关联的本地历史 Candidate 元数据，不调用外部 Provider。
+5. P27 首次迁移必须执行 `044 -> 停止`。随后导入已签署的 `backend/db/manifests/p26_80e9f5a_migrations.json`，确认 release SHA `80e9f5a77d62b84f930efd924aed329d4e047515`，再执行 `045 -> 046 -> 047 -> 048 -> 049`。不得跳过 bootstrap 或自动接受 checksum 漂移。`047` 仅补齐精确关联的本地历史 Candidate 元数据；`048-049` 建立唯一 `chain + CA` 的共享 GMGN 元数据和缺失时入队规则。
 6. 第二次运行 Migration 必须为零变更；再执行 `npm run audit:schema:production`。发布前把当前 40 位 commit 写入 `XBOT_RELEASE_SHA`，确认 `/api/health.release_sha` 等于本次 P27 发布 commit；`migration_manifest.release_sha` 仍应是签署的 P26 基线，两者不得混用。同时确认 `process_role`、`contract_version=p27.v1` 和 `event_contract_version=p27.events.v1`。
 7. `xbot.service` 只启动 Supervisor，Supervisor 只启动一个 `ingestion` 和一个 `execution`。生产禁止 `--role=all`，且启动/恢复不得触发显式 GMGN 诊断。
 8. 先保持新买入停止，验证登录、REST、WebSocket entity envelope、Signals、Positions、History、Settings、Order 对账和已有持仓平仓。稳定后由操作员重新启动 Engine。
@@ -61,7 +61,7 @@ pg_restore --exit-on-error --clean --if-exists --dbname=xbot_p27_restore_check /
 
 ## P27 应用回滚
 
-P27 Migration `044-047` 是 additive。需要回滚应用时暂停新买入、保留当前数据库 Schema，不执行向下 Migration，然后切回已签署 P26 binary `80e9f5a77d62b84f930efd924aed329d4e047515`。回滚环境不得再次运行旧 migration phase；先以只读方式验证健康查询、历史读取和空队列恢复，再受控验证未完成 Order 对账与已有 Position 平仓。当前自动演练没有让旧 binary 对真实活跃仓位执行写操作，该步骤只能在事故回滚窗口由操作员验收。P26 不写 P27 snapshot/outbox 新字段，因此回滚期只用于事故恢复，不得创建新 Signal 或恢复新买入。恢复 P27 时重新核对 manifest 后再启动。
+P27 Migration `044-049` 是 additive。需要回滚应用时暂停新买入、停止 `asset_metadata` Worker、保留当前数据库 Schema，不执行向下 Migration，然后切回已签署 P26 binary `80e9f5a77d62b84f930efd924aed329d4e047515`。回滚环境不得再次运行旧 migration phase；先以只读方式验证健康查询、历史读取和空队列恢复，再受控验证未完成 Order 对账与已有 Position 平仓。当前自动演练没有让旧 binary 对真实活跃仓位执行写操作，该步骤只能在事故回滚窗口由操作员验收。P26 不写 P27 snapshot/outbox/asset_metadata，因此回滚期只用于事故恢复，不得创建新 Signal 或恢复新买入。恢复 P27 时重新核对 manifest 后再启动。
 
 ## P20 发布附加条件
 
@@ -70,9 +70,9 @@ P20 不是一次普通前端发布。服务器发布前必须确认代码、Migr
 冷部署顺序：
 
 1. 记录服务器当前 commit、服务状态、数据库 Migration 状态和固定 CA 实盘状态；必要时先锁定新买入，但保留对账和离场能力。
-2. 只上传 allowlist 中的代码、Migration `000-047`、依赖锁文件和同 release SHA 构建产物；禁止上传 `.env`、API Key、GMGN 私钥、OPENNEWS_TOKEN、ADMIN_TOKEN、数据库密码、日志和数据库 dump。
+2. 只上传 allowlist 中的代码、Migration `000-049`、依赖锁文件和同 release SHA 构建产物；禁止上传 `.env`、API Key、GMGN 私钥、OPENNEWS_TOKEN、ADMIN_TOKEN、数据库密码、日志和数据库 dump。
 3. XBOT 使用隔离运行时 `/opt/node-v24.11.1`，npm 为 `11.6.x`；`xbot.service` 必须直接调用该路径，不能替换系统 `/usr/bin/node` 并影响同机项目。再分别执行后端和前端的 `npm ci`；版本不符时停止发布。
-4. 应用 Migration 前按 P27 bootstrap 顺序执行独立 Migration phase；再以生产只读方式运行 `npm run audit:schema:production`。必须确认 Migration `027` 至 `047`、动态模板、按链预算、Follow Policy/Event、候选索引、共享限流、Signal snapshot、migration manifest、精确历史元数据回填和 outbox lease 字段完整。
+4. 应用 Migration 前按 P27 bootstrap 顺序执行独立 Migration phase；再以生产只读方式运行 `npm run audit:schema:production`。必须确认 Migration `027` 至 `049`、动态模板、按链预算、Follow Policy/Event、候选索引、共享限流、Signal snapshot、migration manifest、精确历史元数据回填、共享 `asset_metadata` 和 outbox lease 字段完整。
 5. 首次启动保持以下 P20 开关全部为 `false`，并保持 `LIVE_TRADING_ENABLED=false`、`EMERGENCY_STOP=true`、`X_6551_WSS_ENABLED=false`、`X_6551_WATCH_APPLY_ENABLED=false`。先验证 `/api/health`、登录、固定策略、持仓、Settings、WebSocket、TGBOT 和两个生产进程状态。
 6. 通过固定链路冒烟后，单独开启 Candidate Index，再开启 Dynamic Resolution 和 Record；观察任务入队、解析审计、失败原因和 Worker 租约，确认没有产生交易 Target、Paper Position 或 Swap。
 7. 需要模拟时单独启用 Paper，并保持 `P20_LIVE_ENABLED=false`；确认 Paper 不调用 Swap，且解析、预算和离场策略与目标配置一致。

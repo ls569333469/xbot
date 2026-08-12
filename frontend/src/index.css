@@ -941,6 +941,56 @@ body {
   background: rgba(255, 255, 255, 0.015);
 }
 
+.trade-attempt-table-container {
+  overflow-x: auto;
+}
+
+.trade-attempt-table {
+  min-width: 1240px;
+  table-layout: fixed;
+}
+
+.trade-attempt-table th,
+.trade-attempt-table td {
+  vertical-align: top;
+}
+
+.trade-attempt-table th:nth-child(1) { width: 124px; }
+.trade-attempt-table th:nth-child(2) { width: 60px; }
+.trade-attempt-table th:nth-child(3) { width: 64px; }
+.trade-attempt-table th:nth-child(4) { width: 184px; }
+.trade-attempt-table th:nth-child(5) { width: 120px; }
+.trade-attempt-table th:nth-child(6) { width: 162px; }
+.trade-attempt-table th:nth-child(7) { width: 150px; }
+.trade-attempt-table th:nth-child(8) { width: 130px; }
+.trade-attempt-table th:nth-child(9) { width: 150px; }
+.trade-attempt-table th:nth-child(10) { width: 58px; }
+
+.trade-attempt-nowrap,
+.trade-attempt-retry,
+.trade-attempt-query,
+.trade-attempt-table th {
+  white-space: nowrap;
+}
+
+.trade-attempt-error {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.trade-attempt-identity,
+.trade-attempt-status,
+.trade-attempt-amount,
+.trade-attempt-order,
+.trade-attempt-hash {
+  overflow-wrap: anywhere;
+}
+
+.trade-attempt-order .inline-link,
+.trade-attempt-hash .inline-link {
+  white-space: nowrap;
+}
+
 /* Modal UI */
 .modal-overlay {
   position: fixed;

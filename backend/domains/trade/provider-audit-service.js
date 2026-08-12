@@ -60,6 +60,7 @@ function classifyProviderEvent(row = {}) {
   }
   if (source.startsWith('research') || source.startsWith('research_market')
       || source.startsWith('actor_screening')) return 'research';
+  if (source === 'asset_metadata') return 'asset_metadata';
   if (source.startsWith('readiness')) return 'readiness';
   return 'unknown';
 }

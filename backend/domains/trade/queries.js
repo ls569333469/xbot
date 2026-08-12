@@ -8,6 +8,9 @@ const POSITION_SELECT = `
   p.tp_pct, p.sl_pct, p.tp_order_id, p.sl_order_id, p.tpsl_status,
   p.exit_price, p.pnl, p.pnl_pct, p.sim_peaks, p.execution_mode, p.status,
   p.opened_at, p.closed_at, p.created_at, p.updated_at, p.asset_snapshot,
+  metadata.name AS gmgn_asset_name, metadata.symbol AS gmgn_asset_symbol,
+  metadata.logo_url AS gmgn_asset_logo_url, metadata.decimals AS gmgn_asset_decimals,
+  metadata.status AS gmgn_asset_metadata_status,
   wl.project_name, wl.symbol AS whitelist_symbol,
   ts.strategy_type, ts.actor_policy_id, ts.follow_discovery_policy_id,
   ts.kol_handle, ts.signal_type, ts.kol_weight, ts.risk_check,
@@ -18,6 +21,11 @@ const POSITION_SELECT = `
 
 const POSITION_FROM = `
   FROM positions p
+  LEFT JOIN asset_metadata metadata
+    ON metadata.chain_id = lower(p.chain_id)
+   AND metadata.contract_address_key = CASE WHEN lower(p.chain_id) = 'sol'
+     THEN p.contract_address ELSE lower(p.contract_address) END
+   AND metadata.status = 'completed'
   LEFT JOIN ca_whitelist wl ON wl.id = p.whitelist_id
   LEFT JOIN trade_signals ts ON ts.id = p.signal_id
   LEFT JOIN LATERAL (
@@ -60,7 +68,7 @@ async function getPositions(filters = {}) {
   const result = await db.query(query, params);
   return result.rows.map((row) => projectPosition({
     ...row,
-    symbol: row.asset_snapshot?.symbol ?? row.symbol ?? row.whitelist_symbol
+    symbol: row.gmgn_asset_symbol ?? row.asset_snapshot?.symbol ?? row.symbol ?? row.whitelist_symbol
   }));
 }
 
@@ -76,7 +84,7 @@ async function getHistory(filters = {}) {
   const result = await db.query(query, params);
   return result.rows.map((row) => projectPosition({
     ...row,
-    symbol: row.asset_snapshot?.symbol ?? row.symbol ?? row.whitelist_symbol
+    symbol: row.gmgn_asset_symbol ?? row.asset_snapshot?.symbol ?? row.symbol ?? row.whitelist_symbol
   }));
 }
 

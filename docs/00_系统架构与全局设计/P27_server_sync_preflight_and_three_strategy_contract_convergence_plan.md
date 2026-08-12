@@ -1,8 +1,8 @@
 # P27 服务器同步前全链路收口与三策略契约统一方案
 
-> 版本：v1.2
+> 版本：v1.3
 > 日期：2026-08-12
-> 状态：代码、Migration、自动回归和 DOM 验收已完成；三策略真实小额闭环与已披露凭据轮换待完成
+> 状态：本地代码、Migration `044-049`、自动回归、真实 GMGN 元数据回填和 DOM 验收已完成；最新改动尚未提交/推送，xiexiu 服务器尚未部署，已披露凭据轮换待完成
 > 前置版本：P20-P26
 > 目标：纠正 v1.0 的错误归因，收口三策略数据契约、交易元数据、GMGN 调用边界、前端设计系统和发布链路，验收后再同步服务器
 
@@ -20,6 +20,8 @@ P27 v1.0 的方向基本正确，但有错误归因、兼容性缺口和发布�
 - P26 分进程后不能在数据库事务提交后才临时广播 Signal。实体与事件 outbox 必须同事务写入，`NOTIFY` 只负责唤醒 relay；否则进程在 COMMIT 后、广播前退出时会永久丢事件。
 - DTO 中的策略规范值必须与现有运行域一致：`fixed_ca | dynamic_policy | follow_discovery`。`dynamic_keyword` 是 Signal 类型，不是策略类型。
 - P27 最终代码仍须重做三条真实 6551 入口的小额买入和平仓，历史成功不能代替本次发布验收。
+- P27 v1.2 的“显示名称完全不调用 GMGN”边界过严，导致仅有唯一 `chain + CA`、但本地名称缺失的真实资产长期显示为合约。v1.3 改为异步共享元数据：每个唯一 `chain + CA` 最多创建一条 GMGN `token/info` 任务，Signal 与 Position 只读同一数据库结果；该任务不进入 Signal 创建事务、Live Queue、买入 Attempt 或平仓 Attempt。
+- 本轮真实回填 7 个唯一资产，共执行 7 次 GMGN `token/info`，全部 HTTP 200、`429=0`；连续读取 Signal/Position 各 5 次后新增 GMGN 调用为 0。该证据证明共享元数据不会随页面刷新放大调用。
 
 P27 不继续增加业务门禁，而是把链路收敛为：
 
@@ -43,7 +45,7 @@ P27 不继续增加业务门禁，而是把链路收敛为：
 
 1. `backend/domains` 的 6551、fixed CA、dynamic、follow discovery、trade、research、system、whitelist 域。
 2. `backend/jobs`、`backend/scripts`、`backend/server.js`、Supervisor 和 `deploy` 启动资产。
-3. Migration `000-043`、数据库结构、约束、迁移记录和历史数据投影。
+3. Migration `000-049`、数据库结构、约束、迁移记录和历史数据投影。
 4. `frontend/src` 的 API、TypeScript、WebSocket、CSS、公共组件和页面样式。
 5. P20-P26 测试、真实验收工具、Paper/Record 工具和历史日志。
 6. Git 跟踪文件、Secret、`.env`、PEM、日志、dump、构建输出和服务器发布输入。
@@ -367,6 +369,33 @@ Trade Attempt list/detail 至少增加同源的：
 - Position：从 Signal snapshot 复制展示元数据；从 confirmed GMGN Order/Report 写精确 raw amounts/decimals 到 Order 和 Lot。
 - 通知：从规范 DTO 读取显示标签，不自行推断链或代币。
 
+### 5.4.1 使用 Migration `048-049` 建立共享 GMGN 展示元数据
+
+`048_p27_shared_gmgn_asset_metadata.sql` 新增 `asset_metadata`，以规范化后的 `chain_id + contract_address_key` 建立唯一键；`049_p27_metadata_enqueue_missing_only.sql` 将入队条件收紧为 Signal 不同时具备 `name + symbol`。固定 CA 或其他策略已经保存完整名称时不产生 GMGN 元数据请求。
+
+标准链路：
+
+```text
+创建 Signal（交易链路正常继续）
+  -> 本地快照缺少 name 或 symbol 时，仅入队唯一 chain + CA
+  -> 默认延迟 30 秒
+  -> GMGN Scheduler 空闲且无交易租约/队列/最近一秒消耗
+  -> 最低优先级 CACHE_WARMUP 调用一次 token/info
+  -> 校验返回 CA 与请求完全一致
+  -> 写入共享 asset_metadata
+  -> Signal 与 Position REST 查询 JOIN 同一行
+```
+
+硬边界：
+
+- 元数据状态、失败和重试不得阻止 Signal、买入、保护策略、平仓或结算。
+- Worker 每次只认领一个资产，不并发回填；GMGN 忙时直接跳过，不抢占交易容量。
+- EVM 地址按小写唯一，Solana 地址大小写敏感；不得跨链猜测或改链。
+- 只允许 GMGN `token/info`，不调用 RPC、Metaplex、合约 `name()/symbol()` 或其他 Provider 降级。
+- 429 按 GMGN `reset_at` 延后；没有 `reset_at` 时使用受限退避，不在同一轮继续请求。
+- 页面和 REST 查询只读 PostgreSQL，不直接调用 GMGN；Signal 与 Position 不维护两份元数据缓存。
+- GMGN 返回值只覆盖展示字段和缺失 decimals，不修改不可变 Signal snapshot，不替代成交 Order/Receipt 的结算事实。
+
 ### 5.5 使用 Migration `046` 扩展现有 outbox，统一可靠实时事件
 
 新增 `046_p27_reliable_notification_outbox.sql`，扩展现有 `notification_outbox`，不再创建第二张功能重复的事件表：
@@ -437,10 +466,11 @@ Trade Attempt list/detail 至少增加同源的：
 | Order 对账 | 未完成/不确定 Order Query 和 Receipt | 只查 due 对象，自适应退避 |
 | 保护策略对账 | chain + wallet 批量 Strategy Query | 去除 N+1，限制每周期 group，监控 backlog |
 | 独立 Research | 人工提交的 Token/Security/Pool/Market | 隔离权重，实盘 desired_running 时暂停 |
+| 共享展示元数据 | 缺失名称资产的单次 Token Info | 唯一 chain + CA、最低优先级、交易空闲后异步执行 |
 | 显式诊断 | 操作员确认的单链单次检查 | 不得由启动/页面隐式调用 |
 | Paper/Record | Mock/本地快照/数据库 | 禁止真实 GMGN write |
 
-买入热路径不调用 `token/info`；本地已有 decimals 可随 Signal snapshot 保存，但不作为展示名称门禁。成交精度以 GMGN Order/Report 和 Receipt 为准，缺失时进入对账/人工核查，不伪造 Lot。Gas/Quote/Security 只按链适配器和本次 Attempt 的实际必需项调用，不恢复全局预热；`token/info` 仅允许操作员显式只读诊断，并使用独立审计来源。
+买入热路径不调用 `token/info`；本地已有 decimals 可随 Signal snapshot 保存，但不作为展示名称门禁。成交精度以 GMGN Order/Report 和 Receipt 为准，缺失时进入对账/人工核查，不伪造 Lot。Gas/Quote/Security 只按链适配器和本次 Attempt 的实际必需项调用，不恢复全局预热。`token/info` 只允许操作员显式诊断或 `asset_metadata` 共享异步任务，二者必须使用独立审计来源；共享任务不得持有交易租约时运行。
 
 `readiness` 默认和 `arm/prepare` 必须固定 `probe=false`；显式诊断入口在请求前返回待探测 whitelist/chain 数量、预计 GMGN endpoint/weight 和冷却状态，用户二次确认后才执行。实盘 Engine armed 时继续拒绝诊断，且诊断不得自动递归到全部策略。
 
@@ -466,7 +496,7 @@ Trade Attempt list/detail 至少增加同源的：
 1. P26 未提交修改先形成独立可回归基线，P27 不与其混成一个提交。
 2. 提交按逻辑单元划分，不机械要求后端/前端/迁移/文档各一个；每个中间提交须可启动。
 3. 最终发布使用单一 release SHA，所有代码、构建、Migration manifest 和文档都来自该 SHA。
-4. 使用 5.2 的兼容 migration runner 和签署基线；服务器迁移必须按“044 -> 停止并导入/验证 P26 基线 -> 045 -> 046 -> 047”执行，禁止跳过 bootstrap 或自动接受 checksum 漂移。
+4. 使用 5.2 的兼容 migration runner 和签署基线；服务器迁移必须按“044 -> 停止并导入/验证 P26 基线 -> 045 -> 046 -> 047 -> 048 -> 049”执行，禁止跳过 bootstrap 或自动接受 checksum 漂移。
 5. 更新 `deploy/README.md` 的 Migration 范围和 P21 链路。
 6. 发布前做数据库备份和恢复演练；Migration 只做 additive，保证应用回滚兼容。
 7. 健康/版本接口输出 release SHA、process role、contract version 和 migration manifest 版本。
@@ -555,7 +585,7 @@ P27 完成后使用真实 6551 行为，观察工具只读证据，不伪造 Sig
 
 1. 冻结当前 P26 工作区，形成独立可回归 baseline，记录数据库、GMGN 审计和 Git SHA。
 2. 建立 DTO、WebSocket、GMGN reachability 和设计 token 基线测试。
-3. 实施 migration manifest `044` 并导入/验证签署的 P26 基线，再实施 additive Signal snapshot `045`、可靠 notification outbox 扩展 `046` 和可重跑的本地历史 backfill。
+3. 实施 migration manifest `044` 并导入/验证签署的 P26 基线，再实施 additive Signal snapshot `045`、可靠 notification outbox 扩展 `046`、可重跑的本地历史 backfill `047` 和共享 GMGN 元数据 `048-049`。
 4. 修复三策略元数据生产者、规范投影和按策略授权。
 5. 统一实时事件，前端切换 `p27.v1`，保留旧字段兼容。
 6. 收口前端设计系统、CSS token、utility、组件和可访问性。
@@ -567,7 +597,7 @@ P27 完成后使用真实 6551 行为，观察工具只读证据，不伪造 Sig
 ## 8. 不在 P27 中做的事
 
 - 不重新引入 GMGN 预热、Trenches 或买入前批量 Security/Pool。
-- 不为显示名称调用 GMGN。
+- 不在页面、Signal 创建、买入或平仓热路径中为显示名称调用 GMGN；仅允许缺失元数据的唯一 `chain + CA` 在交易空闲后执行异步单次 `token/info`。
 - 不以增加新门禁替代字段修复、幂等和证据核对。
 - 不删除交易历史、失败 Attempt、Order、Receipt、Lot 或审计日志。
 - 不把真实验收改成 Paper/Mock。
@@ -584,7 +614,7 @@ P27 完成后使用真实 6551 行为，观察工具只读证据，不伪造 Sig
 
 ## 10. 批准边界
 
-P27 v1.0 和 v1.1 不应按原文实施。本 v1.2 已纠正事实错误、迁移顺序和关联问题，可作为正式实施基线。
+P27 v1.0 和 v1.1 不应按原文实施。本 v1.3 已纠正事实错误、迁移顺序、共享元数据边界和关联问题，可作为正式实施基线。
 
 批准本方案只表示可开始按第 7 节更新代码，不表示 P27 已完成，也不表示服务器可同步。服务器同步必须等第 6.5 节全部通过。
 
@@ -592,10 +622,10 @@ P27 v1.0 和 v1.1 不应按原文实施。本 v1.2 已纠正事实错误、迁�
 
 已完成并有自动化证据：
 
-- Migration `044-047`、P26 签署 manifest、专用测试库 bootstrap/重跑脚本和 Schema audit。`047` 只通过原始 P20/P21 精确 Candidate 外键补齐历史名称，不按 CA 模糊关联，也不调用 GMGN/Grok。
+- Migration `044-049`、P26 签署 manifest、专用测试库 bootstrap/重跑脚本和 Schema audit。`047` 只通过原始 P20/P21 精确 Candidate 外键补齐历史名称；`048-049` 建立唯一 `chain + CA` 的共享 GMGN 元数据和缺失时入队规则。
 - Fixed/P20/P21 `strategy_type + asset_snapshot + authorization_snapshot` 生产者与 Position 复制。
 - Signal、Position、Attempt、Closed History/CSV 规范 projector，REST 为实体源，WebSocket 使用可靠 outbox 最小 envelope。
-- P20/P21 名称链路和缩短 CA fallback；不为显示名称调用 GMGN/Grok。
+- P20/P21 本地名称链路和缩短 CA fallback；本地仍缺名称时进入异步共享 GMGN `token/info`，不调用 Grok，不进入交易热路径。
 - 按策略批量授权投影、风险 warning/hard failure/execution blocker 分离。
 - 显式诊断 weight preview、二次确认、持久 Engine 状态拒绝和 Research 持久隔离。
 - Telegram escape、共享链浏览器、Robinhood Blockscout、CSV 注入防护。
@@ -603,9 +633,12 @@ P27 v1.0 和 v1.1 不应按原文实施。本 v1.2 已纠正事实错误、迁�
 - 生产 `GMGN_CREDENTIAL_PROFILE=primary` 强制检查、发布 allowlist、当前树和 Git 历史 Secret 审计；历史 P25 Live runner 已移除。
 - 业务库应用 `047` 前已完成只读预览：精确命中 Signal `816/817/819/821/829/832/833`，共 7 条 Signal 和 2 条 Position。迁移只补齐本地已有的 `name/symbol`，状态、CA、金额和交易凭证未改变；第二次运行 Migration 为零变更。
 - 已创建 Git 忽略目录中的 PostgreSQL custom-format 备份并验证 `pg_restore --list` 可读；备份 SHA-256 为 `D80B411707F220DF3A49B64614E4F4E3D955850A0157BFB7C7C9D85B5D7EE109`。隔离恢复库通过 `047` 和 Schema Audit，`schema_migrations`、KOL、白名单、Signal、Attempt、Order、Position、Lot 八张关键表行数与业务库一致。
-- 后端全量测试 `538/538`、前端 lint/build、生产只读 Schema Audit、Release Audit 和 `git diff --check` 均通过；Release Audit 扫描 469 个工作区文件、生成 262 个发布候选，失败 0。
+- 后端全量测试 `546/546`、独立数据库集成测试 `38/38`、前端 lint/build、Migration `000-049` 演练、生产只读 Schema Audit、Release Audit 和 `git diff --check` 均通过。
 - 11 个路由已在 `1440x900` 和 `390x844` 完成 DOM 回归：无根级横向溢出、异常文本或控制台错误；Signal 正确显示 `CASHCAT/STONKBROKER/MUMU/GTR`，无“未知代币”；交易详情具备 dialog 语义、初始焦点、Esc 关闭和完整 Tx Hash 换行。
-- 页面刷新 GMGN 审计以事件 ID 为边界，刷新 11 个路由后新增调用为 0。最近一小时 28 条调用全部为已有持仓的 `strategy_sync`，`429=0`、未知请求 0、未授权买入 0、重复 Swap 0。
+- 页面刷新 GMGN 审计以事件 ID 为边界；Signal/Position 各连续读取 5 次后新增调用为 0，热查询约为 Signal 8ms、Position 2-4ms。7 个唯一历史资产真实回填共调用 7 次 `token/info`，全部 HTTP 200、约 202-371ms、`429=0`、Swap 调用 0。
+- 保护策略 `strategy_batch_query` 在约 8 小时内记录 250 次，单分钟最高 3 次、最近 15 分钟 5 次，全部 HTTP 200、`429=0`。这是已有持仓的远端止盈止损状态同步，不是页面、启动、未触发策略或共享元数据产生的买入调用。
+- Signal 与 Position 已从同一 `asset_metadata` 显示 `CRUDECAT/NOVAAI`；两条历史误标 Base 的 Robinhood CA 在 Base 下返回空名称后保持失败状态，没有跨链猜测或 Provider 降级。
+- `/history` 已使用固定列宽、短标签/订单号/Tx Hash 单行展示和表内横向滚动；桌面 `1440x900` 与移动 `390x844` DOM 几何重叠均为 0。
 - 双角色 Supervisor 已用最终工作区代码重启，健康接口返回 `contract_version=p27.v1`、`event_contract_version=p27.events.v1`；启动和页面刷新未触发显式 GMGN 诊断。
 - 健康接口已将当前运行 `release_sha` 与 P26 `migration_manifest.release_sha` 分离；本地未显式设置发布 SHA 时返回 `release_sha=null`，服务器必须注入本次发布 commit，不能把 P26 迁移基线误报成 P27 运行版本。
 
@@ -614,5 +647,7 @@ P27 v1.0 和 v1.1 不应按原文实施。本 v1.2 已纠正事实错误、迁�
 - P26 binary 已证明能在 P27 Schema 上启动、只读和处理空队列恢复，但未用旧 binary 对真实活跃仓位执行平仓写操作。该动作可能触碰生产钱包，不作为本地自动回归冒险执行；事故回滚时必须先暂停新买入并按受控清单逐项验收。
 - P27 最终代码下 Fixed/P20/P21 各一条真实 6551 事件的买入与平仓闭环。
 - 对话中曾展示过的 GMGN Key 在服务器同步前轮换，并验证生产/测试 profile 隔离。
+- 当前分支最新 P27 共享元数据与 History 修复仍在工作区，尚未形成唯一 release commit；本地分支另有 3 个提交尚未推送。GitHub `codex/p26-production-hardening` 当前仍停在 `5a6d326`。
+- `https://xiexiu.io/xbot/api/health` 当前可访问，但未返回 P27 的 `contract_version`、`event_contract_version` 和 `release_sha`，因此服务器不得标记为已部署 P27。
 
-因此，P27 代码更新、数据库迁移和自动回归已经完成；P27 发布验收尚未完成。下一阶段只能进行三策略真实小额闭环和凭据轮换，未完成前不得生成服务器最终发布结论或同步服务器。
+因此，P27 本地代码更新、数据库迁移和自动回归已经完成；GitHub 发布、Secret 轮换和 xiexiu 服务器部署尚未完成。下一阶段必须先形成并推送唯一 release commit，再按 `044-049` 备份/迁移/只读审计流程部署服务器；不得把本地运行状态表述为服务器已更新。

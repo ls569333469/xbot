@@ -200,8 +200,8 @@ export default function TradeLog() {
       )}
 
       {loading ? <TableSkeleton rows={6} cols={10} /> : (
-        <div className="table-container">
-          <table className="table">
+        <div className="table-container trade-attempt-table-container">
+          <table className="table trade-attempt-table">
             <thead><tr>
               <th>Intent / Attempt</th><th>链</th><th>方向</th><th>状态</th><th>重试</th>
               <th>本金 / 费用</th><th>订单</th><th>查询阶段</th><th>交易哈希</th><th></th>
@@ -213,34 +213,34 @@ export default function TradeLog() {
                 const url = attempt.tx_hash ? explorerUrl(attempt.chain, 'transaction', attempt.tx_hash) : null;
                 return (
                   <tr key={attempt.id}>
-                    <td className="font-mono text-xs">
+                    <td className="font-mono text-xs trade-attempt-identity">
                       <div>Intent #{attempt.intent_id}</div>
                       <div className="text-secondary">Attempt {attempt.attempt_no} · 记录 #{attempt.id}</div>
                     </td>
-                    <td><ChainIcon chain={attempt.chain} size="sm" /></td>
-                    <td className="font-mono text-sm">{sideLabel(attempt.side)}</td>
-                    <td>
+                    <td className="trade-attempt-nowrap"><ChainIcon chain={attempt.chain} size="sm" /></td>
+                    <td className="font-mono text-sm trade-attempt-nowrap">{sideLabel(attempt.side)}</td>
+                    <td className="trade-attempt-status">
                       <span className={attempt.requires_manual_review ? 'text-danger' : 'text-strong'}>{statusLabel(attempt.status)}</span>
                       <div className="text-xs text-secondary">Intent: {statusLabel(attempt.intent_status)}</div>
-                      {(attempt.error_code || attempt.failure_class) && <div className="text-xs text-danger font-mono">{attempt.error_code || attempt.failure_class}</div>}
+                      {(attempt.error_code || attempt.failure_class) && <div className="text-xs text-danger font-mono trade-attempt-error">{attempt.error_code || attempt.failure_class}</div>}
                     </td>
-                    <td className="text-xs">
+                    <td className="text-xs trade-attempt-retry">
                       <div>第 {attempt.attempt_no} 次提交</div>
                       <div className="text-secondary">剩余 {remaining} 次</div>
                       {attempt.next_retry_at && <div className="font-mono">{new Date(attempt.next_retry_at).toLocaleTimeString()}</div>}
                     </td>
-                    <td className="font-mono text-xs">
+                    <td className="font-mono text-xs trade-attempt-amount">
                       <div>{numberLabel(attempt.principal_reserved_native)} {symbol}</div>
                       <div className="text-secondary">费用 {numberLabel(attempt.fee_used_native)} / {numberLabel(attempt.retry_fee_envelope_native)}</div>
                     </td>
-                    <td>
+                    <td className="trade-attempt-order">
                       <span className="text-sm">{attempt.order_status ? statusLabel(attempt.order_status) : '未生成'}</span>
                       <button type="button" className="inline-link text-xs font-mono" title={attempt.provider_order_id}
                         style={{ border: 0, padding: 0, background: 'transparent', cursor: 'pointer', display: 'block' }}
                         onClick={() => void openDetail(attempt.id)}>{short(attempt.provider_order_id)}</button>
                     </td>
-                    <td className="font-mono text-xs">{queryStageLabel(attempt.query_stage)}<div className="text-secondary">{attempt.query_count || 0} 次</div></td>
-                    <td>
+                    <td className="font-mono text-xs trade-attempt-query">{queryStageLabel(attempt.query_stage)}<div className="text-secondary">{attempt.query_count || 0} 次</div></td>
+                    <td className="trade-attempt-hash">
                       {attempt.tx_hash && url ? <a className="inline-link font-mono text-xs flex items-center gap-xs" href={url} target="_blank" rel="noreferrer">{short(attempt.tx_hash)} <ExternalLink size={12} /></a> : short(attempt.tx_hash)}
                     </td>
                     <td><button className="btn btn-secondary" title="订单详情" onClick={() => void openDetail(attempt.id)}><Search size={15} /></button></td>

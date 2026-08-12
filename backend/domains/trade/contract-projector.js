@@ -23,17 +23,21 @@ function shortenedAddress(value) {
 function asset(row = {}) {
   const snapshot = row.asset_snapshot && typeof row.asset_snapshot === 'object'
     ? row.asset_snapshot : {};
-  const symbol = text(snapshot.symbol ?? row.symbol);
-  const name = text(snapshot.name ?? row.project_name);
+  const gmgnSymbol = text(row.gmgn_asset_symbol);
+  const gmgnName = text(row.gmgn_asset_name);
+  const symbol = gmgnSymbol || text(snapshot.symbol ?? row.symbol);
+  const name = gmgnName || text(snapshot.name ?? row.project_name);
   const contractAddress = text(snapshot.contract_address ?? row.contract_address
     ?? row.output_token ?? row.input_token);
-  const metadataSource = snapshot.snapshot_version
+  const metadataSource = gmgnSymbol || gmgnName || text(row.gmgn_asset_logo_url)
+    ? 'gmgn_shared'
+    : snapshot.snapshot_version
     ? 'signal_snapshot'
     : symbol || name ? 'whitelist' : 'address_fallback';
   return {
     symbol,
     name,
-    logo_url: text(snapshot.logo_url ?? row.logo_url),
+    logo_url: text(row.gmgn_asset_logo_url) || text(snapshot.logo_url ?? row.logo_url),
     display_label: symbol || name || shortenedAddress(contractAddress),
     metadata_source: metadataSource
   };
@@ -96,8 +100,9 @@ function projectSignal(row, currentProjection = { status: 'unknown', blockers: [
     project_name: projectedAsset.name,
     asset: projectedAsset,
     settlement: {
-      token_decimals: row.output_decimals ?? null,
-      source: row.output_decimals != null ? 'order_report' : 'unavailable'
+      token_decimals: row.output_decimals ?? row.gmgn_asset_decimals ?? null,
+      source: row.output_decimals != null ? 'order_report'
+        : row.gmgn_asset_decimals != null ? 'gmgn_shared' : 'unavailable'
     },
     project: {
       name: projectedAsset.name,
