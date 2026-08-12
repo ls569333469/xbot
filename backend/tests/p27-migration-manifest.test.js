@@ -56,6 +56,9 @@ test('P27 migrations remain additive and install snapshots plus reliable outbox 
   const migration046 = fs.readFileSync(path.join(
     backendRoot, 'db/migrations/046_p27_reliable_notification_outbox.sql'
   ), 'utf8');
+  const migration047 = fs.readFileSync(path.join(
+    backendRoot, 'db/migrations/047_p27_local_candidate_metadata_backfill.sql'
+  ), 'utf8');
   assert.match(migration044, /release_migration_manifests/i);
   assert.match(migration044, /checksum_sha256/i);
   assert.match(migration045, /asset_snapshot/i);
@@ -64,7 +67,11 @@ test('P27 migrations remain additive and install snapshots plus reliable outbox 
   assert.match(migration046, /channel IN \('alert','entity_event'\)/i);
   assert.match(migration046, /locked_at/i);
   assert.match(migration046, /dedupe_key/i);
-  for (const sql of [migration044, migration045, migration046]) {
+  assert.match(migration047, /matched_dynamic_resolution_id/i);
+  assert.match(migration047, /follow_discovery_event_id/i);
+  assert.match(migration047, /historical_candidate_backfill/i);
+  assert.doesNotMatch(migration047, /gmgn|grok|token\/info|security|pool_info/i);
+  for (const sql of [migration044, migration045, migration046, migration047]) {
     assert.doesNotMatch(sql, /DROP TABLE|DROP COLUMN|TRUNCATE/i);
   }
 });

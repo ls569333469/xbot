@@ -240,9 +240,12 @@ async function resolveFollowEvent(event, dependencies = {}) {
   };
   const candidateAudit = [selected];
   const personnelAssociation = relatedAccounts.length > 0 && personnel;
+  const projectAccount = relatedAccounts[0] || null;
   return {
     profile: { handle: normalizeXHandle(event.target_handle), id: String(event.target_user_id),
-      classification, research_summary: research.summary },
+      classification, research_summary: research.summary,
+      project_name: projectAccount?.profile?.name || research.project_name || null,
+      project_handle: projectAccount?.handle || normalizeXHandle(event.target_handle) },
     relatedAccounts: relatedAccounts.map((account) => ({
       handle: account.handle, profile: account.profile, classification: account.classification,
       relationship: account.relationship

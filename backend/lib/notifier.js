@@ -1,4 +1,14 @@
 const logger = require('./logger');
+const { explorerUrl } = require('./chain-config');
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
 
 class Notifier {
   constructor() {
@@ -43,31 +53,29 @@ class Notifier {
   }
 
   getChainExplorerLink(chain, address) {
-    const explorerMap = {
-      sol: `https://solscan.io/token/${address}`,
-      bsc: `https://bscscan.com/token/${address}`,
-      base: `https://basescan.org/token/${address}`,
-      eth: `https://etherscan.io/token/${address}`
-    };
-    return explorerMap[chain] || `https://solscan.io/token/${address}`;
+    return explorerUrl(chain, 'address', address);
   }
 
   tradeExecuted(position) {
     logger.info('notifier', `Trade executed: ${position.contract_address} on ${position.chain_id}`);
     
-    const explorerUrl = this.getChainExplorerLink(position.chain_id, position.contract_address);
+    const assetUrl = this.getChainExplorerLink(position.chain_id, position.contract_address);
     const amountIn = Number(position.amount_in).toFixed(4);
     const entryPrice = position.entry_price ? Number(position.entry_price).toFixed(6) : '-';
+    const chain = escapeHtml(String(position.chain_id || '').toUpperCase());
+    const explorerLine = assetUrl
+      ? `🔗 <b>区块浏览器：</b><a href="${escapeHtml(assetUrl)}">查看代币详情</a>`
+      : '🔗 <b>区块浏览器：</b><code>当前链未配置浏览器</code>';
     
     const text = `
 🟢 <b>[xbot] 交易开仓成功通知</b>
 ------------------------------------
-🪙 <b>代币：</b><code>${position.symbol || 'Unknown'}</code> on <b>${position.chain_id.toUpperCase()}</b>
-📝 <b>合约：</b><code>${position.contract_address}</code>
-💰 <b>投入额：</b><code>${amountIn} ${position.chain_id.toUpperCase() === 'SOL' ? 'SOL' : position.chain_id.toUpperCase() === 'BSC' ? 'BNB' : 'ETH'}</code>
+🪙 <b>代币：</b><code>${escapeHtml(position.symbol || 'Unknown')}</code> on <b>${chain}</b>
+📝 <b>合约：</b><code>${escapeHtml(position.contract_address)}</code>
+💰 <b>投入额：</b><code>${amountIn} ${chain === 'SOL' ? 'SOL' : chain === 'BSC' ? 'BNB' : 'ETH'}</code>
 📊 <b>开仓价格：</b><code>$${entryPrice}</code>
 🎯 <b>止盈止损：</b><code>+${position.tp_pct}% / -${position.sl_pct}%</code>
-🔗 <b>区块浏览器：</b><a href="${explorerUrl}">查看代币详情</a>
+${explorerLine}
     `.trim();
 
     this.sendTelegramMessage(text);
@@ -79,11 +87,11 @@ class Notifier {
     const text = `
 🔴 <b>[xbot] 交易开仓失败警告</b>
 ------------------------------------
-⚠️ <b>信号 ID：</b><code>${signal.id}</code>
-🪙 <b>代币：</b><code>${signal.symbol || 'Unknown'}</code> on <b>${signal.chain_id?.toUpperCase()}</b>
-📝 <b>合约：</b><code>${signal.contract_address}</code>
-🔍 <b>触发源：</b>@${signal.kol_handle} (${signal.signal_type})
-❌ <b>错误原因：</b><code>${error.message}</code>
+⚠️ <b>信号 ID：</b><code>${escapeHtml(signal.id)}</code>
+🪙 <b>代币：</b><code>${escapeHtml(signal.symbol || 'Unknown')}</code> on <b>${escapeHtml(String(signal.chain_id || '').toUpperCase())}</b>
+📝 <b>合约：</b><code>${escapeHtml(signal.contract_address)}</code>
+🔍 <b>触发源：</b>@${escapeHtml(signal.kol_handle)} (${escapeHtml(signal.signal_type)})
+❌ <b>错误原因：</b><code>${escapeHtml(error.message)}</code>
     `.trim();
 
     this.sendTelegramMessage(text);
@@ -98,8 +106,8 @@ class Notifier {
     const text = `
 🎯 <b>[xbot] Take Profit (止盈) 触发通知</b>
 ------------------------------------
-🪙 <b>代币：</b><code>${position.symbol || 'Unknown'}</code> on <b>${position.chain_id.toUpperCase()}</b>
-📝 <b>合约：</b><code>${position.contract_address}</code>
+🪙 <b>代币：</b><code>${escapeHtml(position.symbol || 'Unknown')}</code> on <b>${escapeHtml(String(position.chain_id || '').toUpperCase())}</b>
+📝 <b>合约：</b><code>${escapeHtml(position.contract_address)}</code>
 💰 <b>止盈价格：</b><code>$${Number(position.exit_price || 0).toFixed(6)}</code>
 💵 <b>实际盈亏：</b><code>+${pnl} (和入场价比)</code>
 📈 <b>实现收益比率：</b><code>+${pnlPct}%</code>
@@ -118,8 +126,8 @@ class Notifier {
     const text = `
 🛑 <b>[xbot] Stop Loss (止损) 触发通知</b>
 ------------------------------------
-🪙 <b>代币：</b><code>${position.symbol || 'Unknown'}</code> on <b>${position.chain_id.toUpperCase()}</b>
-📝 <b>合约：</b><code>${position.contract_address}</code>
+🪙 <b>代币：</b><code>${escapeHtml(position.symbol || 'Unknown')}</code> on <b>${escapeHtml(String(position.chain_id || '').toUpperCase())}</b>
+📝 <b>合约：</b><code>${escapeHtml(position.contract_address)}</code>
 💰 <b>止损价格：</b><code>$${Number(position.exit_price || 0).toFixed(6)}</code>
 💵 <b>实际盈亏：</b><code>${pnl}</code>
 📉 <b>亏损比率：</b><code>${pnlPct}%</code>
@@ -135,7 +143,7 @@ class Notifier {
     const text = `
 ⚠️ <b>[xbot] 预算警告通知</b>
 ------------------------------------
-⛓️ <b>链：</b><code>${chain.toUpperCase()}</code>
+⛓️ <b>链：</b><code>${escapeHtml(String(chain || '').toUpperCase())}</code>
 📊 <b>状态：</b>已消耗每日限额额度的 <b>${pct.toFixed(1)}%</b>
 💡 <i>建议：请及时核算今日策略命中率或补充每日预算限额配置。</i>
     `.trim();
@@ -149,14 +157,17 @@ class Notifier {
     const text = `
 🔍 <b>[xbot] 信号匹配命记录</b>
 ------------------------------------
-👤 <b>KOL：</b>@${signal.kol_handle} (权重: ${signal.kol_weight})
-⚡ <b>匹配模式：</b><code>${signal.signal_type}</code>
-📝 <b>合约：</b><code>${signal.contract_address}</code>
-🏷️ <b>匹配细节：</b><code>${signal.match_detail || '-'}</code>
+👤 <b>KOL：</b>@${escapeHtml(signal.kol_handle)} (权重: ${escapeHtml(signal.kol_weight)})
+⚡ <b>匹配模式：</b><code>${escapeHtml(signal.signal_type)}</code>
+📝 <b>合约：</b><code>${escapeHtml(signal.contract_address)}</code>
+🏷️ <b>匹配细节：</b><code>${escapeHtml(signal.match_detail || '-')}</code>
     `.trim();
 
     this.sendTelegramMessage(text);
   }
 }
 
-module.exports = new Notifier();
+const notifier = new Notifier();
+module.exports = notifier;
+module.exports.Notifier = Notifier;
+module.exports.escapeHtml = escapeHtml;

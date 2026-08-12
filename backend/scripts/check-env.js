@@ -7,7 +7,10 @@ const {
   legacyShadowEnabled,
   legacyXProvidersEnabled
 } = require('../lib/legacy-features');
-const { getGmgnCredentials } = require('../lib/gmgn-credentials');
+const {
+  assertCredentialProfileForEnvironment,
+  getGmgnCredentials
+} = require('../lib/gmgn-credentials');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
@@ -48,6 +51,7 @@ function checkVars() {
     throw new Error('Production requires separate --role=ingestion and --role=execution processes.');
   }
 
+  assertCredentialProfileForEnvironment(process.env);
   const credentials = getGmgnCredentials();
   const apiKey = credentials.apiKey;
   const privateKey = credentials.privateKey;

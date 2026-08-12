@@ -1,0 +1,7 @@
+{
+  "sol": { "address": "https://solscan.io/token/{value}", "transaction": "https://solscan.io/tx/{value}" },
+  "bsc": { "address": "https://bscscan.com/token/{value}", "transaction": "https://bscscan.com/tx/{value}" },
+  "base": { "address": "https://basescan.org/token/{value}", "transaction": "https://basescan.org/tx/{value}" },
+  "eth": { "address": "https://etherscan.io/token/{value}", "transaction": "https://etherscan.io/tx/{value}" },
+  "robinhood": { "address": "https://robinhoodchain.blockscout.com/address/{value}", "transaction": "https://robinhoodchain.blockscout.com/tx/{value}" }
+}

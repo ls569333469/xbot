@@ -44,8 +44,8 @@ test('independent whitelist budgets are not blocked by removed chain or global l
       ids.activities.push(activity.rows[0].id);
       const signal = await db.query(
         `INSERT INTO trade_signals(activity_id, whitelist_id, kol_id, kol_handle,
-          signal_type, execution_mode, status, matched_relation_ids)
-         VALUES ($1,$2,$3,$4,'ca_mention','live','recorded',ARRAY[1]::bigint[]) RETURNING id`,
+          signal_type, execution_mode, status, matched_relation_ids, strategy_type)
+         VALUES ($1,$2,$3,$4,'ca_mention','live','recorded',ARRAY[1]::bigint[],'fixed_ca') RETURNING id`,
         [activity.rows[0].id, whitelist.rows[0].id, ids.kol, `p9budget${suffix}`]
       );
       ids.signals.push(signal.rows[0].id);
@@ -108,8 +108,8 @@ test('whitelist budget compares principal while reserving fees separately', asyn
     )).rows[0].id;
     ids.signal = (await db.query(
       `INSERT INTO trade_signals(activity_id, whitelist_id, kol_id, kol_handle,
-        signal_type, execution_mode, status, matched_relation_ids)
-       VALUES ($1,$2,$3,$4,'handle_match','live','recorded',ARRAY[1]::bigint[]) RETURNING id`,
+        signal_type, execution_mode, status, matched_relation_ids, strategy_type)
+       VALUES ($1,$2,$3,$4,'handle_match','live','recorded',ARRAY[1]::bigint[],'fixed_ca') RETURNING id`,
       [ids.activity, ids.whitelist, ids.kol, `p11fee${suffix}`]
     )).rows[0].id;
 

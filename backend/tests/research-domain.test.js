@@ -19,9 +19,11 @@ const {
 const { candidateEvidenceSnapshot, upsertActorCandidate } = require('../domains/research/service');
 const {
   engineAllowsResearch,
+  persistedEngineAllowsResearch,
   ResearchQueue,
   schedulerAllowsResearch
 } = require('../domains/research/queue');
+const { diagnosticPreview } = require('../domains/trade/readiness-service');
 
 test('research queue stays out of GMGN while live execution is armed', () => {
   assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
@@ -47,6 +49,26 @@ test('research queue cannot claim work during desired live recovery windows', as
     getArmed: () => false,
     getStatus: () => ({ desiredRunning: false, status: 'stopped' })
   }), true);
+});
+
+test('research queue reads shared persisted live intent before claiming work', async () => {
+  const stoppedDb = {
+    query: async () => ({ rows: [{ value_json: { desired_running: false, status: 'stopped' } }] })
+  };
+  const runningDb = {
+    query: async () => ({ rows: [{ value_json: { desired_running: true, status: 'recovering' } }] })
+  };
+  assert.equal(await persistedEngineAllowsResearch(stoppedDb), true);
+  assert.equal(await persistedEngineAllowsResearch(runningDb), false);
+});
+
+test('diagnostic preview is deterministic and exposes exact expected GMGN weight', () => {
+  const preview = diagnosticPreview({ chain: 'robinhood', whitelistIds: [9, 9, 4] });
+  assert.deepEqual(preview.whitelist_ids, [9, 4]);
+  assert.equal(preview.whitelist_count, 2);
+  assert.equal(preview.estimated_weight, 6);
+  assert.equal(typeof preview.preview_hash, 'string');
+  assert.equal(preview.preview_hash.length, 64);
 });
 
 test('server starts the research queue only after persisted engine recovery completes', () => {

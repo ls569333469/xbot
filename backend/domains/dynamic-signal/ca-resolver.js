@@ -237,8 +237,7 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
   if (typeof verifier !== 'function') {
     const policy = applyResolutionPolicy(candidates, {
       extraction: resolutionExtraction,
-      allowedChains,
-      allowDeterministicLocalCandidate: true
+      allowedChains
     });
     return {
       ...base,
@@ -247,7 +246,9 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
       candidateCoverage: {
         ...indexResult.coverage,
         candidate_count: candidates.length,
-        provider_verified_count: 0,
+        provider_verified_count: candidates.filter(
+          (candidate) => candidate.providerStatus === 'verified'
+        ).length,
         local_event_ca_count: candidates.filter((candidate) => candidate.localEventCa).length
       },
       timing: { total_ms: Date.now() - startedAt }

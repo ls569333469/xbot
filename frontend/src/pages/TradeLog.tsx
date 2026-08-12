@@ -1,24 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ExternalLink, RefreshCw, RotateCcw, Search, ShieldAlert, Unlock, X } from 'lucide-react';
 import { api } from '../lib/api';
 import type {
-  ChainTradeCircuit, TradeAttempt, TradeAttemptDetails,
-  TradeRetryRuntime, WalletWriteLane
+  ChainTradeCircuit, EntityId, TradeAttempt, TradeAttemptDetails,
+  TradeOrderRecord, TradeRetryRuntime, WalletWriteLane
 } from '../lib/types';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { TableSkeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/ToastContext';
+import { useWebSocket } from '../hooks/useWebSocket';
 import { queryStageLabel, sideLabel, statusLabel } from '../lib/display-labels';
-
-function explorerUrl(chain: string, hash: string) {
-  const base: Record<string, string> = {
-    sol: 'https://solscan.io/tx/',
-    bsc: 'https://bscscan.com/tx/',
-    base: 'https://basescan.org/tx/',
-    eth: 'https://etherscan.io/tx/'
-  };
-  return base[chain] ? `${base[chain]}${hash}` : null;
-}
+import { explorerUrl } from '../lib/chain-explorers';
 
 function short(value?: string | null) {
   if (!value) return '-';
@@ -43,8 +35,9 @@ function numberLabel(value?: string | number | null) {
   return Number.isFinite(number) ? number.toLocaleString('en-US', { maximumFractionDigits: 9 }) : String(value);
 }
 
-function pollingIntervalLabel(order: Record<string, any>) {
-  if (['confirmed', 'failed', 'expired'].includes(order.normalized_status)) return '已停止查询';
+function pollingIntervalLabel(order: TradeOrderRecord) {
+  const status = order.normalized_status || '';
+  if (['confirmed', 'failed', 'expired'].includes(status)) return '已停止查询';
   if (order.normalized_status === 'definitive_failed_no_fill') return '15-30 分钟终态审计';
   if (order.last_queried_at && order.next_query_at) {
     const seconds = Math.max(0, Math.round(
@@ -55,13 +48,13 @@ function pollingIntervalLabel(order: Record<string, any>) {
   return '等待首次查询';
 }
 
-function JsonSection({ title, rows }: { title: string; rows?: Array<Record<string, unknown>> }) {
+function JsonSection({ title, rows }: { title: string; rows?: object[] }) {
   if (!rows?.length) return null;
   return (
-    <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+    <div className="section-divider-top">
       <span className="text-xs text-secondary">{title}</span>
       {rows.map((row, index) => (
-        <pre key={String(row.id || `${title}-${index}`)} className="font-mono text-xs"
+        <pre key={String(Reflect.get(row, 'id') || `${title}-${index}`)} className="font-mono text-xs"
           style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', padding: '10px 0' }}>
           {JSON.stringify(row, null, 2)}
         </pre>
@@ -75,12 +68,14 @@ export default function TradeLog() {
   const [runtime, setRuntime] = useState<TradeRetryRuntime | null>(null);
   const [lanes, setLanes] = useState<WalletWriteLane[]>([]);
   const [loading, setLoading] = useState(true);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<EntityId | null>(null);
   const [selected, setSelected] = useState<TradeAttemptDetails | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const detailCloseRef = useRef<HTMLButtonElement>(null);
   const { toast } = useToast();
+  const { lastEvent } = useWebSocket();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -97,11 +92,26 @@ export default function TradeLog() {
 
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
+    if (lastEvent?.type === 'entity:changed'
+        && ['attempt', 'order', 'position'].includes(lastEvent.payload.entity_type || '')) {
+      void refresh();
+    }
+  }, [lastEvent, refresh]);
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (detailId === null) return;
+    detailCloseRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDetailId(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [detailId]);
 
-  const openDetail = async (id: string) => {
+  const openDetail = async (id: EntityId) => {
     setDetailId(id);
     setSelected(null);
     setDetailLoading(true);
@@ -146,10 +156,10 @@ export default function TradeLog() {
     <div className="flex flex-col gap-lg">
       <div className="flex justify-between items-center" style={{ flexWrap: 'wrap', gap: '12px' }}>
         <div className="flex gap-md text-sm text-secondary" style={{ flexWrap: 'wrap' }}>
-          <span>交易尝试 <strong className="text-white">{attempts.length}</strong></span>
-          <span>待核对 <strong className="text-white">{attempts.filter(item => ['submitted', 'confirming', 'submission_uncertain', 'failure_verifying'].includes(item.status)).length}</strong></span>
+          <span>交易尝试 <strong className="text-strong">{attempts.length}</strong></span>
+          <span>待核对 <strong className="text-strong">{attempts.filter(item => ['submitted', 'confirming', 'submission_uncertain', 'failure_verifying'].includes(item.status)).length}</strong></span>
           <span>待重试 <strong className="text-warning">{runtime?.backlog.reduce((sum, row) => sum + Number(row.count), 0) || 0}</strong></span>
-          <span>扫描 / 恢复 <strong className="text-white">{runtime ? `${runtime.scanIntervalMs}ms / ${runtime.maintenanceIntervalMs / 1000}s` : '-'}</strong></span>
+          <span>扫描 / 恢复 <strong className="text-strong">{runtime ? `${runtime.scanIntervalMs}ms / ${runtime.maintenanceIntervalMs / 1000}s` : '-'}</strong></span>
           <span>钱包隔离 <strong className="text-danger">{quarantinedLanes.length}</strong></span>
           <span>链熔断 <strong className="text-danger">{trippedCircuits.length}</strong></span>
         </div>
@@ -200,7 +210,7 @@ export default function TradeLog() {
               {attempts.map(attempt => {
                 const remaining = Math.max(0, Number(attempt.max_retries || 0) - Number(attempt.retry_count || 0));
                 const symbol = nativeSymbol(attempt.chain);
-                const url = attempt.tx_hash ? explorerUrl(attempt.chain, attempt.tx_hash) : null;
+                const url = attempt.tx_hash ? explorerUrl(attempt.chain, 'transaction', attempt.tx_hash) : null;
                 return (
                   <tr key={attempt.id}>
                     <td className="font-mono text-xs">
@@ -210,7 +220,7 @@ export default function TradeLog() {
                     <td><ChainIcon chain={attempt.chain} size="sm" /></td>
                     <td className="font-mono text-sm">{sideLabel(attempt.side)}</td>
                     <td>
-                      <span className={attempt.requires_manual_review ? 'text-danger' : 'text-white'}>{statusLabel(attempt.status)}</span>
+                      <span className={attempt.requires_manual_review ? 'text-danger' : 'text-strong'}>{statusLabel(attempt.status)}</span>
                       <div className="text-xs text-secondary">Intent: {statusLabel(attempt.intent_status)}</div>
                       {(attempt.error_code || attempt.failure_class) && <div className="text-xs text-danger font-mono">{attempt.error_code || attempt.failure_class}</div>}
                     </td>
@@ -225,19 +235,19 @@ export default function TradeLog() {
                     </td>
                     <td>
                       <span className="text-sm">{attempt.order_status ? statusLabel(attempt.order_status) : '未生成'}</span>
-                      <button type="button" className="text-xs text-accent font-mono" title={attempt.provider_order_id}
+                      <button type="button" className="inline-link text-xs font-mono" title={attempt.provider_order_id}
                         style={{ border: 0, padding: 0, background: 'transparent', cursor: 'pointer', display: 'block' }}
                         onClick={() => void openDetail(attempt.id)}>{short(attempt.provider_order_id)}</button>
                     </td>
                     <td className="font-mono text-xs">{queryStageLabel(attempt.query_stage)}<div className="text-secondary">{attempt.query_count || 0} 次</div></td>
                     <td>
-                      {attempt.tx_hash && url ? <a className="text-accent font-mono text-xs flex items-center gap-xs" href={url} target="_blank" rel="noreferrer">{short(attempt.tx_hash)} <ExternalLink size={12} /></a> : short(attempt.tx_hash)}
+                      {attempt.tx_hash && url ? <a className="inline-link font-mono text-xs flex items-center gap-xs" href={url} target="_blank" rel="noreferrer">{short(attempt.tx_hash)} <ExternalLink size={12} /></a> : short(attempt.tx_hash)}
                     </td>
                     <td><button className="btn btn-secondary" title="订单详情" onClick={() => void openDetail(attempt.id)}><Search size={15} /></button></td>
                   </tr>
                 );
               })}
-              {attempts.length === 0 && <tr><td colSpan={10} className="text-center text-secondary" style={{ padding: '48px' }}>暂无交易尝试记录</td></tr>}
+              {attempts.length === 0 && <tr><td colSpan={10} className="table-empty text-secondary">暂无交易尝试记录</td></tr>}
             </tbody>
           </table>
         </div>
@@ -245,10 +255,12 @@ export default function TradeLog() {
 
       {detailId && (
         <div className="modal-overlay" onMouseDown={() => setDetailId(null)}>
-          <div className="modal-content" onMouseDown={event => event.stopPropagation()}>
-            <div className="flex justify-between items-center border-b p-md" style={{ borderColor: 'var(--color-border)' }}>
-              <strong>交易 Intent {selected ? `#${selected.intent_id} · Attempt ${selected.attempt_no}` : `· 记录 #${detailId}`}</strong>
-              <button className="btn btn-secondary" title="关闭" onClick={() => setDetailId(null)}><X size={16} /></button>
+          <div className="modal-content" role="dialog" aria-modal="true" aria-labelledby="trade-attempt-dialog-title"
+            onMouseDown={event => event.stopPropagation()}>
+            <div className="attempt-drawer-header">
+              <strong id="trade-attempt-dialog-title">交易 Intent {selected ? `#${selected.intent_id} · Attempt ${selected.attempt_no}` : `· 记录 #${detailId}`}</strong>
+              <button ref={detailCloseRef} className="btn btn-secondary" title="关闭" aria-label="关闭交易详情"
+                onClick={() => setDetailId(null)}><X size={16} /></button>
             </div>
             <div className="p-md flex flex-col gap-md">
               {detailLoading || !selected ? <div className="text-secondary">加载中...</div> : (
@@ -261,7 +273,7 @@ export default function TradeLog() {
                     <div><span className="text-xs text-secondary">失败分类</span><div className="font-mono text-xs">{selected.failure_class || selected.error_code || '-'}</div></div>
                     <div><span className="text-xs text-secondary">创建时间</span><div className="font-mono text-xs">{new Date(selected.created_at).toLocaleString()}</div></div>
                   </div>
-                  <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+                  <div className="section-divider-top">
                     <span className="text-xs text-secondary">资金预留</span>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginTop: '8px' }}>
                       <div><span className="text-xs text-secondary">本金</span><div className="font-mono text-sm">{numberLabel(selected.budget_reservation?.amount_native)} {nativeSymbol(selected.chain)}</div></div>
@@ -270,12 +282,12 @@ export default function TradeLog() {
                       <div><span className="text-xs text-secondary">费用升档</span><div className="font-mono text-sm">Level {selected.fee_escalation_level || 0}</div></div>
                     </div>
                   </div>
-                  <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+                  <div className="section-divider-top">
                     <span className="text-xs text-secondary">交易订单</span>
-                    {selected.orders.map((order: Record<string, any>) => {
-                      const url = order.tx_hash ? explorerUrl(selected.chain, order.tx_hash) : null;
+                    {selected.orders.map((order) => {
+                      const url = order.tx_hash ? explorerUrl(selected.chain, 'transaction', String(order.tx_hash)) : null;
                       return (
-                        <div key={order.id} className="border-t py-sm" style={{ borderColor: 'var(--color-border)' }}>
+                        <div key={order.id} className="section-row">
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
                             <div><span className="text-xs text-secondary">订单编号</span><div className="font-mono text-xs" style={{ overflowWrap: 'anywhere' }}>{order.provider_order_id || '-'}</div></div>
                             <div><span className="text-xs text-secondary">年龄</span><div className="font-mono text-xs">{ageLabel(order.submitted_at, now)}</div></div>
@@ -283,22 +295,22 @@ export default function TradeLog() {
                             <div><span className="text-xs text-secondary">当前间隔</span><div className="font-mono text-xs">{pollingIntervalLabel(order)}</div></div>
                             <div><span className="text-xs text-secondary">查询次数</span><div className="font-mono text-xs">{order.query_count || 0}</div></div>
                           </div>
-                          {order.tx_hash && url && <a className="text-accent font-mono text-xs flex items-center gap-xs mt-1" href={url} target="_blank" rel="noreferrer">{order.tx_hash} <ExternalLink size={12} /></a>}
+                          {order.tx_hash && url && <a className="inline-link font-mono text-xs flex items-center gap-xs detail-link" href={url} target="_blank" rel="noreferrer">{order.tx_hash} <ExternalLink size={12} /></a>}
                         </div>
                       );
                     })}
                   </div>
-                  <JsonSection title="失败证据（追加式）" rows={selected.failure_evidence as unknown as Array<Record<string, unknown>>} />
-                  <JsonSection title="重试决策（追加式）" rows={selected.retry_decisions as unknown as Array<Record<string, unknown>>} />
-                  <JsonSection title="晚到成交 / 多重成交事故" rows={selected.reconciliation_incidents as unknown as Array<Record<string, unknown>>} />
+                  <JsonSection title="失败证据（追加式）" rows={selected.failure_evidence} />
+                  <JsonSection title="重试决策（追加式）" rows={selected.retry_decisions} />
+                  <JsonSection title="晚到成交 / 多重成交事故" rows={selected.reconciliation_incidents} />
                   <JsonSection title="策略组" rows={selected.strategy_groups} />
                   <JsonSection title="策略明细" rows={selected.strategy_legs} />
                   <JsonSection title="持仓批次" rows={selected.position_lots} />
                   <JsonSection title="链上回执" rows={selected.chain_receipts} />
-                  <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+                  <div className="section-divider-top">
                     <span className="text-xs text-secondary">状态历史</span>
-                    {[...selected.events].sort((a, b) => Number(a.id) - Number(b.id)).map((event: Record<string, any>) => (
-                      <div key={event.id} className="flex justify-between gap-sm py-sm text-xs border-t" style={{ borderColor: 'var(--color-border)' }}>
+                    {[...selected.events].sort((a, b) => Number(a.id) - Number(b.id)).map((event) => (
+                      <div key={event.id} className="event-row text-xs">
                         <span className="font-mono">{event.from_status ? statusLabel(event.from_status) : '新建'} → {statusLabel(event.to_status)}</span>
                         <span className="text-secondary">{new Date(event.created_at).toLocaleString()}</span>
                       </div>

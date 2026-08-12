@@ -1,6 +1,7 @@
 const db = require('../../lib/db');
 const logger = require('../../lib/logger');
 const { requireChain } = require('./chain-adapters');
+const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 function numberFromSnapshot(snapshot, paths) {
   for (const path of paths) {
@@ -99,16 +100,17 @@ async function openSimulatedPosition(signal, wsBroadcast) {
       `INSERT INTO positions (
         signal_id, whitelist_id, contract_address, chain_id, symbol,
         amount_in, amount_out, entry_price, tp_pct, sl_pct,
-        tpsl_status, execution_mode, status, opened_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'paper', 'open', NOW())
+        tpsl_status, execution_mode, status, opened_at, asset_snapshot
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'paper', 'open', NOW(), $12)
       RETURNING *`,
       [
         signalId, whitelistId, wl.contract_address, wl.chain_id, wl.symbol,
         amountInNative, amountOut, entryPriceUsd, wl.auto_tp_pct, wl.auto_sl_pct,
-        'ok'
+        'ok', signal.asset_snapshot || {}
       ]
     );
     const position = posRes.rows[0];
+    await enqueueEntityEvent(client, 'position', position.id, 'created', 'created:open');
 
     // Paper counters never modify live budget or live buy count.
     await client.query(
@@ -204,6 +206,7 @@ async function closeSimulatedPosition(positionId, exitPriceUsd, statusReason, ws
       [statusReason, exitPriceUsd, pnlNative, pnlPct, positionId]
     );
     const closedPos = updatedRes.rows[0];
+    await enqueueEntityEvent(client, 'position', closedPos.id, 'settled', `settled:${closedPos.status}`);
 
     await client.query('COMMIT');
     logger.trade('paper-engine', `模拟平仓成功 [${statusReason}]: ${closedPos.symbol} | 出场价: $${exitPriceUsd} | 盈亏: ${pnlNative} (${pnlPct}%)`, { closedPos });

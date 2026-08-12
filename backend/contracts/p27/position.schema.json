@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xbot.p27.position.v1",
+  "title": "P27 Position DTO",
+  "type": "object",
+  "required": ["contract_version", "id", "strategy_type", "chain_id", "contract_address", "asset", "execution", "risk"],
+  "properties": {
+    "contract_version": { "const": "p27.v1" },
+    "id": { "$ref": "#/$defs/entityId" },
+    "strategy_type": { "$ref": "#/$defs/strategyType" },
+    "chain_id": { "type": "string", "minLength": 1 },
+    "contract_address": { "type": "string", "minLength": 1 },
+    "asset": { "$ref": "#/$defs/asset" },
+    "execution": { "$ref": "#/$defs/execution" },
+    "risk": { "$ref": "#/$defs/risk" }
+  },
+  "$defs": {
+    "entityId": { "type": ["string", "number"] },
+    "nullableEntityId": { "type": ["string", "number", "null"] },
+    "strategyType": { "enum": ["fixed_ca", "dynamic_policy", "follow_discovery", "unknown"] },
+    "asset": {
+      "type": "object",
+      "required": ["symbol", "name", "logo_url", "display_label", "metadata_source"],
+      "properties": {
+        "symbol": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "logo_url": { "type": ["string", "null"] },
+        "display_label": { "type": "string", "minLength": 1 },
+        "metadata_source": { "enum": ["signal_snapshot", "whitelist", "candidate", "address_fallback"] }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["mode", "status", "intent_id", "attempt_id", "order_id", "tx_hash", "blockers"],
+      "properties": {
+        "mode": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "intent_id": { "$ref": "#/$defs/nullableEntityId" },
+        "attempt_id": { "$ref": "#/$defs/nullableEntityId" },
+        "order_id": { "$ref": "#/$defs/nullableEntityId" },
+        "tx_hash": { "type": ["string", "null"] },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": ["warnings", "hard_failures"],
+      "properties": {
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "hard_failures": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "additionalProperties": true
+}

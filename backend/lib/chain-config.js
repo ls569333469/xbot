@@ -1,3 +1,5 @@
+const EXPLORER_TEMPLATES = require('../../shared/chain-explorers.json');
+
 const CHAIN_REGISTRY = {
   sol: {
     id: 'sol',
@@ -143,6 +145,12 @@ function getWalletAddress(chainId) {
   return process.env[chain.walletEnvKey] || null;
 }
 
+function explorerUrl(chainId, kind, value) {
+  const template = EXPLORER_TEMPLATES[chainId]?.[kind];
+  const normalized = String(value || '').trim();
+  return template && normalized ? template.replace('{value}', encodeURIComponent(normalized)) : null;
+}
+
 module.exports = {
   CHAIN_REGISTRY,
   getChain,
@@ -150,5 +158,6 @@ module.exports = {
   getExecutionChains,
   assertChainRegistry,
   supportsCapability,
-  getWalletAddress
+  getWalletAddress,
+  explorerUrl
 };

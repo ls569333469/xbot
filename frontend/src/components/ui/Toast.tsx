@@ -35,7 +35,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         {toasts.map((t) => (
           <div
             key={t.id}
-            className="card animate-slide-in"
+            className="card entity-enter"
             style={{
               padding: '12px 20px',
               borderLeft: `4px solid ${

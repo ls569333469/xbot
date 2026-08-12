@@ -99,7 +99,7 @@ export const FormSkeleton: React.FC = () => {
           </div>
         ))}
       </div>
-      <div className="flex justify-end gap-sm" style={{ marginTop: 'var(--space-md)' }}>
+      <div className="actions-end gap-sm" style={{ marginTop: 'var(--space-md)' }}>
         <Skeleton width={80} height={36} />
         <Skeleton width={100} height={36} />
       </div>

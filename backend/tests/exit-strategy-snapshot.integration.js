@@ -62,8 +62,8 @@ test('confirmed position keeps the exit strategy captured when the buy attempt w
   cleanup.signalId = (await db.query(
     `INSERT INTO trade_signals(
        activity_id, whitelist_id, kol_id, kol_handle, signal_type,
-       execution_mode, status, matched_relation_ids
-     ) VALUES ($1,$2,$3,$4,'ca_mention','live','recorded',ARRAY[1]::bigint[])
+       execution_mode, status, matched_relation_ids, strategy_type
+     ) VALUES ($1,$2,$3,$4,'ca_mention','live','recorded',ARRAY[1]::bigint[],'fixed_ca')
      RETURNING id`,
     [cleanup.activityId, cleanup.whitelistId, cleanup.kolId, `snapshotkol${suffix}`]
   )).rows[0].id;

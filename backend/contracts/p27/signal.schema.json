@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xbot.p27.signal.v1",
+  "title": "P27 Signal DTO",
+  "type": "object",
+  "required": ["contract_version", "id", "strategy_type", "signal_type", "chain_id", "contract_address", "asset", "settlement", "project", "authorization", "execution", "risk", "source"],
+  "properties": {
+    "contract_version": { "const": "p27.v1" },
+    "id": { "$ref": "#/$defs/entityId" },
+    "strategy_type": { "enum": ["fixed_ca", "dynamic_policy", "follow_discovery"] },
+    "signal_type": { "type": "string" },
+    "chain_id": { "type": "string", "minLength": 1 },
+    "contract_address": { "type": "string", "minLength": 1 },
+    "asset": { "$ref": "#/$defs/asset" },
+    "settlement": {
+      "type": "object",
+      "required": ["token_decimals", "source"],
+      "properties": {
+        "token_decimals": { "type": ["integer", "null"], "minimum": 0 },
+        "source": { "enum": ["order_report", "position_lot", "unavailable"] }
+      }
+    },
+    "project": {
+      "type": "object",
+      "required": ["name", "handles"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "handles": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "required": ["signal_policy_snapshot", "execution_decision", "current_projection"],
+      "properties": {
+        "signal_policy_snapshot": {
+          "type": "object",
+          "required": ["mode", "policy_id", "revision", "context_hash"],
+          "properties": {
+            "mode": { "enum": ["live", "paper", "record", "unknown"] },
+            "policy_id": { "$ref": "#/$defs/nullableEntityId" },
+            "revision": { "type": ["integer", "null"] },
+            "context_hash": { "type": ["string", "null"] }
+          }
+        },
+        "execution_decision": { "$ref": "#/$defs/executionDecision" },
+        "current_projection": { "$ref": "#/$defs/currentProjection" }
+      }
+    },
+    "execution": { "$ref": "#/$defs/execution" },
+    "risk": { "$ref": "#/$defs/risk" },
+    "source": {
+      "type": "object",
+      "required": ["provider", "activity_id", "trace_id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "activity_id": { "$ref": "#/$defs/nullableEntityId" },
+        "trace_id": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "entityId": { "type": ["string", "number"] },
+    "nullableEntityId": { "type": ["string", "number", "null"] },
+    "asset": {
+      "type": "object",
+      "required": ["symbol", "name", "logo_url", "display_label", "metadata_source"],
+      "properties": {
+        "symbol": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "logo_url": { "type": ["string", "null"] },
+        "display_label": { "type": "string", "minLength": 1 },
+        "metadata_source": { "enum": ["signal_snapshot", "whitelist", "candidate", "address_fallback"] }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["mode", "status", "intent_id", "attempt_id", "order_id", "tx_hash", "blockers"],
+      "properties": {
+        "mode": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "intent_id": { "$ref": "#/$defs/nullableEntityId" },
+        "attempt_id": { "$ref": "#/$defs/nullableEntityId" },
+        "order_id": { "$ref": "#/$defs/nullableEntityId" },
+        "tx_hash": { "type": ["string", "null"] },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": ["warnings", "hard_failures"],
+      "properties": {
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "hard_failures": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "executionDecision": {
+      "type": "object",
+      "required": ["status", "blockers"],
+      "properties": {
+        "status": { "enum": ["not_attempted", "allowed", "denied", "unknown"] },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "currentProjection": {
+      "type": "object",
+      "required": ["status", "blockers"],
+      "properties": {
+        "status": { "enum": ["record_only", "manual_allowed", "auto_allowed", "unknown"] },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "additionalProperties": true
+}

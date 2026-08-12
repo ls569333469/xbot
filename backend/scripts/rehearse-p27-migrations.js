@@ -47,7 +47,8 @@ const imported = run([
 ]);
 const additive = run(['scripts/run-migrations.js']);
 if (!additive.stdout.includes('045_p27_signal_contract_snapshots.sql')
-    || !additive.stdout.includes('046_p27_reliable_notification_outbox.sql')) {
+    || !additive.stdout.includes('046_p27_reliable_notification_outbox.sql')
+    || !additive.stdout.includes('047_p27_local_candidate_metadata_backfill.sql')) {
   throw new Error('P27 additive migrations were not applied after baseline import');
 }
 const secondStart = run(['scripts/run-migrations.js']);
@@ -63,7 +64,11 @@ process.stdout.write(`${JSON.stringify({
     recreated: recreated.stdout.trim(),
     bootstrap: '044_then_baseline_required',
     manifest: imported.stdout.trim(),
-    additive: ['045_p27_signal_contract_snapshots.sql', '046_p27_reliable_notification_outbox.sql'],
+    additive: [
+      '045_p27_signal_contract_snapshots.sql',
+      '046_p27_reliable_notification_outbox.sql',
+      '047_p27_local_candidate_metadata_backfill.sql'
+    ],
     second_start: 'zero_change',
     schema_audit: audit.stdout.trim()
   }

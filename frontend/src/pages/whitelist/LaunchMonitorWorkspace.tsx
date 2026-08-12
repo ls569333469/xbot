@@ -257,7 +257,7 @@ export default function LaunchMonitorWorkspace({
   ];
 
   return (
-    <div className="p16-workspace p161-launch-workspace">
+    <div className="p16-workspace">
       <div className="p16-workspace-head">
         <div><button type="button" className="p16-back-link" onClick={onCancel}><ArrowLeft size={16} />返回未发币监控</button><h2>{editing ? '编辑未发币监控' : '新增未发币监控'}</h2></div>
         <span className="p161-discovery-badge">等待首个唯一 CA</span>

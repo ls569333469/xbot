@@ -1,11 +1,17 @@
 const db = require('../lib/db');
 const logger = require('../lib/logger');
+const crypto = require('node:crypto');
+const { entityEnvelope } = require('../lib/entity-outbox');
+
+const DEFAULT_LEASE_MS = 30_000;
 
 class NotificationOutboxWorker {
-  constructor() {
+  constructor(options = {}) {
     this.timer = null;
     this.running = false;
     this.wsBroadcast = null;
+    this.workerId = options.workerId || `outbox:${process.pid}:${crypto.randomUUID()}`;
+    this.leaseMs = Math.max(5_000, Number(options.leaseMs || DEFAULT_LEASE_MS));
   }
 
   async claim(limit = 20) {
@@ -13,19 +19,22 @@ class NotificationOutboxWorker {
     try {
       await client.query('BEGIN');
       const result = await client.query(
-        `SELECT * FROM notification_outbox
-         WHERE status IN ('pending','failed') AND next_attempt_at <= NOW()
-         ORDER BY created_at ASC
-         FOR UPDATE SKIP LOCKED LIMIT $1`,
-        [limit]
+        `WITH due AS (
+           SELECT id FROM notification_outbox
+           WHERE next_attempt_at <= NOW()
+             AND (
+               status IN ('pending','failed')
+               OR (status = 'sending' AND locked_at < NOW() - ($2::bigint * INTERVAL '1 millisecond'))
+             )
+           ORDER BY created_at ASC
+           FOR UPDATE SKIP LOCKED LIMIT $1
+         )
+         UPDATE notification_outbox AS item
+         SET status = 'sending', locked_at = NOW(), locked_by = $3, updated_at = NOW()
+         FROM due WHERE item.id = due.id
+         RETURNING item.*`,
+        [Math.min(100, Math.max(1, Number(limit))), this.leaseMs, this.workerId]
       );
-      if (result.rows.length > 0) {
-        await client.query(
-          `UPDATE notification_outbox SET status = 'sending', updated_at = NOW()
-           WHERE id = ANY($1::bigint[])`,
-          [result.rows.map((row) => row.id)]
-        );
-      }
       await client.query('COMMIT');
       return result.rows;
     } catch (error) {
@@ -43,20 +52,26 @@ class NotificationOutboxWorker {
       const rows = await this.claim();
       for (const row of rows) {
         try {
-          logger.warn('trade-alert', row.topic, row.payload);
-          this.wsBroadcast?.({ type: 'trade:alert', payload: row });
+          if (row.channel === 'entity_event') {
+            this.wsBroadcast?.(entityEnvelope(row));
+          } else {
+            logger.warn('trade-alert', row.topic, row.payload);
+            this.wsBroadcast?.({ type: 'trade:alert', payload: row });
+          }
           await db.query(
             `UPDATE notification_outbox SET status = 'sent', sent_at = NOW(),
-             attempt_count = attempt_count + 1, last_error = NULL, updated_at = NOW()
-             WHERE id = $1 AND status = 'sending'`,
-            [row.id]
+             attempt_count = attempt_count + 1, last_error = NULL,
+             locked_at = NULL, locked_by = NULL, updated_at = NOW()
+             WHERE id = $1 AND status = 'sending' AND locked_by = $2`,
+            [row.id, this.workerId]
           );
         } catch (error) {
           await db.query(
             `UPDATE notification_outbox SET status = 'failed', attempt_count = attempt_count + 1,
-             last_error = $2, next_attempt_at = NOW() + INTERVAL '30 seconds', updated_at = NOW()
-             WHERE id = $1`,
-            [row.id, error.message]
+             last_error = $2, next_attempt_at = NOW() + INTERVAL '30 seconds',
+             locked_at = NULL, locked_by = NULL, updated_at = NOW()
+             WHERE id = $1 AND status = 'sending' AND locked_by = $3`,
+            [row.id, error.message, this.workerId]
           );
         }
       }

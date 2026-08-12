@@ -128,8 +128,9 @@ export default function Layout() {
   useEffect(() => {
     if (lastEvent?.type === 'engine:status') {
       const status = lastEvent.payload.status;
-      if (['stopped', 'recovering', 'running', 'paused_transient', 'fault_protected'].includes(status)) {
-        setEngineStatus(status);
+      const validStatuses = ['stopped', 'recovering', 'running', 'paused_transient', 'fault_protected'] as const;
+      if (typeof status === 'string' && validStatuses.some((value) => value === status)) {
+        setEngineStatus(status as typeof validStatuses[number]);
       }
     }
   }, [lastEvent]);
@@ -190,10 +191,10 @@ export default function Layout() {
       {/* Sidebar - Ghost Style */}
       <div style={{ width: '240px', background: 'hsl(240 10% 5%)', borderRight: '1px solid var(--color-border)' }} className="flex flex-col app-sidebar">
         <div style={{ padding: 'var(--space-lg)', borderBottom: '1px solid var(--color-border)' }} className="flex items-center gap-sm app-sidebar-brand">
-          <div className="flex items-center justify-center rounded-sm" style={{ width: '26px', height: '26px', background: 'linear-gradient(135deg, var(--color-accent) 0%, #a29bfe 100%)', color: 'white' }}>
+          <div className="flex items-center justify-center app-brand-mark" style={{ width: '26px', height: '26px', background: 'linear-gradient(135deg, var(--color-accent) 0%, #a29bfe 100%)', color: 'white' }}>
             <TrendingUp size={16} />
           </div>
-          <h1 className="text-xl font-bold tracking-tight app-brand-label" style={{ color: 'var(--color-text-primary)' }}>xbot.</h1>
+          <h1 className="text-xl font-bold app-brand-label" style={{ color: 'var(--color-text-primary)' }}>xbot.</h1>
         </div>
         
         <nav className="flex-1 flex flex-col app-nav" style={{ padding: 'var(--space-md)', gap: 'var(--space-4)' }}>
@@ -203,7 +204,7 @@ export default function Layout() {
               <NavLink
                 key={item.path}
                 to={item.path}
-                className="flex items-center gap-md rounded-md app-nav-link"
+                className="flex items-center gap-md app-nav-link"
                 style={({ isActive }) => ({
                   padding: 'var(--space-sm) var(--space-md)',
                   textDecoration: 'none',
@@ -247,7 +248,7 @@ export default function Layout() {
             borderBottom: '1px solid var(--color-border)' 
           }}
         >
-          <h2 className="text-xl font-bold tracking-tight">{getPageTitle()}</h2>
+          <h2 className="text-xl font-bold">{getPageTitle()}</h2>
           <div className="flex items-center gap-md">
             <div className="flex items-center gap-xs" style={{ color: isConnected ? 'var(--color-success)' : 'var(--color-danger)' }}>
               <span className="flex items-center justify-center" style={{ width: '18px', height: '18px' }}>

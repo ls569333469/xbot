@@ -214,6 +214,8 @@ function normalizeResearchResult(structured, payload, input = {}, promptConfig =
     prompt_version: promptConfig?.prompt_version || FOLLOW_XAI_PROMPT_VERSION,
     model: String(process.env.XAI_MODEL || FOLLOW_XAI_MODEL).trim(),
     summary: [safeText(structured.project_name, 160), relationship].filter(Boolean).join(': '),
+    project_name: safeText(structured.project_name, 160),
+    project_handle: projectHandle,
     target_identity: {
       classification,
       role_types: roleTypesFor(targetType, relationship),

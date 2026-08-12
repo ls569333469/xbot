@@ -280,10 +280,10 @@ export default function WhitelistPage() {
       </span>}
       {row.status === 'active' && row.live_activation_state === 'sync_failed' && <button type="button" className="p17-activation-retry"
         disabled={activationRetryId === row.id} onClick={() => void handleActivationRetry(row)}>
-        <RefreshCw size={12} className={activationRetryId === row.id ? 'animate-spin' : ''} /> 重新同步
+        <RefreshCw size={12} className={activationRetryId === row.id ? 'icon-spin' : ''} /> 重新同步
       </button>}
     </div> },
-    { header: '操作', accessor: (row: WhitelistEntry) => <div className="p16-table-actions"><button type="button" className="p16-icon-button" title="复制 CA" aria-label="复制 CA" onClick={() => { void navigator.clipboard.writeText(row.contract_address); toast('CA 已复制', 'success'); }}><Copy size={15} /></button><button type="button" className="p16-icon-button" title="编辑白名单" aria-label="编辑白名单" disabled={editLoadingId !== null} onClick={() => void openEdit(row)}>{editLoadingId === row.id ? <RefreshCw size={15} className="animate-spin" /> : <Pencil size={15} />}</button><button type="button" className="p16-icon-button danger" title="删除白名单" aria-label="删除白名单" onClick={() => handleDelete(row.id)}><Trash2 size={15} /></button></div> },
+    { header: '操作', accessor: (row: WhitelistEntry) => <div className="p16-table-actions"><button type="button" className="p16-icon-button" title="复制 CA" aria-label="复制 CA" onClick={() => { void navigator.clipboard.writeText(row.contract_address); toast('CA 已复制', 'success'); }}><Copy size={15} /></button><button type="button" className="p16-icon-button" title="编辑白名单" aria-label="编辑白名单" disabled={editLoadingId !== null} onClick={() => void openEdit(row)}>{editLoadingId === row.id ? <RefreshCw size={15} className="icon-spin" /> : <Pencil size={15} />}</button><button type="button" className="p16-icon-button danger" title="删除白名单" aria-label="删除白名单" onClick={() => handleDelete(row.id)}><Trash2 size={15} /></button></div> },
   ];
 
   const launchColumns = [

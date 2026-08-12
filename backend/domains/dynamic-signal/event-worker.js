@@ -90,17 +90,25 @@ class DynamicSignalWorker {
         candidateIndex
       });
       if (result.status === 'resolved' && result.selectedCandidate) {
-          const selectedRow = await candidateRepository.upsertCandidate(
+        let selectedRow = result.selectedCandidate;
+        if (!selectedRow.variantId && !selectedRow.id) {
+          if (!selectedRow.localEventCa) {
+            const error = new Error('Resolved index candidate is missing its persisted variant id');
+            error.code = 'DYNAMIC_CANDIDATE_VARIANT_REQUIRED';
+            throw error;
+          }
+          selectedRow = await candidateRepository.upsertCandidate(
             result.selectedCandidate,
-            result.selectedCandidate.localEventCa ? 'tweet_ca' : 'candidate_index',
+            'tweet_ca',
             this.db,
-          { sourceRef: context.tweet_id || context.provider_event_id }
-        );
+            { sourceRef: context.tweet_id || context.provider_event_id }
+          );
+        }
         const selected = {
           ...result.selectedCandidate,
-          id: selectedRow.id,
-          variantId: selectedRow.id,
-          assetFamilyId: selectedRow.asset_family_id
+          id: selectedRow.variantId || selectedRow.id,
+          variantId: selectedRow.variantId || selectedRow.id,
+          assetFamilyId: selectedRow.assetFamilyId || selectedRow.asset_family_id
         };
         result = {
           ...result,

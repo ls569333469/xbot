@@ -1,6 +1,8 @@
 const db = require('../../lib/db');
 const notifier = require('../../lib/notifier');
 const { getTradingMode } = require('../../lib/runtime-mode');
+const { assetSnapshot, authorizationSnapshot, strategyType } = require('./contract-snapshot');
+const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 async function getSignals(filters) {
   let query = 'SELECT * FROM trade_signals WHERE 1=1';
@@ -20,6 +22,8 @@ async function getSignals(filters) {
 async function insertSignal(data, executor) {
   const executionMode = data.execution_mode || getTradingMode();
   const status = executionMode === 'signal' ? 'signal_only' : (data.status || 'recorded');
+  const snapshotInput = { ...data, execution_mode: executionMode };
+  const signalStrategyType = strategyType(snapshotInput);
   const params = [
     data.activity_id,
     data.whitelist_id,
@@ -36,7 +40,10 @@ async function insertSignal(data, executor) {
     data.matched_source_rule_ids || [],
     data.reject_reason || null,
     data.activation_wait_version || null,
-    data.trace_id || null
+    data.trace_id || null,
+    signalStrategyType,
+    assetSnapshot(snapshotInput),
+    authorizationSnapshot(snapshotInput, signalStrategyType)
   ];
 
   if (data.follow_once) {
@@ -54,8 +61,10 @@ async function insertSignal(data, executor) {
       `INSERT INTO trade_signals
         (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
          execution_mode, status, canonical_key, matched_project_handles, matched_whitelist_ids,
-         matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id,
+         strategy_type, asset_snapshot, authorization_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+         $17, $18, $19)
        ON CONFLICT DO NOTHING
        RETURNING *`,
       params
@@ -66,6 +75,7 @@ async function insertSignal(data, executor) {
         'UPDATE x_follow_signal_once SET signal_id = $1 WHERE id = $2',
         [signal.id, onceRes.rows[0].id]
       );
+      await enqueueEntityEvent(executor, 'signal', signal.id, 'created', `created:${signal.status}`);
     }
     return signal;
   }
@@ -74,13 +84,17 @@ async function insertSignal(data, executor) {
     `INSERT INTO trade_signals
       (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
        execution_mode, status, canonical_key, matched_project_handles, matched_whitelist_ids,
-       matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id,
+       strategy_type, asset_snapshot, authorization_snapshot)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+       $17, $18, $19)
      ON CONFLICT DO NOTHING
      RETURNING *`,
     params
   );
-  return res.rows[0] || null;
+  const signal = res.rows[0] || null;
+  if (signal) await enqueueEntityEvent(executor, 'signal', signal.id, 'created', `created:${signal.status}`);
+  return signal;
 }
 
 async function createSignal(data, executor = db, options = {}) {

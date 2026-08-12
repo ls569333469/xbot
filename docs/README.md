@@ -1,7 +1,7 @@
 # XBOT 文档入口与当前迭代状态
 
-> 更新时间：2026-08-08
-> 当前执行基线：P20 动态喊单策略、P21 新关注发现、P22 GMGN 限流治理和统一 P19 交易执行链路已实现；P23 第一阶段代码治理已执行，发布前仍必须完成独立测试库验收、Migration 000-040 演练、隐私扫描和全量回归；服务器状态以实时 API 与数据库为准。
+> 更新时间：2026-08-12
+> 当前执行基线：P26 三策略生产执行硬化已形成独立提交；P27 代码、可信 Migration `000-047`、数据库恢复演练和自动回归已完成。P27 最终三策略真实小额闭环与已披露凭据轮换完成前不得同步服务器；服务器状态以实时 API 与数据库为准。
 
 ## 当前事实
 
@@ -23,6 +23,8 @@
 | P21 | Migration 036-037、账号研究独立化、新关注发现、Grok/x_search、人员-项目关联证据、作用域和共享交易链路已实现；真实交易验收仍需发布前单独执行 |
 | P22 | Migration 038-039、GMGN 共享限流状态、冷却治理和 P21 verification snapshot 已实现；限流回归已通过，真实 Provider 状态以服务器实时检查为准 |
 | P23 | 已完成全历史深度审计、第一批不可达旧代码清理、迁移职责收敛、Migration 000-040 演练、完整回归和隐私扫描；生产只读 Schema Audit、服务器发布和真实交易验收待执行 |
+| P24-P26 | 单 Signal GMGN 边界、三策略成交基线恢复、Attempt 幂等与双角色 Supervisor 已实现；P26 已作为 P27 的可回滚应用基线 |
+| P27 | Migration manifest `044`、Signal snapshot `045`、可靠 outbox `046`、精确历史元数据回填 `047`、`p27.v1` REST 契约、可靠事件、设计系统、凭据 profile 和发布审计已实施；自动回归、数据库备份恢复与桌面/移动 DOM 已通过，三策略最终真实买入和平仓仍待人工验收 |
 | P12 明确失败重试 | 核心代码和统一前端开关已实现；当前五链自动重试均关闭，只有用户主动开启后才生效 |
 
 运行时 `live_policy`、Engine Armed 状态和链开关会随测试变化，必须以数据库/API 实时结果为准，不能从历史文档推断。
@@ -36,18 +38,21 @@
 5. [P23 实盘就绪分层与历史链路治理方案](./00_系统架构与全局设计/P23_live_readiness_scope_and_architecture_remediation_plan.md)：二次确认、策略作用域、GMGN 调用、服务编排和发布治理。
 6. [P24 单信号 GMGN 执行边界与全局调用治理方案](./00_系统架构与全局设计/P24_single_signal_gmgn_execution_boundary_plan.md)：未触发零调用、单信号单会话、全局 Provider Gate 和三策略并发治理。
 7. [P25 三策略成交基线恢复与 GMGN 契约统一方案](./00_系统架构与全局设计/P25_three_strategy_execution_baseline_and_gmgn_contract_remediation_plan.md)：以 GitHub 已成交固定 CA/P20 为基线，修复 P24 回归并统一 P21、GMGN Security/Gas/Quote/Swap 执行标准。
-7. [维护工具登记表](./00_系统架构与全局设计/maintenance_tool_registry.md)：后台验收、事故恢复、Provider 补偿和 CLI 工具的长期唯一清单。
-8. [P14 历史生产收尾方案](./00_系统架构与全局设计/P14_p13_acceptance_robinhood_live_and_release_closure_plan.md)：已实施能力与历史验收证据。
-9. [P16 高级策略、模板与快速投研方案](./00_系统架构与全局设计/P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md)：当前实现、自动化验收和剩余真实验收清单。
-10. [P16.1 未发币项目监控与固定 CA 触发纠偏](./00_系统架构与全局设计/P16_1_prelaunch_project_monitor_plan.md)：双链路边界、Migration 020、实现与验收结果。
-11. [P15 前端信息架构收敛](./00_系统架构与全局设计/P15_frontend_information_architecture_convergence_plan.md)：日常前端、运行状态和维护边界。
-12. [P13 配置收敛与旧路径治理](./00_系统架构与全局设计/P13_whitelist_owned_configuration_convergence_plan.md)：白名单配置收敛实现证据。
-13. [P12 统一迭代方案](./00_系统架构与全局设计/P12_definitive_failure_retry_and_four_chain_validation_plan.md)：资金状态机和明确失败重试设计证据。
-14. [系统架构与交易链路图](./00_系统架构与全局设计/xbot-system-link-map.html)：当前生产链路、买入、平仓、新链扩展边界。
-15. [核心 PRD](./00_系统架构与全局设计/PRD-MEME右侧交易系统.md)：产品需求和维护工具前端边界。
-16. [工程日志](./ENGINEERING_LOG.md)：按时间记录实现和验收事实，不作为并行执行方案。
-17. [外部官方资料](./external/)：GMGN、6551 等 Provider 的本地官方文档快照。
-18. [P12 生产可达性清单](./00_系统架构与全局设计/P12_production_reachability_inventory.md)：生产主链路、显式回退、测试资产和暂不删除项。
+8. [P26 三策略生产硬化与人工验收方案](./00_系统架构与全局设计/P26_three_strategy_production_hardening_and_manual_acceptance_plan.md)：Attempt 幂等、双角色进程、恢复和人工实盘验收基线。
+9. [P27 服务器同步前全链路收口方案](./00_系统架构与全局设计/P27_server_sync_preflight_and_three_strategy_contract_convergence_plan.md)：当前 Active Plan，统一字段、元数据、事件、前端设计、Migration trust、Secret 和服务器发布验收。
+10. [P27 自动验收报告](./00_系统架构与全局设计/P27_automated_acceptance_report_2026-08-12.md)：记录代码、Migration、数据库恢复、DOM、GMGN 调用与发布边界的自动验收证据。
+11. [维护工具登记表](./00_系统架构与全局设计/maintenance_tool_registry.md)：后台验收、事故恢复、Provider 补偿和 CLI 工具的长期唯一清单。
+11. [P14 历史生产收尾方案](./00_系统架构与全局设计/P14_p13_acceptance_robinhood_live_and_release_closure_plan.md)：已实施能力与历史验收证据。
+12. [P16 高级策略、模板与快速投研方案](./00_系统架构与全局设计/P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md)：当前实现、自动化验收和剩余真实验收清单。
+13. [P16.1 未发币项目监控与固定 CA 触发纠偏](./00_系统架构与全局设计/P16_1_prelaunch_project_monitor_plan.md)：双链路边界、Migration 020、实现与验收结果。
+14. [P15 前端信息架构收敛](./00_系统架构与全局设计/P15_frontend_information_architecture_convergence_plan.md)：日常前端、运行状态和维护边界。
+15. [P13 配置收敛与旧路径治理](./00_系统架构与全局设计/P13_whitelist_owned_configuration_convergence_plan.md)：白名单配置收敛实现证据。
+16. [P12 统一迭代方案](./00_系统架构与全局设计/P12_definitive_failure_retry_and_four_chain_validation_plan.md)：资金状态机和明确失败重试设计证据。
+17. [系统架构与交易链路图](./00_系统架构与全局设计/xbot-system-link-map.html)：当前生产链路、买入、平仓、新链扩展边界。
+18. [核心 PRD](./00_系统架构与全局设计/PRD-MEME右侧交易系统.md)：产品需求和维护工具前端边界。
+19. [工程日志](./ENGINEERING_LOG.md)：按时间记录实现和验收事实，不作为并行执行方案。
+20. [外部官方资料](./external/)：GMGN、6551 等 Provider 的本地官方文档快照。
+21. [P12 生产可达性清单](./00_系统架构与全局设计/P12_production_reachability_inventory.md)：生产主链路、显式回退、测试资产和暂不删除项。
 
 ## 启动与测试
 

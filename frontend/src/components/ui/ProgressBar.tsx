@@ -44,7 +44,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ value, max, showText =
           }} 
         />
       </div>
-      {showText && <div className="text-xs text-right text-muted">{percentage.toFixed(1)}%</div>}
+      {showText && <div className="text-xs align-text-end text-muted">{percentage.toFixed(1)}%</div>}
     </div>
   );
 };

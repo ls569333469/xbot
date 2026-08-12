@@ -10,6 +10,8 @@ const intentRepository = require('./trade-intent-repository');
 const { persistManualE2eEvidence } = require('./manual-e2e-evidence');
 const { legacyPercentages } = require('./exit-strategy-compiler');
 const runtimeAuthorization = require('./runtime-signal-authorization');
+const { projectAttempt } = require('./contract-projector');
+const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 function fingerprint(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -163,6 +165,7 @@ async function addAttemptEvent(executor, attemptId, fromStatus, toStatus, detail
       details.summary || {}
     ]
   );
+  await enqueueEntityEvent(executor, 'attempt', attemptId, 'updated', `status:${toStatus}`);
 }
 
 async function writeOutbox(executor, topic, aggregateType, aggregateId, payload) {
@@ -1401,6 +1404,7 @@ async function finalizeAdditionalBuyFill(client, row, position, normalizedOrder,
     reason: 'MULTIPLE_FILL_INCIDENT',
     summary: { position_id: position.id, chain_receipt: receipt.status }
   });
+  await enqueueEntityEvent(client, 'position', position.id, 'updated', 'multiple-fill');
   return { ...position, amount_in: Number(position.amount_in) + Number(inputDisplay), amount_out: Number(position.amount_out) + Number(outputDisplay) };
 }
 
@@ -1420,6 +1424,7 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
               attempt.input_amount_display AS planned_input_display,
               attempt.metadata, attempt.status AS attempt_status,
               intent.status AS intent_status,
+              signal.asset_snapshot AS signal_asset_snapshot,
               whitelist.symbol, whitelist.auto_tp_pct, whitelist.auto_sl_pct,
               reservation.id AS reservation_id,
               reservation.status AS reservation_status,
@@ -1430,6 +1435,7 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
        FROM trade_orders AS orders
        JOIN trade_attempts AS attempt ON attempt.id = orders.attempt_id
        JOIN trade_intents AS intent ON intent.id = attempt.intent_id
+       LEFT JOIN trade_signals AS signal ON signal.id = attempt.signal_id
        LEFT JOIN ca_whitelist AS whitelist ON whitelist.id = attempt.whitelist_id
        LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
        WHERE orders.id = $1 FOR UPDATE OF orders, attempt, intent`,
@@ -1490,8 +1496,8 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
         (signal_id, whitelist_id, contract_address, chain_id, symbol,
          amount_in, amount_out, entry_price, buy_tx_hash, buy_order_id,
          tp_pct, sl_pct, tp_order_id, sl_order_id, tpsl_status,
-         execution_mode, status, opened_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,'live',$15,NOW())
+         execution_mode, status, opened_at, asset_snapshot)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,'live',$15,NOW(),$16)
        RETURNING *`,
       [
         row.signal_id,
@@ -1508,10 +1514,12 @@ async function finalizeConfirmedOrder(orderId, normalizedOrder, receipt) {
         legacySnapshot.auto_sl_pct,
         normalizedOrder.strategyOrderId,
         protectedPosition ? 'ok' : 'failed',
-        protectedPosition ? 'open_protected' : 'open_unprotected'
+        protectedPosition ? 'open_protected' : 'open_unprotected',
+        row.signal_asset_snapshot || row.metadata?.asset_snapshot || {}
       ]
     );
     const position = positionResult.rows[0];
+    await enqueueEntityEvent(client, 'position', position.id, 'created', `created:${position.status}`);
     await client.query(
       `INSERT INTO position_lots
         (position_id, buy_order_id, chain, wallet_address, token_address,
@@ -1812,6 +1820,7 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
         attempt_id: row.attempt_id,
         position_id: row.position_id
       });
+      await enqueueEntityEvent(client, 'position', row.position_id, 'updated', 'multiple-fill-close-uncertain');
       await client.query('COMMIT');
       return { id: row.position_id, status: 'close_uncertain', incident: 'multiple_fill' };
     }
@@ -1949,6 +1958,7 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
       proceeds_native: outputDisplay,
       pnl_native: pnl
     });
+    await enqueueEntityEvent(client, 'position', row.position_id, 'settled', `settled:${positionStatus}`);
     if (positionStatus === 'closed') {
       await persistManualE2eEvidence(client, row.position_id, orderId);
     }
@@ -3050,6 +3060,14 @@ async function getAttempt(attemptId) {
 async function getAttemptDetails(attemptId) {
   const result = await db.query(
     `SELECT attempt.*,
+            COALESCE(signal.strategy_type, position_signal.strategy_type) AS strategy_type,
+            COALESCE(signal.actor_policy_id, position_signal.actor_policy_id) AS actor_policy_id,
+            COALESCE(signal.follow_discovery_policy_id,
+              position_signal.follow_discovery_policy_id) AS follow_discovery_policy_id,
+            COALESCE(signal.asset_snapshot, position.asset_snapshot, '{}'::jsonb) AS asset_snapshot,
+            COALESCE(intent.contract_address,
+              CASE WHEN attempt.side = 'sell' THEN attempt.input_token ELSE attempt.output_token END
+            ) AS contract_address,
             row_to_json(intent) AS intent,
             row_to_json(reservation) AS budget_reservation,
             row_to_json(wallet_lane) AS wallet_lane,
@@ -3104,18 +3122,29 @@ async function getAttemptDetails(attemptId) {
             ), '[]') AS chain_receipts
      FROM trade_attempts AS attempt
      JOIN trade_intents AS intent ON intent.id = attempt.intent_id
+     LEFT JOIN trade_signals AS signal ON signal.id = attempt.signal_id
+     LEFT JOIN positions AS position ON position.id = attempt.position_id
+     LEFT JOIN trade_signals AS position_signal ON position_signal.id = position.signal_id
      LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
      LEFT JOIN wallet_write_lanes AS wallet_lane
        ON wallet_lane.chain = attempt.chain AND wallet_lane.wallet_address = attempt.wallet_address
      WHERE attempt.id = $1`,
     [attemptId]
   );
-  return result.rows[0] || null;
+  return result.rows[0] ? projectAttempt(result.rows[0]) : null;
 }
 
 async function listAttempts(limit = 100) {
   const result = await db.query(
     `SELECT attempt.*,
+            COALESCE(signal.strategy_type, position_signal.strategy_type) AS strategy_type,
+            COALESCE(signal.actor_policy_id, position_signal.actor_policy_id) AS actor_policy_id,
+            COALESCE(signal.follow_discovery_policy_id,
+              position_signal.follow_discovery_policy_id) AS follow_discovery_policy_id,
+            COALESCE(signal.asset_snapshot, position.asset_snapshot, '{}'::jsonb) AS asset_snapshot,
+            COALESCE(intent.contract_address,
+              CASE WHEN attempt.side = 'sell' THEN attempt.input_token ELSE attempt.output_token END
+            ) AS contract_address,
             intent.status AS intent_status, intent.retry_count, intent.max_retries,
             intent.expires_at AS retry_expires_at, intent.next_retry_at,
             intent.last_error_code AS intent_error_code,
@@ -3137,6 +3166,9 @@ async function listAttempts(limit = 100) {
              END AS query_stage
      FROM trade_attempts AS attempt
      JOIN trade_intents AS intent ON intent.id = attempt.intent_id
+     LEFT JOIN trade_signals AS signal ON signal.id = attempt.signal_id
+     LEFT JOIN positions AS position ON position.id = attempt.position_id
+     LEFT JOIN trade_signals AS position_signal ON position_signal.id = position.signal_id
      LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
      LEFT JOIN wallet_write_lanes AS wallet_lane
        ON wallet_lane.chain = attempt.chain AND wallet_lane.wallet_address = attempt.wallet_address
@@ -3146,7 +3178,7 @@ async function listAttempts(limit = 100) {
      ORDER BY attempt.created_at DESC LIMIT $1`,
     [Math.min(500, Math.max(1, Number(limit)))]
   );
-  return result.rows;
+  return result.rows.map(projectAttempt);
 }
 
 module.exports = {

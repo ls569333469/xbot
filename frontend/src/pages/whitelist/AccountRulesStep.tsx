@@ -201,7 +201,7 @@ function AccountPicker({
         aria-expanded={open && !disabled}
       />
       {open && createPortal(
-        <div className="p16-account-suggestions p162-account-popover" style={position}>
+        <div className="p16-account-suggestions" style={position}>
           <div className="p16-account-suggestions-head">
             <span><strong>生态账号库</strong> · {matches.length} 个结果 · 已选 {selectedHandles.length}</span>
             <button
@@ -352,7 +352,7 @@ function ProjectTargetPicker({
         aria-expanded={open && accounts.length > 0}
       />
       {open && accounts.length > 0 && createPortal(
-        <div className="p16-account-suggestions p162-account-popover p163-target-popover" style={position}>
+        <div className="p16-account-suggestions" style={position}>
           <div className="p16-account-suggestions-head">
             <span><strong>项目账号</strong> · {matches.length} 个结果 · 已选 {selectedHandles.length}</span>
             <button
@@ -376,7 +376,7 @@ function ProjectTargetPicker({
               {allVisibleSelected ? '取消当前全选' : `全选当前结果 (${visibleHandles.length})`}
             </button>
           </div>
-          <div className="p162-account-list p163-target-list">
+          <div className="p162-account-list">
             {matches.map((item) => {
               const selected = selectedSet.has(item.handle);
               return (
@@ -482,7 +482,7 @@ export default function AccountRulesStep({
     if (!activeSuggestions) return undefined;
     const closeOnOutsideClick = (event: MouseEvent) => {
       if (!(event.target instanceof Element)) return;
-      if (!event.target.closest('.p16-account-picker, .p162-account-popover')) {
+      if (!event.target.closest('.p16-account-picker, .p16-account-suggestions')) {
         setActiveSuggestions(null);
       }
     };

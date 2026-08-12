@@ -42,7 +42,7 @@ export default function StrategyWorkspaceLayout({
         </div>
         <div className="strategy-workspace-header-actions">
           <span className={`strategy-center-status ${statusTone}`}><i />{status}</span>
-          {onRefresh && <button type="button" className="p16-icon-button" title="刷新工作区" aria-label="刷新工作区" onClick={() => void onRefresh()} disabled={refreshing}><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>}
+          {onRefresh && <button type="button" className="p16-icon-button" title="刷新工作区" aria-label="刷新工作区" onClick={() => void onRefresh()} disabled={refreshing}><RefreshCw size={16} className={refreshing ? 'icon-spin' : ''} /></button>}
         </div>
       </header>
 

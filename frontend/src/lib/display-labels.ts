@@ -215,6 +215,8 @@ const SIGNAL_TYPE_LABELS: Record<string, string> = {
   handle_match: '项目账号关系匹配',
   ca_mention: '合约地址提及',
   ticker_mention: '代币符号提及',
+  dynamic_keyword: '动态喊单',
+  follow_discovery: '关注发现',
 };
 
 const SIDE_LABELS: Record<string, string> = {
@@ -261,6 +263,32 @@ export function blockerLabel(value: string): string {
 
 export function blockerActionLabel(value: string): string {
   return BLOCKER_ACTION_LABELS[value] || '请先处理该项后重新检查';
+}
+
+const RISK_LABELS: Record<string, string> = {
+  GMGN_SECURITY_HONEYPOT: 'GMGN 标记为疑似貔貅盘',
+  HONEYPOT_UNKNOWN: '貔貅盘字段暂无结果',
+  HONEYPOT_FIELD_UNAVAILABLE_SOL: 'Solana 暂无貔貅盘字段',
+  BUY_TAX_UNKNOWN: '买入税未知',
+  BUY_TAX_PRESENT: '检测到买入税',
+  SELL_TAX_UNKNOWN: '卖出税未知',
+  SELL_TAX_PRESENT: '检测到卖出税',
+  MINT_AUTHORITY_ACTIVE: 'Mint 权限仍启用',
+  MINT_AUTHORITY_UNKNOWN_SOL: 'Mint 权限状态未知',
+  FREEZE_AUTHORITY_ACTIVE: 'Freeze 权限仍启用',
+  FREEZE_AUTHORITY_UNKNOWN_SOL: 'Freeze 权限状态未知',
+  RUG_RATIO_FIELD_UNAVAILABLE_ROBINHOOD: 'Robinhood 暂无 Rug Ratio 字段',
+  GMGN_SECURITY_SCHEMA_INVALID: '安全数据字段不完整',
+  GMGN_SECURITY_RUG_RISK: '安全数据提示较高风险',
+  RUG_RATIO_REPORTED: '安全数据报告了风险比例',
+  LIQUIDITY_UNKNOWN: '流动性数据未知',
+  PRICE_IMPACT_UNKNOWN: '价格影响数据未知',
+  WALLET_BALANCE_UNKNOWN: '钱包余额未知',
+  INSUFFICIENT_NATIVE_BALANCE: '原生币余额不足',
+};
+
+export function riskLabel(value: string): string {
+  return RISK_LABELS[value] || `风险观察（${value}）`;
 }
 
 const ADVISORY_LABELS: Record<string, string> = {

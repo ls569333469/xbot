@@ -4,7 +4,7 @@ import {
   ChainId, ChainConfig, TradeAttempt, TradeAttemptDetails, TradeRuntimePolicy,
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
   RuntimePolicyDetailPage, RuntimeSummary, DynamicPolicy, DynamicResolution,
-  DynamicSignalStatus, DynamicPaperSession, ActorScreeningRun, DynamicPolicyTemplate
+  DynamicSignalStatus, DynamicPaperSession, ActorScreeningRun, DynamicPolicyTemplate, EntityId
 } from './types';
 
 const configuredApiBase = import.meta.env.VITE_API_URL;
@@ -334,7 +334,7 @@ export const api = {
       const q = params ? '?' + new URLSearchParams(params).toString() : '';
       return fetchApi<ApiResponse<Position[]>>(`/api/trade/history${q}`);
     },
-    close: (id: string) => fetchApi<ApiResponse<Position>>(`/api/trade/positions/${id}/close`, { method: 'POST' }),
+    close: (id: EntityId) => fetchApi<ApiResponse<Position>>(`/api/trade/positions/${id}/close`, { method: 'POST' }),
     runtimePolicy: () => fetchApi<ApiResponse<TradeRuntimePolicy>>('/api/trade/runtime-policy'),
     runtimePolicyDetail: (params?: Record<string, string>) => fetchApi<ApiResponse<RuntimePolicyDetailPage>>(
       `/api/trade/runtime-policy/detail${params ? `?${new URLSearchParams(params).toString()}` : ''}`
@@ -358,10 +358,10 @@ export const api = {
         body: JSON.stringify({ reason, confirmation: 'RESET CHAIN FAILURE CIRCUIT' })
       }),
     attempts: (limit = 100) => fetchApi<ApiResponse<TradeAttempt[]>>(`/api/trade/attempts?limit=${limit}`),
-    attempt: (id: string) => fetchApi<ApiResponse<TradeAttemptDetails>>(`/api/trade/attempts/${id}`),
-    prepareSignal: (id: string) => fetchApi<ApiResponse<any>>(`/api/trade/signals/${id}/prepare`, { method: 'POST', body: '{}' }),
-    executeSignal: (id: string, prepareToken: string) => fetchApi<ApiResponse<any>>(`/api/trade/signals/${id}/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE BUY' }) }),
-    prepareClose: (id: string, percent = 100) => fetchApi<ApiResponse<any>>(`/api/trade/positions/${id}/close/prepare`, { method: 'POST', body: JSON.stringify({ percent }) }),
-    executeClose: (id: string, prepareToken: string) => fetchApi<ApiResponse<any>>(`/api/trade/positions/${id}/close/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE CLOSE' }) })
+    attempt: (id: EntityId) => fetchApi<ApiResponse<TradeAttemptDetails>>(`/api/trade/attempts/${id}`),
+    prepareSignal: (id: EntityId) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/signals/${id}/prepare`, { method: 'POST', body: '{}' }),
+    executeSignal: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/signals/${id}/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE BUY' }) }),
+    prepareClose: (id: EntityId, percent = 100) => fetchApi<ApiResponse<import('./types').ClosePreparation>>(`/api/trade/positions/${id}/close/prepare`, { method: 'POST', body: JSON.stringify({ percent }) }),
+    executeClose: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/positions/${id}/close/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE CLOSE' }) })
   }
 };

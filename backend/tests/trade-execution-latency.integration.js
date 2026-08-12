@@ -34,8 +34,9 @@ test('execution timing updates resolve a signal activity through provider activi
     )).rows[0].id;
     ids.signal = (await db.query(
       `INSERT INTO trade_signals
-        (activity_id, whitelist_id, kol_id, kol_handle, signal_type, execution_mode, status)
-       VALUES ($1, $2, $3, $4, 'ca_mention', 'live', 'recorded') RETURNING id`,
+        (activity_id, whitelist_id, kol_id, kol_handle, signal_type, execution_mode, status,
+         strategy_type)
+       VALUES ($1, $2, $3, $4, 'ca_mention', 'live', 'recorded', 'fixed_ca') RETURNING id`,
       [ids.activity, ids.whitelist, ids.kol, `p9latency${suffix}`]
     )).rows[0].id;
     await db.query(

@@ -438,13 +438,13 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="flex flex-col gap-lg max-w-4xl">
+      <div className="settings-page flex flex-col gap-lg">
         <div className="card flex justify-between items-center" style={{ minHeight: '110px' }}>
           <div className="flex-1">
             <div className="skeleton mb-xs" style={{ width: '40%', height: '20px' }}></div>
             <div className="skeleton" style={{ width: '70%', height: '14px' }}></div>
           </div>
-          <div className="skeleton rounded-md" style={{ width: '150px', height: '52px' }}></div>
+          <div className="skeleton settings-loading-skeleton" style={{ width: '150px', height: '52px' }}></div>
         </div>
         <div className="grid grid-cols-2 gap-lg">
           <FormSkeleton />
@@ -462,7 +462,7 @@ export default function SettingsPage() {
       window.location.reload();
     };
     return (
-      <div className="flex flex-col gap-lg max-w-4xl">
+      <div className="settings-page flex flex-col gap-lg">
         <div className="card flex flex-col gap-md" style={{ width: 'min(420px, 100%)' }}>
           <h2 className="text-lg font-bold flex items-center gap-sm"><LockKeyhole size={18} /> 看板登录</h2>
           <label className="flex flex-col gap-xs">
@@ -484,7 +484,7 @@ export default function SettingsPage() {
   const managedRetryEnabled = retryEnabledCount === RETRY_CHAINS.length;
   const managedRetryPartial = retryEnabledCount > 0 && !managedRetryEnabled;
   return (
-    <div className="flex flex-col gap-lg max-w-4xl position-relative">
+    <div className="settings-page flex flex-col gap-lg">
       
       {/* Restart Overlay overlay */}
       {isRestarting && (
@@ -494,10 +494,10 @@ export default function SettingsPage() {
           zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center',
           justifyContent: 'center', color: '#ffffff'
         }}>
-          <div className="flex flex-col items-center gap-md text-center max-w-md px-lg">
-            <div className="relative mb-md">
-              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2" style={{ borderColor: 'var(--color-accent)' }}></div>
-              <Server className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-secondary" size={16} />
+          <div className="engine-start-copy flex flex-col items-center gap-md">
+            <div className="engine-start-visual">
+              <div className="loading-ring"></div>
+              <Server className="loading-ring-icon text-secondary" size={16} />
             </div>
             <h3 className="text-lg font-bold">后台进程重载中</h3>
             <p className="text-secondary text-sm">{restartMessage}</p>
@@ -512,7 +512,7 @@ export default function SettingsPage() {
         }}>
           <div className="card" role="dialog" aria-modal="true" aria-label="启动真实交易"
             style={{ width: 'min(620px, 100%)', maxHeight: '82vh', padding: 0, overflow: 'hidden', display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr) auto' }}>
-            <div className="flex justify-between items-center border-b" style={{ borderColor: 'var(--color-border)', padding: '16px 18px' }}>
+            <div className="arm-dialog-header">
               <div>
                 <h3 className="text-lg font-bold">启动真实交易</h3>
                 <span className={`text-xs font-mono ${armPreparation.summary.readyToArm ? 'text-success' : 'text-danger'}`}>
@@ -525,7 +525,7 @@ export default function SettingsPage() {
             </div>
 
             <div className="flex flex-col gap-md" style={{ overflowY: 'auto', padding: '16px 18px' }}>
-              {armPreparation.summary.scope && <div className="border-b pb-sm text-sm" style={{ borderColor: 'var(--color-border)' }}>
+              {armPreparation.summary.scope && <div className="section-heading section-divider-bottom text-sm">
                 <span className="text-secondary">本次作用域：</span>
                 <strong>{armPreparation.summary.scope.label}</strong>
                 {armPreparation.summary.scope.revision !== null && armPreparation.summary.scope.revision !== undefined
@@ -533,17 +533,17 @@ export default function SettingsPage() {
               </div>}
 
               <div className="settings-summary-grid">
-                <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.chains}</strong></div>
-                <div><span className="text-xs text-secondary">可实盘 CA</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.whitelists}</strong></div>
-                <div><span className="text-xs text-secondary">唯一 Watch</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.watches}</strong></div>
-                <div><span className="text-xs text-secondary">触发关系</span><strong className="block font-mono text-sm">{armPreparation.summary.counts.relations}</strong></div>
+                <div><span className="text-xs text-secondary">交易链</span><strong className="metric-value font-mono text-sm">{armPreparation.summary.counts.chains}</strong></div>
+                <div><span className="text-xs text-secondary">可实盘 CA</span><strong className="metric-value font-mono text-sm">{armPreparation.summary.counts.whitelists}</strong></div>
+                <div><span className="text-xs text-secondary">唯一 Watch</span><strong className="metric-value font-mono text-sm">{armPreparation.summary.counts.watches}</strong></div>
+                <div><span className="text-xs text-secondary">触发关系</span><strong className="metric-value font-mono text-sm">{armPreparation.summary.counts.relations}</strong></div>
               </div>
 
               {armPreparation.summary.blockers.length > 0 && (
                 <div className="flex flex-col gap-xs">
                   <strong className="text-sm text-danger">还需处理 {armPreparation.summary.blockers.length} 项</strong>
                   {armPreparation.summary.blockers.map(blocker => (
-                    <div key={blocker} className="border-t pt-xs" style={{ borderColor: 'var(--color-border)' }}>
+                    <div key={blocker} className="subsection-row">
                       <div className="text-sm font-medium">{blockerLabel(blocker)}</div>
                       <div className="text-xs text-secondary">{blockerActionLabel(blocker)}</div>
                     </div>
@@ -572,7 +572,7 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <div className="flex justify-between gap-sm border-t" style={{ borderColor: 'var(--color-border)', padding: '12px 18px', flexWrap: 'wrap' }}>
+            <div className="arm-dialog-actions">
               <div className="flex gap-sm" style={{ flexWrap: 'wrap' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => {
                   setShowScopeDrawer(true);
@@ -590,7 +590,7 @@ export default function SettingsPage() {
                     setArmChecking(false);
                   }
                 }}>
-                  <RefreshCw size={15} className={armChecking ? 'animate-spin' : ''} /> {armChecking ? '检查中' : '重新检查'}
+                  <RefreshCw size={15} className={armChecking ? 'icon-spin' : ''} /> {armChecking ? '检查中' : '重新检查'}
                 </button>
               </div>
               <div className="flex gap-sm">
@@ -735,7 +735,7 @@ export default function SettingsPage() {
 
       {settingsSection === 'status' && runtimePolicy && (
         <div className="card flex flex-col gap-md">
-          <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', flexWrap: 'wrap', gap: '12px' }}>
+          <div className="settings-section-header">
             <h3 className="text-lg font-bold flex items-center gap-sm"><Gauge size={18} /> 交易通道</h3>
             <button className="btn btn-secondary" onClick={async () => {
               const res = await api.trade.runtimePolicy();
@@ -743,10 +743,10 @@ export default function SettingsPage() {
             }}><RefreshCw size={15} /> 刷新</button>
           </div>
           <div className="settings-summary-grid">
-            <div><span className="text-xs text-secondary">GMGN 调度</span><strong className="block font-mono text-sm">{statusLabel(runtimePolicy.scheduler.state)}</strong></div>
-            <div><span className="text-xs text-secondary">实时信号</span><strong className={`block font-mono text-sm ${runtimePolicy.live_queue.listenerConnected ? 'text-success' : 'text-danger'}`}>{runtimePolicy.live_queue.listenerConnected ? '已连接' : '扫描后备'}</strong></div>
-            <div><span className="text-xs text-secondary">最近 429</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.last429At ? '有' : '无'}</strong></div>
-            <div><span className="text-xs text-secondary">排队请求</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.queueDepth}</strong></div>
+            <div><span className="text-xs text-secondary">GMGN 调度</span><strong className="metric-value font-mono text-sm">{statusLabel(runtimePolicy.scheduler.state)}</strong></div>
+            <div><span className="text-xs text-secondary">实时信号</span><strong className={`metric-value font-mono text-sm ${runtimePolicy.live_queue.listenerConnected ? 'text-success' : 'text-danger'}`}>{runtimePolicy.live_queue.listenerConnected ? '已连接' : '扫描后备'}</strong></div>
+            <div><span className="text-xs text-secondary">最近 429</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.last429At ? '有' : '无'}</strong></div>
+            <div><span className="text-xs text-secondary">排队请求</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.queueDepth}</strong></div>
           </div>
           <div className="settings-chain-strip">
             {runtimePolicy.readiness.chains.map(chain => (
@@ -760,23 +760,23 @@ export default function SettingsPage() {
           </div>
           <details className="settings-diagnostics">
             <summary>查看诊断详情</summary>
-            <div className="flex flex-col gap-md pt-sm">
+            <div className="diagnostic-body flex flex-col gap-md">
           <div className="settings-metrics-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: '12px' }}>
-            <div><span className="text-xs text-secondary">请求调度器</span><strong className="block font-mono text-sm">{statusLabel(runtimePolicy.scheduler.state)}</strong></div>
-            <div><span className="text-xs text-secondary">官方桶</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.officialRate}/{runtimePolicy.scheduler.officialCapacity}</strong></div>
-            <div><span className="text-xs text-secondary">内部桶</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.currentRate}/{runtimePolicy.scheduler.configuredCapacity}</strong></div>
-            <div><span className="text-xs text-secondary">可用权重</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.availableWeight.toFixed(2)}</strong></div>
-            <div><span className="text-xs text-secondary">当前预留</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.reservedWeight.toFixed(2)}</strong></div>
-            <div><span className="text-xs text-secondary">近 1 秒预留 / 消耗</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.reservedLastSecond} / {runtimePolicy.scheduler.consumedLastSecond}</strong></div>
-            <div><span className="text-xs text-secondary">新交易预留</span><strong className="block font-mono text-sm">{runtimePolicy.new_trade_reservation_weight} 权重</strong></div>
-            <div><span className="text-xs text-secondary">报价 / 下单权重</span><strong className="block font-mono text-sm">2 / 5</strong></div>
-            <div><span className="text-xs text-secondary">队列</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.queueDepth}</strong></div>
-            <div><span className="text-xs text-secondary">实时信号通道</span><strong className={`block font-mono text-sm ${runtimePolicy.live_queue.listenerConnected ? 'text-success' : 'text-danger'}`}>{runtimePolicy.live_queue.listenerConnected ? '已连接' : '扫描后备'}</strong></div>
-            <div><span className="text-xs text-secondary">当前降级上限</span><strong className="block font-mono text-sm">每秒 {runtimePolicy.scheduler.currentRate} 权重</strong></div>
-            <div><span className="text-xs text-secondary">最近 429</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.last429At ? new Date(runtimePolicy.scheduler.last429At).toLocaleString() : '无'}</strong></div>
-            <div><span className="text-xs text-secondary">429 冷却倒计时</span><strong className="block font-mono text-sm">{runtimePolicy.scheduler.cooldownUntil ? `${Math.max(0, Math.ceil((runtimePolicy.scheduler.cooldownUntil - schedulerNow) / 1000))} 秒` : '无'}</strong></div>
+            <div><span className="text-xs text-secondary">请求调度器</span><strong className="metric-value font-mono text-sm">{statusLabel(runtimePolicy.scheduler.state)}</strong></div>
+            <div><span className="text-xs text-secondary">官方桶</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.officialRate}/{runtimePolicy.scheduler.officialCapacity}</strong></div>
+            <div><span className="text-xs text-secondary">内部桶</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.currentRate}/{runtimePolicy.scheduler.configuredCapacity}</strong></div>
+            <div><span className="text-xs text-secondary">可用权重</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.availableWeight.toFixed(2)}</strong></div>
+            <div><span className="text-xs text-secondary">当前预留</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.reservedWeight.toFixed(2)}</strong></div>
+            <div><span className="text-xs text-secondary">近 1 秒预留 / 消耗</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.reservedLastSecond} / {runtimePolicy.scheduler.consumedLastSecond}</strong></div>
+            <div><span className="text-xs text-secondary">新交易预留</span><strong className="metric-value font-mono text-sm">{runtimePolicy.new_trade_reservation_weight} 权重</strong></div>
+            <div><span className="text-xs text-secondary">报价 / 下单权重</span><strong className="metric-value font-mono text-sm">2 / 5</strong></div>
+            <div><span className="text-xs text-secondary">队列</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.queueDepth}</strong></div>
+            <div><span className="text-xs text-secondary">实时信号通道</span><strong className={`metric-value font-mono text-sm ${runtimePolicy.live_queue.listenerConnected ? 'text-success' : 'text-danger'}`}>{runtimePolicy.live_queue.listenerConnected ? '已连接' : '扫描后备'}</strong></div>
+            <div><span className="text-xs text-secondary">当前降级上限</span><strong className="metric-value font-mono text-sm">每秒 {runtimePolicy.scheduler.currentRate} 权重</strong></div>
+            <div><span className="text-xs text-secondary">最近 429</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.last429At ? new Date(runtimePolicy.scheduler.last429At).toLocaleString() : '无'}</strong></div>
+            <div><span className="text-xs text-secondary">429 冷却倒计时</span><strong className="metric-value font-mono text-sm">{runtimePolicy.scheduler.cooldownUntil ? `${Math.max(0, Math.ceil((runtimePolicy.scheduler.cooldownUntil - schedulerNow) / 1000))} 秒` : '无'}</strong></div>
           </div>
-          <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="section-divider-top">
             <span className="text-xs text-secondary">优先级队列</span>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', marginTop: '8px' }}>
               {SCHEDULER_PRIORITIES.map(([priority, label]) => (
@@ -784,12 +784,12 @@ export default function SettingsPage() {
               ))}
             </div>
           </div>
-          <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="section-divider-top">
             <span className="text-xs text-secondary">订单查询阶段</span>
-            <div className="font-mono text-sm mt-1">1 秒 → 2 秒 → 5 秒 → 15-30 秒</div>
-            <div className="font-mono text-xs text-secondary mt-1">运行中策略：5-10 分钟 · 持仓余额：仅按恢复任务检查</div>
+            <div className="detail-line font-mono text-sm">1 秒 → 2 秒 → 5 秒 → 15-30 秒</div>
+            <div className="detail-line font-mono text-xs text-secondary">运行中策略：5-10 分钟 · 持仓余额：仅按恢复任务检查</div>
           </div>
-          <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="section-divider-top">
             <div className="flex justify-between text-xs"><span className="text-secondary">快速交易时延指标 · 24 小时</span><strong className={runtimePolicy.readiness.latencySlo.passed ? 'text-success' : 'text-secondary'}>{runtimePolicy.readiness.latencySlo.passed ? '已达标' : '等待验证'}</strong></div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '8px', marginTop: '8px' }}>
               {([
@@ -806,18 +806,18 @@ export default function SettingsPage() {
               ))}
             </div>
           </div>
-          <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="section-divider-top">
             <div className="flex justify-between text-sm"><span>真实交易实时检查</span><strong className={runtimePolicy.readiness.readyToArm ? 'text-success' : 'text-danger'}>{runtimePolicy.readiness.readyToArm ? '可以启动' : '未通过'}</strong></div>
-            {runtimePolicy.readiness.blockers.length > 0 && <div className="text-xs text-secondary font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>{runtimePolicy.readiness.blockers.map(blockerLabel).join(' · ')}</div>}
-            {runtimePolicy.readiness.advisories.length > 0 && <div className="text-xs text-secondary font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>观察项：{runtimePolicy.readiness.advisories.map(advisoryLabel).join(' · ')}</div>}
+            {runtimePolicy.readiness.blockers.length > 0 && <div className="detail-line text-xs text-secondary font-mono" style={{ overflowWrap: 'anywhere' }}>{runtimePolicy.readiness.blockers.map(blockerLabel).join(' · ')}</div>}
+            {runtimePolicy.readiness.advisories.length > 0 && <div className="detail-line text-xs text-secondary font-mono" style={{ overflowWrap: 'anywhere' }}>观察项：{runtimePolicy.readiness.advisories.map(advisoryLabel).join(' · ')}</div>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px', marginTop: '12px' }}>
-              <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+              <div className="section-divider-top">
                 <strong className="font-mono text-sm">快速交易缓存</strong>
                 <div className={`text-xs ${runtimePolicy.readiness.cacheRequired.ready ? 'text-success' : 'text-secondary'}`}>
                   {runtimePolicy.readiness.cacheRequired.ready ? '已就绪' : `缺少 ${runtimePolicy.readiness.cacheRequired.missing.length} 项`} · {runtimePolicy.readiness.cache.fresh}/{runtimePolicy.readiness.cacheRequired.total}
                 </div>
               </div>
-              <div className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+              <div className="section-divider-top">
                 <strong className="font-mono text-sm">策略对账积压</strong>
                 <div className="text-xs text-secondary">
                   {runtimePolicy.readiness.reconciler.strategyBacklog.reduce((total, item) => total + item.count, 0)}
@@ -826,7 +826,7 @@ export default function SettingsPage() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px', marginTop: '12px' }}>
               {runtimePolicy.readiness.chains.map(chain => (
-                <div key={chain.chain} className="border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+                <div key={chain.chain} className="section-divider-top">
                   <strong className="font-mono text-sm">{chain.chain.toUpperCase()}</strong>
                   <div className={`text-xs ${chain.ready || chain.strategy_ready ? 'text-success' : 'text-secondary'}`}>
                     {chain.ready
@@ -835,7 +835,7 @@ export default function SettingsPage() {
                         ? 'P20/P21 策略可用；固定 CA 仍需合约验收'
                         : chain.blockers.map(blockerLabel).join('，')}
                   </div>
-                  <div className="text-xs font-mono mt-1">
+                  <div className="detail-line text-xs font-mono">
                     真实买入 {chain.trade_evidence.confirmedBuys} · 真实卖出 {chain.trade_evidence.confirmedSells}
                   </div>
                   <div className="text-xs text-secondary font-mono">
@@ -845,9 +845,9 @@ export default function SettingsPage() {
               ))}
             </div>
             {runtimePolicy.readiness.latestEvidence && (
-              <div className="border-t pt-sm mt-1" style={{ borderColor: 'var(--color-border)' }}>
+              <div className="section-divider-top detail-section">
                 <span className="text-xs text-secondary">最近一条实盘链路证据</span>
-                <div className="text-xs font-mono mt-1" style={{ overflowWrap: 'anywhere' }}>
+                <div className="detail-line text-xs font-mono" style={{ overflowWrap: 'anywhere' }}>
                   Provider Event {runtimePolicy.readiness.latestEvidence.providerEventId || '-'} · Activity #{runtimePolicy.readiness.latestEvidence.activityId || '-'} · Signal #{runtimePolicy.readiness.latestEvidence.signalId || '-'} ({statusLabel(runtimePolicy.readiness.latestEvidence.signalStatus || 'unknown')})
                 </div>
                 <div className="text-xs font-mono" style={{ overflowWrap: 'anywhere' }}>
@@ -863,18 +863,18 @@ export default function SettingsPage() {
 
       {settingsSection === 'trading' && (
         <div className="card flex flex-col gap-md">
-          <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
+          <div className="settings-section-header">
             <h3 className="text-lg font-bold flex items-center gap-sm"><RefreshCw size={18} /> 自动交易行为</h3>
             <span className="text-xs text-secondary">只保留用户决策</span>
           </div>
           <div className="settings-decision-row">
             <div>
               <strong className="text-sm">失败后自动重试</strong>
-              <div className="text-xs text-secondary mt-xs">
+              <div className="settings-field-help text-xs text-secondary">
                 仅在确认未成交后重试；状态不确定、限流、鉴权和余额错误不会重试。
               </div>
               {managedRetryPartial && (
-                <div className="text-xs text-warning mt-xs">当前只有 {retryEnabledCount}/{RETRY_CHAINS.length} 条链开启，切换后将统一全部链。</div>
+                <div className="settings-field-help text-xs text-warning">当前只有 {retryEnabledCount}/{RETRY_CHAINS.length} 条链开启，切换后将统一全部链。</div>
               )}
             </div>
             <label className="settings-switch" title="失败后自动重试">
@@ -887,7 +887,7 @@ export default function SettingsPage() {
           <div className="settings-decision-row">
             <div>
               <strong className="text-sm">成交状态保护</strong>
-              <div className="text-xs text-secondary mt-xs">系统强制开启，无法通过前端关闭。</div>
+              <div className="settings-field-help text-xs text-secondary">系统强制开启，无法通过前端关闭。</div>
             </div>
             <strong className="text-sm text-success">已开启</strong>
           </div>
@@ -896,17 +896,17 @@ export default function SettingsPage() {
 
       {settingsSection === 'trading' && runtimePolicy && (
         <div className="card flex flex-col gap-md">
-          <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
+          <div className="settings-section-header">
             <h3 className="text-lg font-bold flex items-center gap-sm"><Shield size={18} /> 自动交易范围</h3>
             <span className="text-xs text-success">当前 Engine Scope</span>
           </div>
           <div className="settings-summary-grid">
-            <div><span className="text-xs text-secondary">数据源</span><strong className="block font-mono text-sm">{runtimePolicy.readiness.policy?.providers.join(', ') || '-'}</strong></div>
-            <div><span className="text-xs text-secondary">交易链</span><strong className="block font-mono text-sm">{runtimeScopeChainCount} 条</strong></div>
-            <div><span className="text-xs text-secondary">固定 CA</span><strong className="block font-mono text-sm">{runtimeScopeFixedCount} 个</strong></div>
-            <div><span className="text-xs text-secondary">动态 / 关注</span><strong className="block font-mono text-sm">{runtimeScopeDynamicCount} / {runtimeScopeFollowCount}</strong></div>
+            <div><span className="text-xs text-secondary">数据源</span><strong className="metric-value font-mono text-sm">{runtimePolicy.readiness.policy?.providers.join(', ') || '-'}</strong></div>
+            <div><span className="text-xs text-secondary">交易链</span><strong className="metric-value font-mono text-sm">{runtimeScopeChainCount} 条</strong></div>
+            <div><span className="text-xs text-secondary">固定 CA</span><strong className="metric-value font-mono text-sm">{runtimeScopeFixedCount} 个</strong></div>
+            <div><span className="text-xs text-secondary">动态 / 关注</span><strong className="metric-value font-mono text-sm">{runtimeScopeDynamicCount} / {runtimeScopeFollowCount}</strong></div>
           </div>
-          <div className="flex justify-end border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="actions-end section-divider-top">
             <Link className="btn btn-secondary" to="/strategies">管理策略</Link>
           </div>
         </div>
@@ -928,7 +928,7 @@ export default function SettingsPage() {
 
       {settingsSection === 'status' && x6551Status && (
         <div className="card flex flex-col gap-md">
-          <div className="flex justify-between items-center border-b pb-sm" style={{ borderColor: 'var(--color-border)', gap: '12px', flexWrap: 'wrap' }}>
+          <div className="settings-section-header">
             <h3 className="text-lg font-bold flex items-center gap-sm">
               <Radio size={18} /> 6551 Max
             </h3>
@@ -944,15 +944,15 @@ export default function SettingsPage() {
           </div>
 
           <div className="settings-summary-grid">
-            <div><span className="text-xs text-secondary">实时连接</span><strong className={`block font-mono text-sm ${x6551Status.wss.status === 'subscribed' ? 'text-success' : 'text-danger'}`}>{statusLabel(x6551Status.wss.status)}</strong></div>
-            <div><span className="text-xs text-secondary">同步失败</span><strong className={`block font-mono text-sm ${x6551Status.watchSync.failed > 0 ? 'text-danger' : ''}`}>{x6551Status.watchSync.failed}</strong></div>
-            <div><span className="text-xs text-secondary">未知事件</span><strong className={`block font-mono text-sm ${x6551Status.inbox.unknown > 0 ? 'text-danger' : ''}`}>{x6551Status.inbox.unknown}</strong></div>
-            <div><span className="text-xs text-secondary">消息用量</span><strong className="block font-mono text-sm">{x6551Status.usage.messages.observedMonth} / {x6551Status.usage.messages.monthlyLimit}</strong></div>
+            <div><span className="text-xs text-secondary">实时连接</span><strong className={`metric-value font-mono text-sm ${x6551Status.wss.status === 'subscribed' ? 'text-success' : 'text-danger'}`}>{statusLabel(x6551Status.wss.status)}</strong></div>
+            <div><span className="text-xs text-secondary">同步失败</span><strong className={`metric-value font-mono text-sm ${x6551Status.watchSync.failed > 0 ? 'text-danger' : ''}`}>{x6551Status.watchSync.failed}</strong></div>
+            <div><span className="text-xs text-secondary">未知事件</span><strong className={`metric-value font-mono text-sm ${x6551Status.inbox.unknown > 0 ? 'text-danger' : ''}`}>{x6551Status.inbox.unknown}</strong></div>
+            <div><span className="text-xs text-secondary">消息用量</span><strong className="metric-value font-mono text-sm">{x6551Status.usage.messages.observedMonth} / {x6551Status.usage.messages.monthlyLimit}</strong></div>
           </div>
 
           <details className="settings-diagnostics">
             <summary>查看诊断详情</summary>
-            <div className="flex flex-col gap-md pt-sm">
+            <div className="diagnostic-body flex flex-col gap-md">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px' }}>
             <div className="flex flex-col gap-xs">
               <span className="text-xs text-secondary">数据源</span>
@@ -1012,18 +1012,18 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="border-t pt-sm text-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="section-divider-top text-sm">
             <div className="flex items-center gap-sm">
               <Gauge size={15} />
               <strong>实时接收方式：6551 WSS 事件推送</strong>
             </div>
-            <div className="text-xs text-secondary mt-xs">
+            <div className="settings-field-help text-xs text-secondary">
               正常事件不走 60 秒或 3600 秒轮询，也没有“每轮最大 KOL 数”。本地信号处理目标 ≤ 300ms，GMGN 接受订单目标 ≤ 1s；心跳只用于检测连接存活，断线重连等待上限为 1s。
             </div>
           </div>
 
           {x6551Status.wss.lastError && (
-            <div className="text-sm text-danger border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+            <div className="text-sm text-danger section-divider-top">
               {x6551Status.wss.lastError}
             </div>
           )}
@@ -1031,7 +1031,7 @@ export default function SettingsPage() {
           </details>
 
           {watchPlan && (
-            <div className="flex flex-col gap-sm border-t pt-sm" style={{ borderColor: 'var(--color-border)' }}>
+            <div className="flex flex-col gap-sm section-divider-top">
               <div className="flex justify-between text-sm" style={{ flexWrap: 'wrap', gap: '8px' }}>
                 <span>期望监控 <strong>{watchPlan.desiredCount}</strong></span>
                 <span>远端已有 <strong>{watchPlan.remoteCount}</strong></span>
@@ -1042,7 +1042,7 @@ export default function SettingsPage() {
               </div>
               <div style={{ maxHeight: '240px', overflow: 'auto' }}>
                 {watchPlan.entries.filter(entry => entry.action !== 'none').map(entry => (
-                  <div key={entry.username} className="flex justify-between items-center py-sm border-t text-sm"
+                  <div key={entry.username} className="event-row text-sm"
                     style={{ borderColor: 'var(--color-border)', gap: '12px' }}>
                     <span className="font-mono">@{entry.username}</span>
                     <span className={entry.blocker ? 'text-danger' : 'text-secondary'}>{watchActionLabel(entry.action)}</span>
@@ -1057,12 +1057,12 @@ export default function SettingsPage() {
 
       {settingsSection === 'system' && <div className="grid grid-cols-2 gap-lg">
         <div className="card flex flex-col gap-md" style={{ gridColumn: '1 / -1' }}>
-          <div className="flex justify-between items-start gap-md" style={{ flexWrap: 'wrap' }}>
+          <div className="flex justify-between align-start gap-md" style={{ flexWrap: 'wrap' }}>
             <div>
               <h3 className="text-lg font-bold flex items-center gap-sm">
                 <Search size={18} /> Grok 关注发现提示词
               </h3>
-              <p className="text-sm text-secondary mt-xs">
+              <p className="settings-field-help text-sm text-secondary">
                 这里维护 Grok 在 X 上检索项目、CA、链和团队关系的自然语言任务。提示词只负责研究，不包含 GMGN 或交易执行逻辑。
               </p>
             </div>
@@ -1099,7 +1099,7 @@ export default function SettingsPage() {
             </div>
           )}
 
-          <div className="flex justify-between items-center gap-sm border-t pt-md" style={{ borderColor: 'var(--color-border)', flexWrap: 'wrap' }}>
+          <div className="settings-footer-actions">
             <span className="text-xs text-secondary">修改仅影响后续关注事件；正在处理的事件保持原提示词版本，不重启服务、不改变真实交易状态。</span>
             <div className="flex gap-sm">
               <button type="button" className="btn btn-secondary" onClick={resetFollowPrompts} disabled={!followPrompts || promptSaving}>
@@ -1114,7 +1114,7 @@ export default function SettingsPage() {
 
         {/* API Credentials and Environment config */}
         <div className="card flex flex-col gap-md" style={{ gridColumn: '1 / -1' }}>
-          <h3 className="text-lg font-bold flex items-center gap-sm border-b pb-sm" style={{ borderColor: 'var(--color-border)' }}><Key size={18} /> 接口与系统连接</h3>
+          <h3 className="text-lg font-bold flex items-center gap-sm section-heading section-divider-bottom"><Key size={18} /> 接口与系统连接</h3>
           
           <div className="grid grid-cols-2 gap-lg">
             {/* Left Block: External Integrations */}
@@ -1124,7 +1124,7 @@ export default function SettingsPage() {
               <label className="flex flex-col gap-xs">
                 <span className="text-xs text-secondary font-medium flex items-center justify-between">
                   GMGN API 密钥
-                  <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('GMGN_API_KEY')}>
+                  <button type="button" className="secret-toggle" onClick={() => toggleSecretVisibility('GMGN_API_KEY')}>
                     {showSecrets['GMGN_API_KEY'] ? <EyeOff size={12} /> : <Eye size={12} />}
                     {showSecrets['GMGN_API_KEY'] ? '隐藏' : '显示'}
                   </button>
@@ -1181,7 +1181,7 @@ export default function SettingsPage() {
                   <label className="flex flex-col gap-xs">
                     <span className="text-xs text-secondary font-medium flex items-center justify-between">
                       OPENNEWS 访问口令
-                      <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('OPENNEWS_TOKEN')}>
+                      <button type="button" className="secret-toggle" onClick={() => toggleSecretVisibility('OPENNEWS_TOKEN')}>
                         {showSecrets['OPENNEWS_TOKEN'] ? <EyeOff size={12} /> : <Eye size={12} />}
                         {showSecrets['OPENNEWS_TOKEN'] ? '隐藏' : '显示'}
                       </button>
@@ -1195,7 +1195,7 @@ export default function SettingsPage() {
               <label className="flex flex-col gap-xs">
                 <span className="text-xs text-secondary font-medium flex items-center justify-between">
                   看板登录鉴权口令 (ADMIN_TOKEN)
-                  <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('ADMIN_TOKEN')}>
+                  <button type="button" className="secret-toggle" onClick={() => toggleSecretVisibility('ADMIN_TOKEN')}>
                     {showSecrets['ADMIN_TOKEN'] ? <EyeOff size={12} /> : <Eye size={12} />}
                     {showSecrets['ADMIN_TOKEN'] ? '隐藏' : '显示'}
                   </button>
@@ -1231,7 +1231,7 @@ export default function SettingsPage() {
                 </label>
               ))}
 
-              <div className="border-t pt-sm mt-xs flex flex-col gap-sm" style={{ borderColor: 'var(--color-border)' }}>
+              <div className="section-divider-top detail-section flex flex-col gap-sm">
                 <span className="text-xs text-secondary font-medium">Robinhood Chain 真实验收资金保护</span>
                 {([
                   ['GMGN_MAX_FEE_RESERVE_ROBINHOOD', '单次提交最大费用预留（ETH）'],
@@ -1287,7 +1287,7 @@ export default function SettingsPage() {
               <label className="flex flex-col gap-xs">
                 <span className="text-xs text-secondary font-medium flex items-center justify-between">
                   数据库密码 (DB_PASSWORD)
-                  <button type="button" className="text-xs text-accent flex items-center gap-2" onClick={() => toggleSecretVisibility('DB_PASSWORD')}>
+                  <button type="button" className="secret-toggle" onClick={() => toggleSecretVisibility('DB_PASSWORD')}>
                     {showSecrets['DB_PASSWORD'] ? <EyeOff size={12} /> : <Eye size={12} />}
                     {showSecrets['DB_PASSWORD'] ? '隐藏' : '显示'}
                   </button>
@@ -1298,7 +1298,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="flex justify-end gap-sm border-t pt-md mt-sm" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="actions-end settings-save-actions">
             <button className="btn btn-primary" style={{ padding: '10px 20px', fontWeight: 600 }} onClick={saveEnv}>
               保存配置并热重启后台
             </button>

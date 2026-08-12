@@ -5,7 +5,14 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { Skeleton } from '../components/ui/Skeleton';
 import { TradeSignal } from '../lib/types';
-import { blockerLabel, eventTypeLabel, modeLabel, signalTypeLabel, statusLabel } from '../lib/display-labels';
+import { blockerLabel, eventTypeLabel, modeLabel, riskLabel, signalTypeLabel, statusLabel } from '../lib/display-labels';
+
+function authorizationLabel(value: TradeSignal['live_authorization']) {
+  if (value === 'auto_allowed') return '允许自动执行';
+  if (value === 'manual_allowed') return '允许人工执行';
+  if (value === 'record_only') return '只记录';
+  return '当前授权未知';
+}
 
 export default function SignalLog() {
   const [signals, setSignals] = useState<TradeSignal[]>([]);
@@ -20,7 +27,7 @@ export default function SignalLog() {
     if (chainFilter) params.chain_id = chainFilter;
     if (statusFilter) params.status = statusFilter;
     api.signals.list(params).then(res => {
-      if (res.ok && res.data) setSignals(res.data as unknown as TradeSignal[]);
+      if (res.ok && res.data) setSignals(res.data);
       setLoading(false);
     });
   }, [chainFilter, statusFilter]);
@@ -28,7 +35,8 @@ export default function SignalLog() {
   useEffect(() => { fetchSignals(); }, [fetchSignals]);
 
   useEffect(() => {
-    if (lastEvent?.type === 'signal:matched') {
+    if (lastEvent?.type === 'signal:matched'
+        || (lastEvent?.type === 'entity:changed' && lastEvent.payload.entity_type === 'signal')) {
       fetchSignals();
     }
   }, [lastEvent, fetchSignals]);
@@ -60,7 +68,7 @@ export default function SignalLog() {
       <div className="flex flex-col gap-md">
         {loading ? (
           Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="card flex items-start gap-md">
+            <div key={i} className="card flex align-start gap-md">
               <Skeleton width={32} height={32} circle />
               <div className="flex-1 flex flex-col gap-xs">
                 <div className="flex justify-between items-center mb-xs">
@@ -75,26 +83,26 @@ export default function SignalLog() {
         ) : (
           <>
             {signals.length === 0 && (
-              <div className="card text-center text-secondary" style={{ padding: '48px' }}>暂无信号记录</div>
+              <div className="card empty-state text-secondary">暂无信号记录</div>
             )}
             {signals.map((sig, idx) => (
-              <div key={sig.id} className="card animate-slide-in flex items-start gap-md signal-card" style={{ animationDelay: `${Math.min(idx, 10) * 50}ms` }}>
+              <div key={sig.id} className="card entity-enter flex align-start gap-md signal-card" style={{ animationDelay: `${Math.min(idx, 10) * 50}ms` }}>
                 <div className="signal-card__icon" style={{ marginTop: '4px' }}>
-                  <ChainIcon chain={(sig as any).chain_id || 'sol'} size="lg" />
+                  <ChainIcon chain={sig.chain_id} size="lg" />
                 </div>
                 <div className="flex-1 flex flex-col gap-xs signal-card__content">
-                  <div className="flex justify-between items-start signal-card__header">
+                  <div className="flex justify-between align-start signal-card__header">
                     <div className="flex items-center gap-sm signal-card__identity">
                       <span className="font-bold text-lg">@{sig.kol_handle}</span>
                       <span className="text-xs text-secondary font-mono">{modeLabel(sig.execution_mode)}</span>
                       <span className="text-xs font-mono" style={{ color: sig.live_authorization === 'auto_allowed' ? 'var(--color-success)' : sig.live_authorization === 'manual_allowed' ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}>
-                        {sig.live_authorization === 'auto_allowed' ? '允许自动执行' : sig.live_authorization === 'manual_allowed' ? '允许人工执行' : '只记录'}
+                        {authorizationLabel(sig.live_authorization)}
                       </span>
                       <span className="text-xs text-secondary font-mono" style={{ background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: '4px' }}>
                         W:{sig.kol_weight || 5}
                       </span>
                     </div>
-                    <div className="flex flex-col items-end gap-xs signal-card__status">
+                    <div className="flex flex-col align-end gap-xs signal-card__status">
                       <StatusBadge status={sig.status} />
                       {sig.status === 'rejected' && sig.reject_reason && (
                         <span className="text-xs text-danger font-medium" title={sig.reject_reason}>
@@ -104,7 +112,7 @@ export default function SignalLog() {
                     </div>
                   </div>
                   <div className="text-sm text-secondary">
-                    匹配类型: <span className="font-mono" style={{ color: 'var(--color-accent)', background: 'rgba(108,92,231,0.1)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}>{signalTypeLabel((sig as any).signal_type || sig.type)}</span>
+                    匹配类型: <span className="font-mono" style={{ color: 'var(--color-accent)', background: 'rgba(108,92,231,0.1)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}>{signalTypeLabel(sig.signal_type)}</span>
                   </div>
                   <div className="text-xs text-secondary font-mono">
                     数据源：{sig.provider || '未知'} / 互动：{eventTypeLabel(sig.activity_type)}
@@ -116,18 +124,34 @@ export default function SignalLog() {
                       {(sig.failure_class || sig.trade_error_code) && <span className="text-danger"> · {sig.failure_class || sig.trade_error_code}</span>}
                     </div>
                   )}
+                  {sig.execution.blockers.length > 0 && (
+                    <div className="signal-execution-panel signal-execution-panel--blocked">
+                      <strong>执行阻断</strong>
+                      <span>{sig.execution.blockers.map(blockerLabel).join(' · ')}</span>
+                    </div>
+                  )}
+                  {(sig.risk.hard_failures.length > 0 || sig.risk.warnings.length > 0) && (
+                    <div className="signal-risk-panel">
+                      {sig.risk.hard_failures.length > 0 && (
+                        <span className="text-danger">安全失败：{sig.risk.hard_failures.map(riskLabel).join(' · ')}</span>
+                      )}
+                      {sig.risk.warnings.length > 0 && (
+                        <span className="text-warning">风险观察：{sig.risk.warnings.map(riskLabel).join(' · ')}</span>
+                      )}
+                    </div>
+                  )}
                   {sig.observation_ended_at && (
                     <div className="text-xs text-muted font-mono">
                       观察窗口 {sig.observation_started_at ? new Date(sig.observation_started_at).toLocaleString() : '基线建立'}
                       {' -> '}{new Date(sig.observation_ended_at).toLocaleString()}
                     </div>
                   )}
-                  <div className="mt-2 p-3 rounded" style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid var(--color-border)' }}>
-                    <div className="font-semibold text-sm">{sig.project_name || (sig as any).symbol || '未知代币'}
-                      <span className="text-xs text-secondary font-mono ml-2">({sig.match_detail})</span>
+                  <div className="signal-match-panel" style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid var(--color-border)' }}>
+                    <div className="font-semibold text-sm">{sig.asset.display_label}
+                      <span className="signal-match-detail text-xs text-secondary font-mono">({sig.match_detail})</span>
                     </div>
                   </div>
-                  <div className="text-xs text-muted font-mono mt-1">{new Date(sig.created_at || (sig as any).timestamp).toLocaleString()}</div>
+                  <div className="signal-timestamp text-xs text-muted font-mono">{new Date(sig.created_at).toLocaleString()}</div>
                 </div>
               </div>
             ))}

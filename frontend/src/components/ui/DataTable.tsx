@@ -13,7 +13,7 @@ interface DataTableProps<T> {
 
 export function DataTable<T>({ data, columns, loading }: DataTableProps<T>) {
   if (loading) {
-    return <div className="p-4 text-center text-secondary">加载中...</div>;
+    return <div className="table-loading text-secondary">加载中...</div>;
   }
 
   return (

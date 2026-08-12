@@ -12,7 +12,7 @@ function normalizeProfile(value) {
 }
 
 function getGmgnCredentials(env = process.env) {
-  const profile = normalizeProfile(env.GMGN_CREDENTIAL_PROFILE);
+  const profile = normalizeProfile(env.GMGN_CREDENTIAL_PROFILE ?? 'primary');
   const prefix = profile === 'test' ? 'GMGN_TEST_' : 'GMGN_';
   return {
     profile,
@@ -21,10 +21,27 @@ function getGmgnCredentials(env = process.env) {
   };
 }
 
+function assertCredentialProfileForEnvironment(env = process.env) {
+  const profile = normalizeProfile(env.GMGN_CREDENTIAL_PROFILE ?? 'primary');
+  const nodeEnv = String(env.NODE_ENV || '').trim().toLowerCase();
+  if (nodeEnv === 'production' && profile !== 'primary') {
+    const error = new Error('Production requires GMGN_CREDENTIAL_PROFILE=primary');
+    error.code = 'GMGN_TEST_PROFILE_FORBIDDEN_IN_PRODUCTION';
+    throw error;
+  }
+  return profile;
+}
+
 function credentialKeys(profile) {
   return normalizeProfile(profile) === 'test'
     ? ['GMGN_TEST_API_KEY', 'GMGN_TEST_PRIVATE_KEY']
     : ['GMGN_API_KEY', 'GMGN_PRIVATE_KEY'];
 }
 
-module.exports = { PROFILES, credentialKeys, getGmgnCredentials, normalizeProfile };
+module.exports = {
+  PROFILES,
+  assertCredentialProfileForEnvironment,
+  credentialKeys,
+  getGmgnCredentials,
+  normalizeProfile
+};

@@ -32,6 +32,7 @@ const { dynamicSignalWorker } = require('./domains/dynamic-signal/event-worker')
 const { dynamicPaperSessionWorker } = require('./domains/dynamic-signal/paper-worker');
 const { actorScreeningWorker } = require('./domains/actor-screening/worker');
 const { followDiscoveryWorker } = require('./domains/follow-discovery/event-worker');
+const { releaseInfo } = require('./lib/release-info');
 const processRole = getProcessRole();
 const capabilities = roleCapabilities(processRole);
 
@@ -88,8 +89,8 @@ app.use('/api/dynamic-signal', require('./domains/dynamic-signal/routes'));
 app.use('/api/actor-screening', require('./domains/actor-screening/routes'));
 app.use('/api/follow-discovery', require('./domains/follow-discovery/routes'));
 
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, status: 'ok', process_role: processRole });
+app.get('/api/health', async (req, res) => {
+  res.json({ ok: true, status: 'ok', ...(await releaseInfo(processRole)) });
 });
 
 // Global error handler

@@ -17,7 +17,7 @@
 
 | 工具 | 入口 | 前端策略 | 使用场景 | 关键约束与副作用 |
 |---|---|---|---|---|
-| 新链只读诊断 | `POST /api/trade/chains/:chain/diagnose` | 不展示 | 新链首次接入或核心交易契约变化后，核验 Wallet、RPC、Token/Pool/Security/Quote 和 Strategy | 需要明确确认；不创建交易订单，但会写入 Readiness Evidence |
+| 新链只读诊断 | `POST /api/trade/chains/:chain/diagnose` | 不展示 | 新链首次接入或核心交易契约变化后，核验 Wallet、RPC、本地 Token 快照、Quote 和 Strategy | 首次请求只返回 endpoint/weight/cooldown preview；携带 preview hash 二次确认后才执行；Engine desired/running 时拒绝；不创建交易订单，但会写入 Readiness Evidence |
 | 限时实盘验收 | `POST /api/trade/chains/:chain/acceptance/start`、`POST /api/trade/acceptance/finish` | 不展示 | 新链生产批准前，用一条白名单完成真实 Buy/Close 闭环 | 最长 30 分钟、全系统唯一、只允许一条白名单；不会自动启动 Engine；结束前不得恢复普通策略 |
 | 新链生产批准 | `POST /api/trade/chains/:chain/approve` | 不展示 | 完整 Buy/Close、Receipt、Position/Lot、Strategy 和 Budget/Ledger 证据通过后开放新链 | Engine 必须停止；需要当前代码与配置证据；写审计记录 |
 | 6551 Watch 补偿应用 | `POST /api/x-monitor/6551/watch-apply` | 仅保留只读“预览监控变更”；不展示写入按钮 | Watch Sync Outbox 无法自动收敛时的人工补偿 | 仅 `signal` 模式且 Engine 停止；需要显式确认；受用量门禁保护 |
@@ -25,7 +25,8 @@
 | 链级失败熔断重置 | `POST /api/trade/chain-circuits/:chain/reset` | 仅在对应链熔断时显示 | 连续明确失败原因已修复并完成核验后恢复新买入 | 必须填写原因；不清除历史 Attempt 或失败证据 |
 | 环境与凭据热重载 | `POST /api/system/env`、`POST /api/system/env/gmgn-private-key` | 保留在“系统维护” | 修改 RPC、端口、数据库连接或轮换 GMGN 签名私钥 | 修改后停止新买入并由 Supervisor 重启；不得在日志或文档输出秘密值 |
 | 外部告警测试 | `POST /api/system/alerts/test` | 保留在“系统维护” | 验证外部告警通道 | 只写通知 Outbox，不执行交易 |
-| 测试库与 Migration 演练 | `test:integration`、`test:migration:p12`、`test:db:manage` | CLI only | 发布前验证完整 Schema、历史回填和约束 | 只允许名称包含 `test` 的独立数据库；拒绝生产库 |
+| 测试库与 Migration 演练 | `test:integration`、`test:migration:p27`、`test:db:manage` | CLI only | 发布前验证完整 Schema、历史回填、manifest bootstrap 和约束 | 只允许名称包含 `test` 的独立数据库；拒绝生产库 |
+| 发布资产与 Secret 审计 | `npm run audit:release`、`deploy/release-allowlist.txt` | CLI only | 发布前扫描当前 tracked/untracked 非 ignored 文件和 Git 历史，并由 allowlist 生成唯一发布候选清单 | 排除测试、Secret、日志、dump、dist 与历史 Live runner；只报告问题代码、路径和 object id，不输出 Secret；聊天、截图和终端中展示过的凭据仍须轮换 |
 | 生产 Migration phase | `npm run migrate` / `scripts/run-migrations.js` | CLI only | Supervisor 启动业务角色前按文件名顺序应用未完成迁移 | 必须使用部署目标 `.env`；迁移失败时不启动 `ingestion` 或 `execution`；不由业务角色重复执行 |
 | 环境、Schema 与链上审计 | `scripts/check-env.js`、`scripts/audit-db-schema.js`、`audit:solana-tx` | CLI only | 启动检查、数据库结构核验、历史 Solana 交易独立复核 | 默认只读；不得输出 API Key、私钥或完整未脱敏凭据 |
 

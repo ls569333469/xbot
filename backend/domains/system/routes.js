@@ -12,6 +12,7 @@ const { getRuntimeSummary } = require('../trade/runtime-policy-summary');
 const { enqueueWhitelistActivation } = require('../whitelist/activation-outbox');
 const { cache: gmgnCache } = require('../../lib/gmgn-cache');
 const runtimeScopeService = require('../trade/runtime-scope-service');
+const signalPublicQueries = require('../signal/public-queries');
 
 function operatorId(req) {
   return String(req.get('x-operator-id') || 'admin').slice(0, 128);
@@ -210,71 +211,8 @@ router.post('/alerts/test', async (req, res) => {
 // ── Signals ──
 router.get('/signals', async (req, res) => {
   try {
-    const { chain_id, signal_type, status, page = 1, pageSize = 20 } = req.query;
-    let fromWhere = `FROM trade_signals ts
-      LEFT JOIN ca_whitelist ca ON ts.whitelist_id = ca.id
-      LEFT JOIN x_activities xa ON ts.activity_id = xa.id
-      LEFT JOIN LATERAL (
-        SELECT intent.id AS trade_intent_id, intent.status AS trade_intent_status,
-               intent.retry_count, intent.max_retries,
-               attempt.id AS trade_attempt_id, attempt.attempt_no,
-               attempt.status AS trade_attempt_status,
-               attempt.failure_class, attempt.error_code AS trade_error_code
-        FROM trade_intents AS intent
-        LEFT JOIN LATERAL (
-          SELECT * FROM trade_attempts
-          WHERE intent_id = intent.id ORDER BY attempt_no DESC LIMIT 1
-        ) AS attempt ON true
-        WHERE intent.signal_id = ts.id
-        ORDER BY intent.id DESC LIMIT 1
-      ) AS trade_flow ON true
-      WHERE 1=1`;
-    let query = `SELECT ts.*, ca.symbol, ca.chain_id, ca.project_name, ca.contract_address,
-        xa.activity_type, xa.provider, xa.source_created_at,
-        xa.observation_started_at, xa.observation_ended_at
-      ${fromWhere}`;
-    const params = [];
-    let idx = 1;
-    if (chain_id) { fromWhere += ` AND ca.chain_id = $${idx++}`; params.push(chain_id); }
-    if (signal_type) { fromWhere += ` AND ts.signal_type = $${idx++}`; params.push(signal_type); }
-    if (status) { fromWhere += ` AND ts.status = $${idx++}`; params.push(status); }
-    query = `SELECT ts.*, ca.symbol, ca.chain_id, ca.project_name, ca.contract_address,
-      xa.activity_type, xa.provider, xa.source_created_at,
-      xa.observation_started_at, xa.observation_ended_at,
-      trade_flow.trade_intent_id, trade_flow.trade_intent_status,
-      trade_flow.retry_count, trade_flow.max_retries,
-      trade_flow.trade_attempt_id, trade_flow.attempt_no,
-      trade_flow.trade_attempt_status, trade_flow.failure_class,
-      trade_flow.trade_error_code ${fromWhere}`;
-    const countRes = await db.query(`SELECT COUNT(*) ${fromWhere}`, params);
-    const total = parseInt(countRes.rows[0].count, 10);
-    const offset = (parseInt(page, 10) - 1) * parseInt(pageSize, 10);
-    query += ` ORDER BY ts.created_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
-    params.push(parseInt(pageSize, 10), offset);
-    const result = await db.query(query, params);
-    const [policy, chainRows] = await Promise.all([
-      livePolicy.getPolicy(),
-      db.query('SELECT chain, implemented, contract_tested, live_enabled FROM chain_live_readiness')
-        .catch(() => ({ rows: [] }))
-    ]);
-    const chainMap = new Map(chainRows.rows.map(item => [item.chain, item]));
-    const data = result.rows.map(signal => {
-      const policyMatched = policy.providers.includes(String(signal.provider || '').toLowerCase())
-        && policy.eventTypes.includes(String(signal.activity_type || '').toLowerCase())
-        && policy.chains.includes(String(signal.chain_id || '').toLowerCase())
-        && policy.whitelistIds.includes(Number(signal.whitelist_id))
-        && Array.isArray(signal.matched_relation_ids) && signal.matched_relation_ids.length > 0;
-      const chain = chainMap.get(signal.chain_id);
-      const automatic = policyMatched
-        && policy.verifiedEventTypes.includes(String(signal.activity_type || '').toLowerCase())
-        && chain?.implemented
-        && (chain?.contract_tested || chain?.live_enabled);
-      return {
-        ...signal,
-        live_authorization: automatic ? 'auto_allowed' : policyMatched ? 'manual_allowed' : 'record_only'
-      };
-    });
-    res.json({ ok: true, data, total, page: parseInt(page, 10), pageSize: parseInt(pageSize, 10) });
+    const result = await signalPublicQueries.listSignals(req.query);
+    res.json({ ok: true, ...result });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

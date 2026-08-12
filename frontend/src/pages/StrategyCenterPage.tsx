@@ -177,7 +177,7 @@ export default function StrategyCenterPage() {
       <section className="strategy-center-shell">
         <header className="strategy-center-header">
           <div><span className="strategy-center-eyebrow">统一策略入口</span><h1>策略中心</h1><p>这里只查看策略状态；固定策略和动态策略进入各自工作区编辑。</p></div>
-          <div className="strategy-center-header-actions"><span className="strategy-center-status"><i />{resolutionRuntime.label}</span><button type="button" className="p16-icon-button" title="刷新策略中心" aria-label="刷新策略中心" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button></div>
+          <div className="strategy-center-header-actions"><span className="strategy-center-status"><i />{resolutionRuntime.label}</span><button type="button" className="p16-icon-button" title="刷新策略中心" aria-label="刷新策略中心" onClick={() => void refresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'icon-spin' : ''} /></button></div>
         </header>
 
         <nav className="strategy-center-tabs" aria-label="策略类型">

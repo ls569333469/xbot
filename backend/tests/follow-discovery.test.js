@@ -374,6 +374,7 @@ function materializerFixture(mode) {
     }
     if (sql.includes('INSERT INTO whitelist_activation_outbox')) return { rows: [] };
     if (sql.includes('INSERT INTO trade_signals')) return { rows: [{ id: 24 }] };
+    if (sql.includes('INSERT INTO notification_outbox')) return { rows: [{ id: 25 }] };
     throw new Error(`Unexpected SQL: ${sql}`);
   } };
   return { calls, executor };
@@ -408,7 +409,10 @@ test('Paper and Live follow resolutions use the shared pipeline without Activati
     assert.equal(result.whitelist.live_activation_state, 'live_ready');
     assert.equal(calls.some((item) => item.sql.includes('whitelist_activation_outbox')), false);
     const signalInsert = calls.find((item) => item.sql.includes('INSERT INTO trade_signals'));
-    assert.equal(signalInsert.params.at(-1), null);
+    assert.equal(signalInsert.params.at(-2).name, 'New Project');
+    assert.equal(signalInsert.params.at(-1).strategy_type, 'follow_discovery');
+    assert.equal(signalInsert.params.at(-1).execution_decision.status, 'not_attempted');
+    assert.ok(calls.some((item) => item.sql.includes("'entity_event','entity.changed'")));
   }
 });
 

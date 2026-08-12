@@ -52,5 +52,9 @@ test('P24 dynamic Live target is locally ready without an activation outbox', as
     resolverRevision: 'p20-test', confidence: 1
   }, executor);
   const signalInsert = calls.find((item) => item.sql.startsWith('INSERT INTO trade_signals'));
-  assert.equal(signalInsert.params.at(-1), null);
+  assert.equal(signalInsert.params.at(-2).symbol, null);
+  assert.equal(signalInsert.params.at(-2).name, null);
+  assert.equal(signalInsert.params.at(-1).strategy_type, 'dynamic_policy');
+  assert.equal(signalInsert.params.at(-1).execution_decision.status, 'not_attempted');
+  assert.ok(calls.some((item) => item.sql.includes("'entity_event','entity.changed'")));
 });

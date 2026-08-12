@@ -4,7 +4,9 @@ export type ActivityType = 'tweet' | 'retweet' | 'quote' | 'reply' | 'follow' | 
 export type SignalStatus = 'signal_only' | 'pending' | 'pending_risk' | 'approved' | 'execution_reserved' | 'rejected' | 'executed' | 'expired' | 'recorded';
 export type ExecutionMode = 'signal' | 'paper' | 'live' | 'unknown';
 export type PositionStatus = 'pending' | 'open' | 'open_unprotected' | 'open_protected' | 'partially_closed' | 'closing' | 'closed' | 'protection_failed' | 'close_uncertain' | 'tp_hit' | 'sl_hit' | 'manual_close' | 'failed';
-export type SignalType = 'handle_match' | 'ca_mention' | 'ticker_mention';
+export type SignalType = 'handle_match' | 'ca_mention' | 'ticker_mention' | 'dynamic_keyword' | 'follow_discovery';
+export type StrategyType = 'fixed_ca' | 'dynamic_policy' | 'follow_discovery' | 'unknown';
+export type EntityId = string | number;
 export type TradeIntentStatus = 'created' | 'submitting' | 'awaiting_result' |
   'retry_verifying' | 'retry_scheduled' | 'confirmed' | 'exhausted' |
   'rejected' | 'uncertain' | 'cancelled';
@@ -619,36 +621,102 @@ export interface X6551WatchPlan {
   managedCount: number;
 }
 
+export interface AssetIdentity {
+  symbol: string | null;
+  name: string | null;
+  logo_url: string | null;
+  display_label: string;
+  metadata_source: string;
+}
+
+export interface EntityExecution {
+  mode: ExecutionMode | null;
+  status: string | null;
+  intent_id: EntityId | null;
+  attempt_id: EntityId | null;
+  order_id: EntityId | null;
+  tx_hash: string | null;
+  blockers: string[];
+}
+
+export interface EntityRisk {
+  warnings: string[];
+  hard_failures: string[];
+}
+
+export interface ClosePreparation {
+  chain: ChainId;
+  position_id: EntityId;
+  sell_percent: number;
+  wallet_available_raw: string;
+  sell_amount_raw: string;
+  sell_amount: string | number;
+  strategy_action: 'sell' | 'cancel_then_sell';
+  prepare_token: string;
+  expires_in_seconds: number;
+}
+
 export interface TradeSignal {
-  id: string;
-  type: SignalType;
-  kol_id: string;
+  id: EntityId;
+  contract_version: 'p27.v1';
+  strategy_type: Exclude<StrategyType, 'unknown'>;
+  type?: SignalType;
+  kol_id: EntityId;
   kol_handle: string;
   kol_weight: number;
-  activity_id: string;
+  activity_id: EntityId;
   activity_type: ActivityType;
-  ca: string;
-  project_name: string;
-  chain: ChainId;
+  ca?: string;
+  project_name: string | null;
+  chain?: ChainId;
+  chain_id: ChainId;
+  contract_address: string;
+  asset: AssetIdentity;
+  settlement: {
+    token_decimals: number | null;
+    source: 'order_report' | 'position_lot' | 'unavailable';
+  };
+  project: { name: string | null; handles: string[] };
+  authorization: {
+    signal_policy_snapshot: {
+      mode: 'live' | 'paper' | 'record' | 'unknown';
+      policy_id: EntityId | null;
+      revision: number | null;
+      context_hash: string | null;
+    };
+    execution_decision: {
+      status: 'not_attempted' | 'allowed' | 'denied' | 'unknown';
+      blockers: string[];
+    };
+    current_projection: {
+      status: 'record_only' | 'manual_allowed' | 'auto_allowed' | 'unknown';
+      blockers: string[];
+    };
+  };
+  execution: EntityExecution;
+  risk: EntityRisk;
+  source: {
+    provider: string;
+    activity_id: EntityId | null;
+    trace_id: string | null;
+  };
   status: SignalStatus;
   execution_mode: ExecutionMode;
   reject_reason?: string;
   created_at: string;
   match_detail: string;
-  signal_type?: SignalType;
-  symbol?: string;
-  chain_id?: ChainId;
-  contract_address?: string;
+  signal_type: SignalType;
+  symbol?: string | null;
   provider?: string;
   source_created_at?: string;
   observation_started_at?: string;
   observation_ended_at?: string;
-  live_authorization?: 'record_only' | 'manual_allowed' | 'auto_allowed';
-  trade_intent_id?: string | null;
+  live_authorization?: 'record_only' | 'manual_allowed' | 'auto_allowed' | 'unknown';
+  trade_intent_id?: EntityId | null;
   trade_intent_status?: TradeIntentStatus | null;
   retry_count?: number;
   max_retries?: number;
-  trade_attempt_id?: string | null;
+  trade_attempt_id?: EntityId | null;
   attempt_no?: number | null;
   trade_attempt_status?: string | null;
   failure_class?: string | null;
@@ -656,12 +724,18 @@ export interface TradeSignal {
 }
 
 export interface Position {
-  id: string;
-  signal_id: string;
-  whitelist_id: string;
+  id: EntityId;
+  contract_version: 'p27.v1';
+  strategy_type: StrategyType;
+  signal_id: EntityId | null;
+  whitelist_id: EntityId | null;
   contract_address: string;
   chain_id: ChainId;
   symbol: string | null;
+  project_name?: string | null;
+  asset: AssetIdentity;
+  execution: EntityExecution;
+  risk: EntityRisk;
   amount_in: number;
   amount_out: number;
   entry_price: number;
@@ -689,9 +763,9 @@ export interface Position {
   };
   sell_tx_hash?: string;
   buy_tx_hash?: string;
-  trade_intent_id?: string | null;
+  trade_intent_id?: EntityId | null;
   trade_intent_status?: TradeIntentStatus | null;
-  trade_attempt_id?: string | null;
+  trade_attempt_id?: EntityId | null;
   attempt_no?: number | null;
   trade_attempt_status?: string | null;
   failure_class?: string | null;
@@ -699,12 +773,25 @@ export interface Position {
 }
 
 export interface TradeAttempt {
-  id: string;
-  intent_id: string;
+  id: EntityId;
+  contract_version: 'p27.v1';
+  strategy_type: StrategyType;
+  chain_id: ChainId;
+  contract_address: string;
+  asset: AssetIdentity;
+  execution: EntityExecution;
+  risk: EntityRisk;
+  order: {
+    id: EntityId | null;
+    provider_order_id: string | null;
+    tx_hash: string | null;
+    status: string | null;
+  };
+  intent_id: EntityId;
   attempt_no: number;
-  retry_of_attempt_id?: string | null;
-  signal_id?: string;
-  position_id?: string;
+  retry_of_attempt_id?: EntityId | null;
+  signal_id?: EntityId | null;
+  position_id?: EntityId | null;
   side: 'buy' | 'sell' | 'strategy_create' | 'strategy_cancel';
   chain: ChainId;
   wallet_address: string;
@@ -726,7 +813,7 @@ export interface TradeAttempt {
   created_at: string;
   submitted_at?: string;
   confirmed_at?: string;
-  order_id?: string;
+  order_id?: EntityId;
   provider_order_id?: string;
   tx_hash?: string;
   provider_status?: string;
@@ -749,7 +836,7 @@ export interface TradeAttempt {
 }
 
 export interface TradeIntent {
-  id: string;
+  id: EntityId;
   source_key: string;
   scope_key: string;
   side: 'buy' | 'sell';
@@ -772,8 +859,8 @@ export interface TradeIntent {
 }
 
 export interface TradeFailureEvidence {
-  id: string;
-  attempt_id: string;
+  id: EntityId;
+  attempt_id: EntityId;
   snapshot_version: number;
   evidence_type: string;
   status: 'observed' | 'passed' | 'failed' | 'conflict' | 'unavailable';
@@ -782,9 +869,9 @@ export interface TradeFailureEvidence {
 }
 
 export interface TradeRetryDecision {
-  id: string;
-  intent_id: string;
-  attempt_id: string;
+  id: EntityId;
+  intent_id: EntityId;
+  attempt_id: EntityId;
   decision: 'retry_scheduled' | 'retry_blocked' | 'uncertain' | 'exhausted';
   reason_code: string;
   evidence_json: Record<string, unknown>;
@@ -793,9 +880,9 @@ export interface TradeRetryDecision {
 }
 
 export interface TradeReconciliationIncident {
-  id: string;
-  intent_id?: string | null;
-  attempt_id?: string | null;
+  id: EntityId;
+  intent_id?: EntityId | null;
+  attempt_id?: EntityId | null;
   incident_type: 'late_confirmation' | 'multiple_fill' |
     'budget_reconciliation_deficit' | 'manual_lane_release';
   severity: 'medium' | 'high' | 'critical';
@@ -805,8 +892,8 @@ export interface TradeReconciliationIncident {
 }
 
 export interface BudgetReservation {
-  id: string;
-  intent_id: string;
+  id: EntityId;
+  intent_id: EntityId;
   amount_native: string | number;
   fee_native: string | number;
   fee_used_native: string | number;
@@ -819,7 +906,7 @@ export interface WalletWriteLane {
   wallet_address: string;
   wallet_masked?: string;
   state: 'idle' | 'submitting' | 'quarantined';
-  owner_attempt_id?: string | null;
+  owner_attempt_id?: EntityId | null;
   reason_code?: string | null;
   evidence_json?: Record<string, unknown>;
   lease_expires_at?: string | null;
@@ -867,12 +954,30 @@ export interface TradeAttemptDetails extends TradeAttempt {
   failure_evidence: TradeFailureEvidence[];
   retry_decisions: TradeRetryDecision[];
   reconciliation_incidents: TradeReconciliationIncident[];
-  orders: Array<Record<string, unknown>>;
-  events: Array<Record<string, unknown>>;
+  orders: TradeOrderRecord[];
+  events: TradeAttemptEvent[];
   strategy_groups: Array<Record<string, unknown>>;
   strategy_legs: Array<Record<string, unknown>>;
   position_lots: Array<Record<string, unknown>>;
   chain_receipts: Array<Record<string, unknown>>;
+}
+
+export interface TradeOrderRecord extends Record<string, unknown> {
+  id: EntityId;
+  provider_order_id?: string | null;
+  tx_hash?: string | null;
+  normalized_status?: string | null;
+  submitted_at?: string | null;
+  last_queried_at?: string | null;
+  next_query_at?: string | null;
+  query_count?: number | null;
+}
+
+export interface TradeAttemptEvent extends Record<string, unknown> {
+  id: EntityId;
+  from_status?: string | null;
+  to_status: string;
+  created_at: string;
 }
 
 export interface TradeReadiness {

@@ -20,6 +20,8 @@ const { getRuntimePolicyDetail } = require('./runtime-policy-summary');
 const providerAudit = require('./provider-audit-service');
 const engineState = require('../../lib/engine-state');
 const { TRADE_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
+const { closedPositionCsv } = require('./contract-projector');
+const { createDiagnosticHandler } = require('./diagnostic-handler');
 
 const ACTIVE_POSITION_STATUSES = [
   'open', 'open_unprotected', 'open_protected', 'partially_closed', 'closing',
@@ -37,7 +39,7 @@ function sendError(res, error) {
     'STRATEGY_STATE_UNSAFE', 'LIVE_READINESS_FAILED', 'WALLET_QUARANTINED',
     'WALLET_WRITE_LANE_BUSY', 'ACCEPTANCE_SCOPE_ALREADY_ACTIVE',
     'ACCEPTANCE_SCOPE_STILL_ACTIVE', 'ACCEPTANCE_SCOPE_EXPIRED',
-    'ACCEPTANCE_EVIDENCE_STALE'
+    'ACCEPTANCE_EVIDENCE_STALE', 'GMGN_DIAGNOSTIC_BLOCKED_WHILE_LIVE'
   ]);
   const status = error.code === 'SIGNAL_NOT_FOUND' || error.code === 'POSITION_NOT_FOUND'
     ? 404
@@ -91,24 +93,7 @@ router.get('/runtime-policy/detail', async (req, res) => {
   }
 });
 
-router.post('/chains/:chain/diagnose', async (req, res) => {
-  try {
-    if (req.body?.confirmation !== 'RUN READ ONLY DIAGNOSTIC') {
-      return res.status(400).json({
-        ok: false,
-        error: 'Explicit read-only diagnostic confirmation is required',
-        code: 'CONFIRMATION_REQUIRED'
-      });
-    }
-    const data = await readinessService.runDiagnostic({
-      chain: req.params.chain,
-      whitelistIds: req.body?.whitelist_ids
-    });
-    res.json({ ok: true, data });
-  } catch (error) {
-    sendError(res, error);
-  }
-});
+router.post('/chains/:chain/diagnose', createDiagnosticHandler({ readinessService, sendError }));
 
 router.post('/chains/:chain/acceptance/start', async (req, res) => {
   try {
@@ -400,24 +385,7 @@ router.post('/positions/:id/close', async (req, res) => {
 router.get('/history/export-csv', async (req, res) => {
   try {
     const history = await queries.getHistory({});
-    
-    let csvContent = '\uFEFF'; // UTF-8 BOM
-    csvContent += 'ID,链,代币符号,合约地址,投入额,入场价格,出场价格,实际盈亏,盈亏比例(%),状态,开仓时间,平仓时间\n';
-    
-    history.forEach(pos => {
-      const pnl = Number(pos.pnl || 0).toFixed(5);
-      const pnlPct = Number(pos.pnl_pct || 0).toFixed(2);
-      const entryPrice = Number(pos.entry_price || 0).toFixed(6);
-      const exitPrice = pos.exit_price ? Number(pos.exit_price).toFixed(6) : '-';
-      const openTime = pos.opened_at ? new Date(pos.opened_at).toLocaleString() : '-';
-      const closeTime = pos.closed_at ? new Date(pos.closed_at).toLocaleString() : '-';
-      
-      // Escape commas in project token symbols if any
-      const symbol = (pos.symbol || 'Unknown').replace(/,/g, '');
-      
-      csvContent += `${pos.id},${pos.chain_id.toUpperCase()},${symbol},${pos.contract_address},${pos.amount_in},${entryPrice},${exitPrice},${pnl},${pnlPct},${pos.status},"${openTime}","${closeTime}"\n`;
-    });
-    
+    const csvContent = closedPositionCsv(history);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename=xbot-trade-history.csv');
     res.status(200).send(csvContent);

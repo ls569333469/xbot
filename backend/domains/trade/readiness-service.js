@@ -8,7 +8,7 @@ const { decimalToRaw } = require('../../lib/decimal-units');
 const { getTradingMode } = require('../../lib/runtime-mode');
 const { getGmgnCredentials } = require('../../lib/gmgn-credentials');
 const { requireChain, rpcConfig } = require('./chain-adapters');
-const { scheduler, TRADE_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
+const { endpointWeight, scheduler, TRADE_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
 const livePolicy = require('../signal/live-policy');
 const { reconciler } = require('./reconciliation-service');
 const { loadCachedContext, requiredCacheKeys } = require('./fast-path-context');
@@ -578,6 +578,49 @@ async function runDiagnostic(options = {}) {
     contracts: contractProbes,
     evidence: evidence[chain] || null
   };
+}
+
+function diagnosticPreview(options = {}) {
+  const chain = String(options.chain || '').trim().toLowerCase();
+  const whitelistIds = [...new Set((options.whitelistIds || []).map(Number))]
+    .filter(Number.isInteger);
+  if (!CHAIN_REGISTRY[chain] || whitelistIds.length === 0) {
+    const error = new Error('Diagnostic requires one chain and explicit whitelist IDs');
+    error.code = 'DIAGNOSTIC_SCOPE_REQUIRED';
+    throw error;
+  }
+  const endpoints = [
+    { method: 'GET', path: '/v1/user/info', count: 1 },
+    { method: 'GET', path: '/v1/trade/quote', count: whitelistIds.length },
+    { method: 'GET', path: '/v1/trade/strategy/orders', count: 1 }
+  ].map((item) => ({
+    ...item,
+    unit_weight: endpointWeight(item.method, item.path),
+    total_weight: endpointWeight(item.method, item.path) * item.count
+  }));
+  const schedulerStatus = scheduler.getStatus();
+  return {
+    chain,
+    whitelist_ids: whitelistIds,
+    whitelist_count: whitelistIds.length,
+    endpoints,
+    estimated_weight: endpoints.reduce((sum, item) => sum + item.total_weight, 0),
+    scheduler: {
+      state: schedulerStatus.state,
+      available_weight: schedulerStatus.availableWeight,
+      cooldown_until: schedulerStatus.cooldownUntil || null
+    },
+    preview_hash: hashSnapshot({ chain, whitelistIds, endpoints })
+  };
+}
+
+async function persistedEngineDesiredRunning(executor = db) {
+  const result = await executor.query(
+    "SELECT value_json FROM trade_runtime_state WHERE key = 'live_engine_control'"
+  );
+  const runtime = result.rows[0]?.value_json || {};
+  return Boolean(runtime.desired_running)
+    || ['recovering', 'running', 'paused_transient', 'fault_protected'].includes(runtime.status);
 }
 
 async function getSnapshot(options = {}) {
@@ -1448,5 +1491,7 @@ module.exports = {
   monitor,
   normalizeTradeEvidence,
   persistContractProbeEvidence,
-  runDiagnostic
+  runDiagnostic,
+  diagnosticPreview,
+  persistedEngineDesiredRunning
 };

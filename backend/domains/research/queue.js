@@ -118,6 +118,16 @@ function engineAllowsResearch(engine = engineState) {
     .includes(String(status.status || '').toLowerCase());
 }
 
+async function persistedEngineAllowsResearch(executor = db) {
+  const result = await executor.query(
+    "SELECT value_json FROM trade_runtime_state WHERE key = 'live_engine_control'"
+  );
+  const runtime = result.rows[0]?.value_json || {};
+  return !runtime.desired_running
+    && !['recovering', 'running', 'paused_transient', 'fault_protected']
+      .includes(String(runtime.status || '').toLowerCase());
+}
+
 async function refreshJob(jobId, executor = db) {
   const result = await executor.query(
     `WITH counts AS (
@@ -331,6 +341,7 @@ class ResearchQueue {
   async runOnce() {
     if (this.running) return 0;
     if (!engineAllowsResearch(this.engine)) return 0;
+    if (!await persistedEngineAllowsResearch()) return 0;
     if (!schedulerAllowsResearch(undefined, {
       liveArmed: this.engine.getArmed?.() === true
     })) return 0;
@@ -376,6 +387,7 @@ module.exports = {
   claimItems,
   createResearchJob,
   engineAllowsResearch,
+  persistedEngineAllowsResearch,
   getResearchJob,
   jobStatusFromCounts,
   normalizeAddresses,

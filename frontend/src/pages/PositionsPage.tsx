@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
-import { ApiResponse, Position } from '../lib/types';
+import { ApiResponse, EntityId, Position } from '../lib/types';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../components/ui/ToastContext';
 import { DataTable } from '../components/ui/DataTable';
@@ -31,7 +31,7 @@ function closeErrorMessage(response: ApiResponse<unknown>, fallback: string) {
 export default function PositionsPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(true);
-  const [closingIds, setClosingIds] = useState<Set<string>>(new Set());
+  const [closingIds, setClosingIds] = useState<Set<EntityId>>(new Set());
   const { toast } = useToast();
   const { lastEvent } = useWebSocket();
 
@@ -40,7 +40,7 @@ export default function PositionsPage() {
     api.trade.positions()
       .then(res => {
         if (res.ok && res.data) {
-          setPositions(res.data as unknown as Position[]);
+          setPositions(res.data);
         }
         setLoading(false);
       })
@@ -55,32 +55,32 @@ export default function PositionsPage() {
     if (!lastEvent) return;
 
     const { type, payload } = lastEvent;
+    if (type === 'entity:changed'
+        && ['position', 'attempt', 'order'].includes(payload.entity_type || '')) {
+      void fetchPositions();
+      return;
+    }
     
     if (type === 'trade:executed') {
-      setPositions(prev => [payload, ...prev]);
-      toast(`新实盘开仓: ${payload.symbol || '代币'}`, 'success');
-    } else if (type === 'position:update') {
-      setPositions(prev => 
-        prev.map(pos => 
-          pos.id === payload.id 
-            ? { ...pos, exit_price: payload.exit_price, pnl: payload.pnl, pnl_pct: payload.pnl_pct, sim_peaks: payload.sim_peaks }
-            : pos
-        )
-      );
-    } else if (type === 'trade:order-updated' || type === 'position:close_confirmed') {
+      void fetchPositions();
+      toast(`新实盘开仓: ${typeof payload.symbol === 'string' ? payload.symbol : '代币'}`, 'success');
+    } else if (type === 'position:update'
+        || type === 'trade:order-updated'
+        || type === 'position:close_confirmed') {
       void fetchPositions();
     } else if (['position:tp_hit', 'position:sl_hit', 'position:manual_close'].includes(type)) {
-      setPositions(prev => prev.filter(pos => pos.id !== payload.id));
+      void fetchPositions();
       const reasonMap: Record<string, string> = {
         'position:tp_hit': '止盈平仓',
         'position:sl_hit': '止损平仓',
         'position:manual_close': '手动平仓'
       };
-      toast(`持仓已结束 [${reasonMap[type]}]: ${payload.symbol || '代币'} (${payload.pnl_pct}%)`, payload.pnl_pct >= 0 ? 'success' : 'warning');
+      const pnlPct = typeof payload.pnl_pct === 'number' ? payload.pnl_pct : 0;
+      toast(`持仓已结束 [${reasonMap[type]}]: ${typeof payload.symbol === 'string' ? payload.symbol : '代币'} (${pnlPct}%)`, pnlPct >= 0 ? 'success' : 'warning');
     }
   }, [lastEvent, toast, fetchPositions]);
 
-  const handleClose = async (id: string) => {
+  const handleClose = async (id: EntityId) => {
     const position = positions.find(item => item.id === id);
     if (!position) return;
     if (position.execution_mode === 'paper') {
@@ -103,8 +103,8 @@ export default function PositionsPage() {
       if (!executed.ok) throw new Error(closeErrorMessage(executed, '平仓提交失败'));
       toast('平仓订单已提交，等待交易服务与链上确认', 'success');
       setPositions(previous => previous.map(item => item.id === id ? { ...item, status: 'closing' } : item));
-    } catch (err: any) {
-      toast(err.message || '平仓异常', 'error');
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : '平仓异常', 'error');
     } finally {
       setClosingIds(previous => {
         const next = new Set(previous);
@@ -134,7 +134,7 @@ export default function PositionsPage() {
       header: '代币',
       accessor: (row: Position) => (
         <div className="flex flex-col">
-          <span className="font-semibold text-white text-sm">{row.symbol || '未知代币'}</span>
+          <span className="font-semibold text-strong text-sm">{row.asset.display_label}</span>
           <span className="text-xs text-secondary font-mono" title={row.contract_address}>
             {row.contract_address.slice(0, 4)}...{row.contract_address.slice(-4)}
           </span>
@@ -144,7 +144,7 @@ export default function PositionsPage() {
     {
       header: '投入金额',
       accessor: (row: Position) => (
-        <span className="text-white font-mono text-sm">
+        <span className="text-strong font-mono text-sm">
           {row.amount_in} {getChainNativeSymbol(row.chain_id)}
         </span>
       )
@@ -176,7 +176,7 @@ export default function PositionsPage() {
     {
       header: '当前价',
       accessor: (row: Position) => (
-        <span className="text-white font-mono text-sm">
+        <span className="text-strong font-mono text-sm">
           ${row.exit_price ? Number(row.exit_price).toFixed(6) : Number(row.entry_price).toFixed(6)}
         </span>
       )
@@ -258,7 +258,7 @@ export default function PositionsPage() {
       {loading ? (
           <TableSkeleton rows={3} cols={12} />
       ) : positions.length === 0 ? (
-        <div className="card text-center text-secondary py-lg" style={{ padding: '64px' }}>
+        <div className="card empty-state text-secondary">
           暂无活跃仓位。
         </div>
       ) : (

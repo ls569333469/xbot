@@ -66,7 +66,8 @@ async function main() {
       '043_p26_local_rpc_provider_status.sql',
       '044_p27_migration_manifest.sql',
       '045_p27_signal_contract_snapshots.sql',
-      '046_p27_reliable_notification_outbox.sql']]
+      '046_p27_reliable_notification_outbox.sql',
+      '047_p27_local_candidate_metadata_backfill.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -89,6 +90,7 @@ async function main() {
   if (!migrations.has('044_p27_migration_manifest.sql')) throw new Error('Migration 044 is not applied');
   if (!migrations.has('045_p27_signal_contract_snapshots.sql')) throw new Error('Migration 045 is not applied');
   if (!migrations.has('046_p27_reliable_notification_outbox.sql')) throw new Error('Migration 046 is not applied');
+  if (!migrations.has('047_p27_local_candidate_metadata_backfill.sql')) throw new Error('Migration 047 is not applied');
 
   await requireColumns('schema_migrations', [
     'checksum_sha256', 'migration_manifest_id', 'release_sha'

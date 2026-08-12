@@ -214,7 +214,7 @@ export default function KolPage() {
           <label className="flex flex-col gap-xs"><span className="text-sm text-secondary font-medium">显示名称</span><input className="input" value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label>
           <div className="flex flex-col gap-xs"><span className="text-sm text-secondary font-medium">生态标签</span><div className="kol-tag-editor">{TAG_OPTIONS.filter((item) => !['all', 'unclassified'].includes(item.value)).map((item) => <button key={item.value} type="button" className={form.chain_ids.includes(item.value as EcosystemTag) ? 'active' : ''} onClick={() => toggleTag(item.value as EcosystemTag)}>{item.label}</button>)}</div></div>
           <label className="flex flex-col gap-xs"><span className="text-sm text-secondary font-medium">权重：<strong>{form.weight}</strong></span><input type="range" min="1" max="10" value={form.weight} onChange={(event) => setForm({ ...form, weight: Number(event.target.value) })} /><small className="text-secondary">只用于账号重要性和列表排序，不改变交易金额或优先级。</small></label>
-          <div className="flex justify-end mt-4 gap-sm"><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>取消</button><button className="btn btn-primary" disabled={saving} onClick={handleSave}>{saving ? '保存中' : '保存'}</button></div>
+          <div className="modal-actions"><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>取消</button><button className="btn btn-primary" disabled={saving} onClick={handleSave}>{saving ? '保存中' : '保存'}</button></div>
         </div>
       </Modal>
       </>}

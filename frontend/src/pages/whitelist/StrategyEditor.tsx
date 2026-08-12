@@ -44,7 +44,7 @@ export default function StrategyEditor({ value, onChange, saveHint = '已应用�
   };
 
   return (
-    <div className="p16-strategy-editor">
+    <div>
       <div className="p16-preset-grid" role="list" aria-label="离场策略模板">
         {STRATEGY_PRESETS.map((preset) => {
           const selected = sameExitStrategy(value, preset.value);

@@ -20,6 +20,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const attemptRef = useRef(0);
+  const seenEventIdsRef = useRef(new Set<string>());
 
   const connect = useCallback(() => {
     try {
@@ -45,8 +46,21 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          setLastEvent({ type: data.type, payload: data.payload || data });
+          const data = JSON.parse(event.data) as WsEvent;
+          if (data.event_id) {
+            if (seenEventIdsRef.current.has(data.event_id)) return;
+            seenEventIdsRef.current.add(data.event_id);
+            if (seenEventIdsRef.current.size > 500) {
+              const oldest = seenEventIdsRef.current.values().next().value;
+              if (oldest) seenEventIdsRef.current.delete(oldest);
+            }
+          }
+          setLastEvent({
+            type: data.type,
+            event_id: data.event_id,
+            contract_version: data.contract_version,
+            payload: data.payload || data
+          });
         } catch (e) {
           console.error('WebSocket message parse error:', e);
         }
@@ -78,7 +92,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
     };
   }, [connect]);
 
-  const send = useCallback((type: string, payload: any) => {
+  const send = useCallback((type: string, payload: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type, payload }));
     }

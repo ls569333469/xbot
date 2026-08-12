@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xbot.p27.closed-position.v1",
+  "title": "P27 Closed Position DTO",
+  "allOf": [
+    { "$ref": "position.schema.json" },
+    {
+      "type": "object",
+      "required": ["closed_at"],
+      "properties": { "closed_at": { "type": ["string", "null"] } }
+    }
+  ]
+}

@@ -5,6 +5,7 @@ const { normalizedWallet, laneKey, walletWriteLane } = require('./wallet-write-l
 const { ledgerUsdAmount, unusedFeeEnvelope } = require('./budget-accounting');
 const { tradeCircuitBreaker } = require('./trade-circuit-breaker');
 const { codeVersion } = require('../../lib/code-version');
+const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 const ACTIVE_INTENT_STATUSES = [
   'created', 'submitting', 'awaiting_result', 'retry_verifying',
@@ -225,7 +226,9 @@ async function insertAttempt(executor, intent, values = {}) {
       values.traceId || previous?.trace_id || crypto.randomUUID(), values.timing || {}
     ]
   );
-  return result.rows[0];
+  const attempt = result.rows[0];
+  await enqueueEntityEvent(executor, 'attempt', attempt.id, 'created', `created:${attempt.status}`);
+  return attempt;
 }
 
 async function savePreSubmitSnapshot(attemptId, snapshot, estimatedFeeNative = null, executor = db) {

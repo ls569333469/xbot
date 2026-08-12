@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  assertCredentialProfileForEnvironment,
   credentialKeys,
   getGmgnCredentials,
   normalizeProfile
@@ -16,6 +17,18 @@ test('GMGN credentials default to the primary profile', () => {
   }), {
     profile: 'primary', apiKey: 'gmgn-primary', privateKey: 'primary-private'
   });
+});
+
+test('production rejects the isolated GMGN test profile', () => {
+  assert.equal(assertCredentialProfileForEnvironment({
+    NODE_ENV: 'production', GMGN_CREDENTIAL_PROFILE: 'primary'
+  }), 'primary');
+  assert.equal(assertCredentialProfileForEnvironment({
+    NODE_ENV: 'development', GMGN_CREDENTIAL_PROFILE: 'test'
+  }), 'test');
+  assert.throws(() => assertCredentialProfileForEnvironment({
+    NODE_ENV: 'production', GMGN_CREDENTIAL_PROFILE: 'test'
+  }), { code: 'GMGN_TEST_PROFILE_FORBIDDEN_IN_PRODUCTION' });
 });
 
 test('test profile is isolated from primary credentials', () => {

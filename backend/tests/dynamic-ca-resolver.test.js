@@ -39,6 +39,28 @@ test('resolver verifies and resolves one exact symbol candidate without creating
   assert.equal(result.canTrade, false);
 });
 
+test('record resolution accepts a cached provider-verified tradable candidate', async () => {
+  const result = await resolveDynamicSignal({
+    text: 'Buy $PONS',
+    allowedChains: ['robinhood'],
+    executionMode: 'record'
+  }, {
+    candidateIndex: new CandidateIndex([{
+      chain: 'robinhood',
+      address: CA,
+      symbol: 'PONS',
+      providerStatus: 'verified',
+      tradableStatus: 'tradable'
+    }]),
+    verifyCandidate: undefined
+  });
+
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.selectedCandidate.contractAddress, CA);
+  assert.equal(result.candidateCoverage.provider_verified_count, 1);
+  assert.equal(result.canTrade, false);
+});
+
 test('resolver handles a configured Chinese phrase with punctuation differences', async () => {
   const result = await resolveDynamicSignal({
     text: '何必东奔西走.币安全部都有!',

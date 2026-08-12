@@ -28,7 +28,7 @@ export default function Dashboard() {
     ]).then(([dashRes, budgetsRes, signalsRes]) => {
       if (dashRes.ok && dashRes.data) setStats(dashRes.data);
       if (budgetsRes.ok && budgetsRes.data) setBudgetsSpent(budgetsRes.data);
-      if (signalsRes.ok && signalsRes.data) setRecentSignals(signalsRes.data as unknown as TradeSignal[]);
+      if (signalsRes.ok && signalsRes.data) setRecentSignals(signalsRes.data);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -41,6 +41,7 @@ export default function Dashboard() {
     if (!lastEvent) return;
     
     const triggerEvents = [
+      'entity:changed',
       'signal:matched',
       'trade:executed',
       'trade:failed',
@@ -55,9 +56,10 @@ export default function Dashboard() {
         if (res.ok && res.data) setStats(res.data);
       });
 
-      if (lastEvent.type === 'signal:matched' || lastEvent.type === 'trade:executed') {
+      if (lastEvent.type === 'signal:matched' || lastEvent.type === 'trade:executed'
+          || (lastEvent.type === 'entity:changed' && lastEvent.payload.entity_type === 'signal')) {
         api.signals.list({ pageSize: '20' }).then(res => {
-          if (res.ok && res.data) setRecentSignals(res.data as unknown as TradeSignal[]);
+          if (res.ok && res.data) setRecentSignals(res.data);
         });
       }
     }
@@ -78,7 +80,7 @@ export default function Dashboard() {
         </div>
         <div className="grid grid-cols-2 gap-lg">
           <div className="card flex flex-col gap-md">
-            <h3 className="text-lg font-bold border-b pb-2" style={{ borderColor: 'var(--color-border)' }}>当日预算进度</h3>
+            <h3 className="text-lg font-bold section-heading section-divider-bottom">当日预算进度</h3>
             <div className="flex flex-col gap-md">
               <div className="flex items-center gap-md">
                 <Skeleton width={24} height={24} circle />
@@ -91,7 +93,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="card flex flex-col gap-md">
-            <h3 className="text-lg font-bold border-b pb-2" style={{ borderColor: 'var(--color-border)' }}>实时信号</h3>
+            <h3 className="text-lg font-bold section-heading section-divider-bottom">实时信号</h3>
             <div className="flex flex-col gap-sm">
               <Skeleton width="100%" height={40} />
               <Skeleton width="100%" height={40} />
@@ -128,7 +130,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 gap-lg">
         <div className="card flex flex-col gap-md">
-          <h3 className="text-lg font-bold border-b pb-2" style={{ borderColor: 'var(--color-border)' }}>今日实盘资金流水</h3>
+          <h3 className="text-lg font-bold section-heading section-divider-bottom">今日实盘资金流水</h3>
           <div className="flex flex-col gap-md">
             {budgetsSpent.length === 0 && <div className="text-secondary text-sm">今日暂无资金流水</div>}
             {budgetsSpent.map(item => (
@@ -137,7 +139,7 @@ export default function Dashboard() {
                   <ChainIcon chain={item.chain_id as any} />
                   <span className="font-mono text-sm">{item.chain_id.toUpperCase()}</span>
                 </div>
-                <div className="text-right font-mono text-xs">
+                <div className="align-text-end font-mono text-xs">
                   <div>已成交 {Number(item.principal_committed || 0).toFixed(6)}</div>
                   <div className="text-secondary">预留 {Number(item.principal_reserved || 0).toFixed(6)} {item.native_symbol}</div>
                 </div>
@@ -147,16 +149,16 @@ export default function Dashboard() {
         </div>
 
         <div className="card flex flex-col gap-md">
-          <h3 className="text-lg font-bold border-b pb-2" style={{ borderColor: 'var(--color-border)' }}>实时信号</h3>
+          <h3 className="text-lg font-bold section-heading section-divider-bottom">实时信号</h3>
           <div className="flex flex-col gap-sm" style={{ maxHeight: '300px', overflowY: 'auto' }}>
             {recentSignals.length === 0 && <div className="text-secondary text-sm">暂无信号</div>}
             {recentSignals.map(sig => (
-              <div key={sig.id} className="flex justify-between items-center p-2 rounded" style={{ background: 'rgba(255,255,255,0.02)' }}>
+              <div key={sig.id} className="flex justify-between items-center dashboard-signal-row" style={{ background: 'rgba(255,255,255,0.02)' }}>
                 <div className="flex items-center gap-md">
-                  <ChainIcon chain={(sig as any).chain_id || 'sol'} size="sm" />
+                  <ChainIcon chain={sig.chain_id} size="sm" />
                   <div className="flex flex-col">
                     <span className="font-semibold text-sm">@{sig.kol_handle}</span>
-                    <span className="text-xs text-secondary">{sig.project_name || (sig as any).symbol || '未知项目'} · {signalTypeLabel((sig as any).signal_type || sig.type)}</span>
+                    <span className="text-xs text-secondary">{sig.asset.display_label} · {signalTypeLabel(sig.signal_type)}</span>
                   </div>
                 </div>
                 <StatusBadge status={sig.status} />
