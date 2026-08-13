@@ -1,7 +1,7 @@
 # XBOT 文档入口与当前迭代状态
 
-> 更新时间：2026-08-12
-> 当前执行基线：P27 已以唯一 SHA `9f019b498f2274e515524f5ff635632597fc2b7a` 和 tag `p27.1-production-20260812` 发布并部署到 xiexiu；Migration `000-049`、双角色 Supervisor、备份恢复、Nginx/TGBOT 和页面刷新 GMGN 零增量验收已通过。生产保持冷启动，三策略真实资金闭环待用户单独批准。
+> 更新时间：2026-08-13
+> 当前执行基线：P27 已以唯一 SHA `9f019b498f2274e515524f5ff635632597fc2b7a` 和 tag `p27.1-production-20260812` 发布并部署到 xiexiu；Migration `000-049`、双角色 Supervisor、备份恢复、Nginx/TGBOT 和页面刷新 GMGN 零增量验收已通过。生产三策略、6551 WSS/Watch 和允许启动配置已恢复，Readiness 为 `readyToArm=true`；Engine 仍保持 stopped/disarmed，三策略真实资金闭环待用户在前端二次确认后人工验收。
 
 ## 当前事实
 
@@ -25,7 +25,7 @@
 | P23 | 已完成全历史深度审计、第一批不可达旧代码清理、迁移职责收敛、Migration 000-040 演练、完整回归和隐私扫描；生产只读 Schema Audit、服务器发布和真实交易验收待执行 |
 | P24-P26 | 单 Signal GMGN 边界、三策略成交基线恢复、Attempt 幂等与双角色 Supervisor 已实现；P26 已作为 P27 的可回滚应用基线 |
 | P27 | Migration manifest `044`、Signal snapshot `045`、可靠 outbox `046`、精确本地回填 `047`、共享 GMGN 元数据 `048-049`、`p27.v1` REST 契约、可靠事件、设计系统和发布审计已实施并部署到 xiexiu |
-| P28 | GitHub 分支/tag、服务器备份与隔离恢复、Migration `036-049`、双角色 Supervisor、Nginx/TGBOT、鉴权 API 和页面刷新 GMGN 零增量均已验收；生产 Engine/6551 保持关闭，公网登录后人工 DOM 与三策略真实资金闭环待单独批准 |
+| P28 | GitHub 分支/tag、服务器备份与隔离恢复、Migration `036-049`、双角色 Supervisor、Nginx/TGBOT、鉴权 API 和页面刷新 GMGN 零增量均已验收；生产三策略、6551 WSS/Watch 和允许启动配置已恢复，Engine 仍保持 stopped/disarmed，公网人工 DOM 与三策略真实资金闭环待执行 |
 | P12 明确失败重试 | 核心代码和统一前端开关已实现；当前五链自动重试均关闭，只有用户主动开启后才生效 |
 
 运行时 `live_policy`、Engine Armed 状态和链开关会随测试变化，必须以数据库/API 实时结果为准，不能从历史文档推断。
