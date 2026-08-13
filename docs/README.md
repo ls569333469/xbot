@@ -1,7 +1,7 @@
 # XBOT 文档入口与当前迭代状态
 
 > 更新时间：2026-08-13
-> 当前执行基线：P27 已以唯一 SHA `9f019b498f2274e515524f5ff635632597fc2b7a` 和 tag `p27.1-production-20260812` 发布并部署到 xiexiu；Migration `000-049`、双角色 Supervisor、备份恢复、Nginx/TGBOT 和页面刷新 GMGN 零增量验收已通过。生产三策略、6551 WSS/Watch 和允许启动配置已恢复，Readiness 为 `readyToArm=true`；Engine 仍保持 stopped/disarmed，三策略真实资金闭环待用户在前端二次确认后人工验收。
+> 当前执行基线：P27.2 策略隔离 hotfix 已以唯一 SHA `af8ce074ecb53a41785e7dcb3b47bbe84c15be05` 和 tag `p27.2-production-20260813` 发布并部署到 xiexiu；Migration `000-049` 零变更、Schema Audit、双角色 Supervisor、6551 WSS/Watch、Readiness 和部署窗口 GMGN/429 零增量均已验收。新增 KOL 或保存单条策略不再因 Watch 同步窗口停止全局 Engine；Engine 当前保持 stopped/disarmed，是否恢复真实交易由用户单独确认。
 
 ## 当前事实
 
@@ -26,6 +26,9 @@
 | P24-P26 | 单 Signal GMGN 边界、三策略成交基线恢复、Attempt 幂等与双角色 Supervisor 已实现；P26 已作为 P27 的可回滚应用基线 |
 | P27 | Migration manifest `044`、Signal snapshot `045`、可靠 outbox `046`、精确本地回填 `047`、共享 GMGN 元数据 `048-049`、`p27.v1` REST 契约、可靠事件、设计系统和发布审计已实施并部署到 xiexiu |
 | P28 | GitHub 分支/tag、服务器备份与隔离恢复、Migration `036-049`、双角色 Supervisor、Nginx/TGBOT、鉴权 API 和页面刷新 GMGN 零增量均已验收；生产三策略、6551 WSS/Watch 和允许启动配置已恢复，Engine 仍保持 stopped/disarmed，公网人工 DOM 与三策略真实资金闭环待执行 |
+| P29 | GitHub 与 xiexiu 日常发布工作手册已建立；区分应用 hotfix、完整发布和纯配置操作，固化网络门、唯一 Audit、Engine/资金检查、备份、不可变 release、原子切换、回滚和部署后验收流程 |
+| P30 | 动态喊单预设资产路由处于投研暂停状态；已定义词条到链/CA 的结构化映射、互动原帖所有权、回复/引用/直接转发边界、互斥路由和 GMGN 零额外调用标准；当前未授权实施 |
+| P31 | 账号研究终态详情与固定 CA 快速投研调度回归已修复；实盘时投研降为单并发并服从真实交易优先、Trade Lease 与 429 冷却，本地已验收，尚未部署 xiexiu |
 | P12 明确失败重试 | 核心代码和统一前端开关已实现；当前五链自动重试均关闭，只有用户主动开启后才生效 |
 
 运行时 `live_policy`、Engine Armed 状态和链开关会随测试变化，必须以数据库/API 实时结果为准，不能从历史文档推断。
@@ -43,18 +46,21 @@
 9. [P27 服务器同步前全链路收口方案](./00_系统架构与全局设计/P27_server_sync_preflight_and_three_strategy_contract_convergence_plan.md)：统一字段、元数据、事件、前端设计、Migration trust、Secret 和服务器发布验收。
 10. [P27 自动验收报告](./00_系统架构与全局设计/P27_automated_acceptance_report_2026-08-12.md)：记录代码、Migration、数据库恢复、DOM、GMGN 调用与发布边界的自动验收证据。
 11. [P28 xiexiu 服务器部署与 GitHub 发布方案](./00_系统架构与全局设计/P28_xiexiu_server_deployment_and_github_release_plan.md)：记录唯一 release SHA、GitHub 分支/tag、服务器备份、Migration `036-049`、双角色 Supervisor、Nginx/TGBOT、冷启动验收和待执行实盘恢复。
-12. [维护工具登记表](./00_系统架构与全局设计/maintenance_tool_registry.md)：后台验收、事故恢复、Provider 补偿和 CLI 工具的长期唯一清单。
-13. [P14 历史生产收尾方案](./00_系统架构与全局设计/P14_p13_acceptance_robinhood_live_and_release_closure_plan.md)：已实施能力与历史验收证据。
-14. [P16 高级策略、模板与快速投研方案](./00_系统架构与全局设计/P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md)：当前实现、自动化验收和剩余真实验收清单。
-15. [P16.1 未发币项目监控与固定 CA 触发纠偏](./00_系统架构与全局设计/P16_1_prelaunch_project_monitor_plan.md)：双链路边界、Migration 020、实现与验收结果。
-16. [P15 前端信息架构收敛](./00_系统架构与全局设计/P15_frontend_information_architecture_convergence_plan.md)：日常前端、运行状态和维护边界。
-17. [P13 配置收敛与旧路径治理](./00_系统架构与全局设计/P13_whitelist_owned_configuration_convergence_plan.md)：白名单配置收敛实现证据。
-18. [P12 统一迭代方案](./00_系统架构与全局设计/P12_definitive_failure_retry_and_four_chain_validation_plan.md)：资金状态机和明确失败重试设计证据。
-19. [系统架构与交易链路图](./00_系统架构与全局设计/xbot-system-link-map.html)：当前生产链路、买入、平仓、新链扩展边界。
-20. [核心 PRD](./00_系统架构与全局设计/PRD-MEME右侧交易系统.md)：产品需求和维护工具前端边界。
-21. [工程日志](./ENGINEERING_LOG.md)：按时间记录实现和验收事实，不作为并行执行方案。
-22. [外部官方资料](./external/)：GMGN、6551 等 Provider 的本地官方文档快照。
-23. [P12 生产可达性清单](./00_系统架构与全局设计/P12_production_reachability_inventory.md)：生产主链路、显式回退、测试资产和暂不删除项。
+12. [P29 GitHub 与 xiexiu 部署工作手册](./00_系统架构与全局设计/P29_github_and_xiexiu_deployment_operations_runbook.md)：日常 hotfix/完整发布分流、故障速查、原子切换、回滚和完成定义。
+13. [P30 动态喊单预设资产路由方案](./00_系统架构与全局设计/P30_dynamic_preset_asset_routing_plan.md)：词条到链/CA 的显式映射、互动原帖解析、互斥选择、Revision 快照、6551 补读和 GMGN 边界的待授权实施方案。
+14. [P31 研究链路可见性与调度收敛方案](./00_系统架构与全局设计/P31_account_research_result_visibility_and_status_convergence_plan.md)：账号研究终态详情、失败可观测性，以及固定 CA 快速投研的交易优先动态调度。
+15. [维护工具登记表](./00_系统架构与全局设计/maintenance_tool_registry.md)：后台验收、事故恢复、Provider 补偿和 CLI 工具的长期唯一清单。
+16. [P14 历史生产收尾方案](./00_系统架构与全局设计/P14_p13_acceptance_robinhood_live_and_release_closure_plan.md)：已实施能力与历史验收证据。
+17. [P16 高级策略、模板与快速投研方案](./00_系统架构与全局设计/P16_advanced_exit_strategy_whitelist_templates_and_research_assistant_plan.md)：当前实现、自动化验收和剩余真实验收清单。
+18. [P16.1 未发币项目监控与固定 CA 触发纠偏](./00_系统架构与全局设计/P16_1_prelaunch_project_monitor_plan.md)：双链路边界、Migration 020、实现与验收结果。
+19. [P15 前端信息架构收敛](./00_系统架构与全局设计/P15_frontend_information_architecture_convergence_plan.md)：日常前端、运行状态和维护边界。
+20. [P13 配置收敛与旧路径治理](./00_系统架构与全局设计/P13_whitelist_owned_configuration_convergence_plan.md)：白名单配置收敛实现证据。
+21. [P12 统一迭代方案](./00_系统架构与全局设计/P12_definitive_failure_retry_and_four_chain_validation_plan.md)：资金状态机和明确失败重试设计证据。
+22. [系统架构与交易链路图](./00_系统架构与全局设计/xbot-system-link-map.html)：当前生产链路、买入、平仓、新链扩展边界。
+23. [核心 PRD](./00_系统架构与全局设计/PRD-MEME右侧交易系统.md)：产品需求和维护工具前端边界。
+24. [工程日志](./ENGINEERING_LOG.md)：按时间记录实现和验收事实，不作为并行执行方案。
+25. [外部官方资料](./external/)：GMGN、6551 等 Provider 的本地官方文档快照。
+26. [P12 生产可达性清单](./00_系统架构与全局设计/P12_production_reachability_inventory.md)：生产主链路、显式回退、测试资产和暂不删除项。
 
 ## 启动与测试
 

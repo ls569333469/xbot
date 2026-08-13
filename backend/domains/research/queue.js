@@ -11,8 +11,11 @@ const {
   normalizeRequest
 } = require('./service');
 const { XAI_PROMPT_VERSION } = require('./xai-client');
+const { TRADE_MAX_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
 
 const DEFAULT_CONCURRENCY = 3;
+const LIVE_CONCURRENCY = 1;
+const LIVE_RESEARCH_ADMISSION_WEIGHT = TRADE_MAX_RESERVATION_WEIGHT + 3;
 const MAX_BATCH_SIZE = 30;
 
 function normalizeAddresses(chainId, values) {
@@ -92,7 +95,7 @@ async function getResearchJob(id) {
     )
   ]);
   const job = jobResult.rows[0];
-  return job ? { ...job, items: itemResult.rows } : null;
+  return job ? { ...job, items: itemResult.rows, queue_status: researchQueue.getStatus() } : null;
 }
 
 function jobStatusFromCounts(counts) {
@@ -103,29 +106,55 @@ function jobStatusFromCounts(counts) {
   return 'completed';
 }
 
+function researchAdmission(status = researchAccess.scheduler.getStatus(), options = {}) {
+  if (status.state === 'cooling') {
+    return {
+      allowed: false,
+      wait_reason: 'GMGN_COOLDOWN',
+      retry_at: status.cooldownUntil || status.resetAt || null
+    };
+  }
+  if (Number(status.reservedWeight || 0) > 0) {
+    return { allowed: false, wait_reason: 'TRADE_PROVIDER_LEASE_ACTIVE', retry_at: null };
+  }
+  const higherPriorityQueued = Object.entries(status.queueByPriority || {})
+    .some(([priority, count]) => Number(priority) < 5 && Number(count) > 0);
+  if (higherPriorityQueued) {
+    return { allowed: false, wait_reason: 'TRADE_PROVIDER_QUEUE_ACTIVE', retry_at: null };
+  }
+  if (options.liveMode === true
+      && Number.isFinite(Number(status.availableWeight))
+      && Number(status.availableWeight) < LIVE_RESEARCH_ADMISSION_WEIGHT) {
+    return { allowed: false, wait_reason: 'TRADE_CAPACITY_RESERVED', retry_at: null };
+  }
+  return { allowed: true, wait_reason: null, retry_at: null };
+}
+
 function schedulerAllowsResearch(status = researchAccess.scheduler.getStatus(), options = {}) {
-  if (options.liveArmed === true) return false;
-  if (status.state === 'cooling' || Number(status.reservedWeight || 0) > 0) return false;
-  return !Object.entries(status.queueByPriority || {})
-    .some(([priority, count]) => Number(priority) < 4 && Number(count) > 0);
+  return researchAdmission(status, options).allowed;
 }
 
-function engineAllowsResearch(engine = engineState) {
+function runtimeRequestsLiveMode(runtime = {}) {
+  return runtime.armed === true
+    || runtime.desired_running === true
+    || ['recovering', 'running', 'paused_transient', 'fault_protected']
+      .includes(String(runtime.status || '').toLowerCase());
+}
+
+function localEngineRuntime(engine = engineState) {
   const status = engine.getStatus?.() || {};
-  if (engine.getArmed?.() === true) return false;
-  if (status.desiredRunning === true) return false;
-  return !['recovering', 'running', 'paused_transient', 'fault_protected']
-    .includes(String(status.status || '').toLowerCase());
+  return {
+    desired_running: status.desiredRunning === true,
+    status: status.status || null,
+    armed: engine.getArmed?.() === true
+  };
 }
 
-async function persistedEngineAllowsResearch(executor = db) {
+async function readPersistedEngineRuntime(executor = db) {
   const result = await executor.query(
     "SELECT value_json FROM trade_runtime_state WHERE key = 'live_engine_control'"
   );
-  const runtime = result.rows[0]?.value_json || {};
-  return !runtime.desired_running
-    && !['recovering', 'running', 'paused_transient', 'fault_protected']
-      .includes(String(runtime.status || '').toLowerCase());
+  return result.rows[0]?.value_json || {};
 }
 
 async function refreshJob(jobId, executor = db) {
@@ -275,7 +304,7 @@ async function cancelResearchJob(jobId) {
          WHERE item.job_id = $1 ORDER BY item.id`,
         [jobId]
       );
-      return { ...job, items: items.rows };
+      return { ...job, items: items.rows, queue_status: researchQueue.getStatus() };
     }
     await client.query(
       `UPDATE research_job_items
@@ -300,7 +329,7 @@ async function cancelResearchJob(jobId) {
         [jobId]
       )
     ]);
-    return { ...updated.rows[0], items: items.rows };
+    return { ...updated.rows[0], items: items.rows, queue_status: researchQueue.getStatus() };
   });
 }
 
@@ -332,23 +361,29 @@ async function retryFailedItems(jobId) {
 }
 
 class ResearchQueue {
-  constructor() {
-    this.engine = engineState;
+  constructor(options = {}) {
+    this.engine = options.engine || engineState;
+    this.db = options.db || db;
+    this.scheduler = options.scheduler || researchAccess.scheduler;
+    this.claim = options.claimItems || claimItems;
+    this.process = options.processItem || processItem;
     this.timer = null;
     this.running = false;
+    this.runtimeSnapshot = {};
+    this.lastRunAt = null;
   }
 
   async runOnce() {
     if (this.running) return 0;
-    if (!engineAllowsResearch(this.engine)) return 0;
-    if (!await persistedEngineAllowsResearch()) return 0;
-    if (!schedulerAllowsResearch(undefined, {
-      liveArmed: this.engine.getArmed?.() === true
-    })) return 0;
+    this.runtimeSnapshot = await readPersistedEngineRuntime(this.db);
+    const liveMode = runtimeRequestsLiveMode(this.runtimeSnapshot)
+      || runtimeRequestsLiveMode(localEngineRuntime(this.engine));
+    if (!schedulerAllowsResearch(this.scheduler.getStatus(), { liveMode })) return 0;
     this.running = true;
     try {
-      const items = await claimItems(DEFAULT_CONCURRENCY);
-      await Promise.all(items.map(processItem));
+      const items = await this.claim(liveMode ? LIVE_CONCURRENCY : DEFAULT_CONCURRENCY);
+      await Promise.all(items.map(this.process));
+      this.lastRunAt = new Date().toISOString();
       return items.length;
     } finally {
       this.running = false;
@@ -375,25 +410,45 @@ class ResearchQueue {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
+
+  getStatus() {
+    const schedulerStatus = this.scheduler.getStatus();
+    const liveMode = runtimeRequestsLiveMode(this.runtimeSnapshot)
+      || runtimeRequestsLiveMode(localEngineRuntime(this.engine));
+    const admission = researchAdmission(schedulerStatus, { liveMode });
+    return {
+      worker_running: this.running,
+      admission_allowed: admission.allowed,
+      wait_reason: this.running ? 'RESEARCH_WORKER_BUSY' : admission.wait_reason,
+      retry_at: admission.retry_at,
+      live_mode: liveMode,
+      effective_concurrency: liveMode ? LIVE_CONCURRENCY : DEFAULT_CONCURRENCY,
+      last_run_at: this.lastRunAt
+    };
+  }
 }
 
 const researchQueue = new ResearchQueue();
 
 module.exports = {
   DEFAULT_CONCURRENCY,
+  LIVE_CONCURRENCY,
+  LIVE_RESEARCH_ADMISSION_WEIGHT,
   MAX_BATCH_SIZE,
   ResearchQueue,
   cancelResearchJob,
   claimItems,
   createResearchJob,
-  engineAllowsResearch,
-  persistedEngineAllowsResearch,
   getResearchJob,
   jobStatusFromCounts,
+  localEngineRuntime,
   normalizeAddresses,
   processItem,
+  readPersistedEngineRuntime,
   refreshJob,
+  researchAdmission,
   researchQueue,
   retryFailedItems,
+  runtimeRequestsLiveMode,
   schedulerAllowsResearch
 };

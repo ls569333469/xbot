@@ -35,7 +35,10 @@ export default function AccountResearchPanel() {
   const [input, setInput] = useState('');
   const [runs, setRuns] = useState<ActorScreeningRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState('');
-  const [activeRun, setActiveRun] = useState<ActorScreeningRun | null>(null);
+  const [selectedRunDetail, setSelectedRunDetail] = useState<ActorScreeningRun | null>(null);
+  const [detailRevision, setDetailRevision] = useState(0);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -59,25 +62,52 @@ export default function AccountResearchPanel() {
 
   useEffect(() => { void refresh(true); }, [refresh]);
 
-  const selectedRun = useMemo(
-    () => activeRun || runs.find((item) => item.id === selectedRunId) || runs[0] || null,
-    [activeRun, runs, selectedRunId],
+  const selectedRunSummary = useMemo(
+    () => runs.find((item) => item.id === selectedRunId) || runs[0] || null,
+    [runs, selectedRunId],
   );
+  const selectedRun = selectedRunDetail?.id === selectedRunId
+    ? selectedRunDetail
+    : selectedRunSummary;
 
   useEffect(() => {
-    if (!selectedRun || !['pending', 'running'].includes(selectedRun.status)) return undefined;
-    const timer = window.setInterval(async () => {
-      const response = await api.actorScreening.get(selectedRun.id);
-      if (!response.ok || !response.data) return;
-      setActiveRun(response.data);
-      if (!['pending', 'running'].includes(response.data.status)) {
-        setActiveRun(null);
-        setSelectedRunId(response.data.id);
+    if (!selectedRunId) {
+      setSelectedRunDetail(null);
+      setDetailError('');
+      setDetailLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const loadDetail = async (showLoading: boolean) => {
+      if (showLoading) setDetailLoading(true);
+      const response = await api.actorScreening.get(selectedRunId);
+      if (cancelled) return;
+      if (!response.ok || !response.data) {
+        setDetailError(response.error || '研究批次详情加载失败');
+        setDetailLoading(false);
+        return;
+      }
+      setSelectedRunDetail(response.data);
+      setDetailError('');
+      setDetailLoading(false);
+      if (['pending', 'running'].includes(response.data.status)) {
+        timer = window.setTimeout(() => { void loadDetail(false); }, 3000);
+      } else {
         void refresh();
       }
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [refresh, selectedRun]);
+    };
+
+    setSelectedRunDetail(null);
+    setDetailError('');
+    void loadDetail(true);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [detailRevision, refresh, selectedRunId]);
 
   const startResearch = async () => {
     const values = parseHandles(input);
@@ -86,7 +116,6 @@ export default function AccountResearchPanel() {
     try {
       const response = await api.actorScreening.create({ handles: values });
       if (!response.ok || !response.data) return toast(response.error || '账号研究任务创建失败', 'error');
-      setActiveRun(response.data);
       setSelectedRunId(response.data.id);
       setInput('');
       toast('账号研究任务已进入队列', 'success');
@@ -103,22 +132,28 @@ export default function AccountResearchPanel() {
       const response = await api.actorScreening.retry(selectedRun.id);
       if (!response.ok) return toast(response.error || '失败任务重试失败', 'error');
       toast('失败账号已重新进入研究队列', 'success');
-      setActiveRun({ ...selectedRun, status: 'pending' });
+      setSelectedRunDetail({ ...selectedRun, status: 'pending' });
+      setDetailRevision((current) => current + 1);
     } finally {
       setRetrying(false);
     }
   };
 
   const results = selectedRun?.results || [];
-  const completed = results.filter((item) => item.status === 'completed').length;
-  const recommended = results.filter((item) => item.recommendation === 'approve_for_record').length;
+  const hasDetails = selectedRunDetail?.id === selectedRunId;
+  const completed = hasDetails
+    ? results.filter((item) => item.status === 'completed').length
+    : Number(selectedRunSummary?.completed_count || 0);
+  const recommended = hasDetails
+    ? results.filter((item) => item.recommendation === 'approve_for_record').length
+    : Number(selectedRunSummary?.recommended_count || 0);
 
   return (
     <section className="account-research-shell">
       <aside className="account-research-runs">
         <div className="account-research-heading"><strong>研究批次</strong><span>{runs.length} 个</span></div>
         <div className="account-research-run-list">
-          {runs.map((run) => <button type="button" key={run.id} className={selectedRun?.id === run.id ? 'selected' : ''} onClick={() => { setActiveRun(null); setSelectedRunId(run.id); }}>
+          {runs.map((run) => <button type="button" key={run.id} className={selectedRunId === run.id ? 'selected' : ''} onClick={() => setSelectedRunId(run.id)}>
             <strong>{new Date(run.created_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong>
             <span>{run.input_handles.length} 个账号 · {statusLabel(run.status)}</span>
           </button>)}
@@ -146,10 +181,20 @@ export default function AccountResearchPanel() {
 
         <div className="account-research-results">
           <div className="account-research-result-head"><span>账号</span><span>样本</span><span>直接意图率</span><span>CA 解析率</span><span>胜率</span><span>结论</span></div>
-          {results.map((result) => <div key={result.id} className="account-research-result-row">
-            <strong>@{result.x_handle}</strong><span>{result.sample_size} 帖</span><span>{percentage(result.direct_intent_rate)}</span><span>{percentage(result.ca_resolution_rate)}</span><span>{percentage(result.executable_win_rate)}</span><em>{recommendationLabel(result.recommendation)}</em>
-          </div>)}
-          {!results.length && <div className="p16-empty-line">{loading ? '加载研究记录中...' : '选择历史批次或创建新的研究任务'}</div>}
+          {results.map((result) => {
+            const failed = result.status === 'failed';
+            return <div key={result.id} className={`account-research-result-row${failed ? ' is-failed' : ''}`}>
+              <strong>@{result.x_handle}</strong><span>{result.sample_size} 帖</span><span>{percentage(result.direct_intent_rate)}</span><span>{percentage(result.ca_resolution_rate)}</span><span>{percentage(result.executable_win_rate)}</span>
+              {failed
+                ? <em className="account-research-error"><strong>研究失败</strong><small>{[result.error_code, result.last_error].filter(Boolean).join('：') || '未返回错误详情'}</small></em>
+                : <em>{recommendationLabel(result.recommendation)}</em>}
+            </div>;
+          })}
+          {!results.length && <div className={`p16-empty-line${detailError ? ' is-error' : ''}`}>
+            {detailLoading || loading
+              ? '加载研究详情中...'
+              : detailError || (selectedRun ? '该批次暂无账号结果' : '选择历史批次或创建新的研究任务')}
+          </div>}
         </div>
       </div>
     </section>

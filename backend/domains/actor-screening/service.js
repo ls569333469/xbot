@@ -55,7 +55,9 @@ async function getRun(id, executor = db) {
 async function listRuns(limit = 50, executor = db) {
   const result = await executor.query(
     `SELECT run.*, COUNT(result.id)::int AS result_count,
-       COUNT(result.id) FILTER (WHERE result.status = 'completed')::int AS completed_count
+       COUNT(result.id) FILTER (WHERE result.status = 'completed')::int AS completed_count,
+       COUNT(result.id) FILTER (WHERE result.status = 'failed')::int AS failed_count,
+       COUNT(result.id) FILTER (WHERE result.recommendation = 'approve_for_record')::int AS recommended_count
      FROM x_actor_screening_runs run
      LEFT JOIN x_actor_screening_results result ON result.screening_run_id = run.id
      GROUP BY run.id ORDER BY run.created_at DESC LIMIT $1`,

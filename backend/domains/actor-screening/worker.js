@@ -4,6 +4,17 @@ const { X6551Client } = require('../../lib/x-client-6551');
 const service = require('./service');
 const backtest = require('./backtest');
 
+function deriveRunStatus(counts = {}) {
+  const pending = Number(counts.pending_count || 0);
+  const running = Number(counts.running_count || 0);
+  const completed = Number(counts.completed_count || 0);
+  const failed = Number(counts.failed_count || 0) + Number(counts.partial_count || 0);
+  if (pending + running > 0) return 'running';
+  if (failed > 0 && completed === 0) return 'failed';
+  if (failed > 0) return 'partial';
+  return 'completed';
+}
+
 class ActorScreeningWorker {
   constructor(options = {}) {
     this.timer = null; this.active = false; this.running = false;
@@ -35,15 +46,26 @@ class ActorScreeningWorker {
           [row.result_id, String(error.code || 'SCREENING_FAILED'), error.message]
         );
       }
+      const countsResult = await this.db.query(
+        `SELECT COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+                COUNT(*) FILTER (WHERE status = 'running')::int AS running_count,
+                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_count,
+                COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count,
+                COUNT(*) FILTER (WHERE status = 'partial')::int AS partial_count,
+                MIN(CONCAT_WS(': ', NULLIF(error_code, ''), NULLIF(last_error, '')))
+                  FILTER (WHERE status IN ('failed','partial')) AS first_error
+         FROM x_actor_screening_results WHERE screening_run_id = $1`, [row.id]
+      );
+      const counts = countsResult.rows[0] || {};
+      const runStatus = deriveRunStatus(counts);
+      const terminal = !['pending', 'running'].includes(runStatus);
       await this.db.query(
-        `UPDATE x_actor_screening_runs SET status = CASE WHEN EXISTS(
-           SELECT 1 FROM x_actor_screening_results WHERE screening_run_id = $1 AND status = 'pending'
-         ) THEN 'running' ELSE CASE WHEN EXISTS(
-           SELECT 1 FROM x_actor_screening_results WHERE screening_run_id = $1 AND status = 'failed'
-         ) THEN 'partial' ELSE 'completed' END END,
-         completed_at = CASE WHEN NOT EXISTS(
-           SELECT 1 FROM x_actor_screening_results WHERE screening_run_id = $1 AND status IN('pending','running')
-         ) THEN NOW() ELSE completed_at END, updated_at = NOW() WHERE id = $1`, [row.id]
+        `UPDATE x_actor_screening_runs
+         SET status = $2, last_error = $3,
+             completed_at = CASE WHEN $4 THEN NOW() ELSE NULL END,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [row.id, runStatus, counts.first_error || null, terminal]
       );
       return { status: 'completed', runId: row.id, handle: row.x_handle };
     } finally { this.active = false; }
@@ -53,4 +75,4 @@ class ActorScreeningWorker {
   getStatus() { return { running: this.running, active: this.active }; }
 }
 const actorScreeningWorker = new ActorScreeningWorker();
-module.exports = { ActorScreeningWorker, actorScreeningWorker };
+module.exports = { ActorScreeningWorker, actorScreeningWorker, deriveRunStatus };

@@ -267,6 +267,15 @@ export interface ResearchJob {
   prompt_version: string;
   started_at?: string | null;
   finished_at?: string | null;
+  queue_status?: {
+    worker_running: boolean;
+    admission_allowed: boolean;
+    wait_reason?: 'GMGN_COOLDOWN' | 'TRADE_PROVIDER_LEASE_ACTIVE' | 'TRADE_PROVIDER_QUEUE_ACTIVE' | 'TRADE_CAPACITY_RESERVED' | 'RESEARCH_WORKER_BUSY' | null;
+    retry_at?: number | string | null;
+    live_mode: boolean;
+    effective_concurrency: number;
+    last_run_at?: string | null;
+  };
   items: ResearchJobItem[];
 }
 
@@ -423,6 +432,7 @@ export interface ActorScreeningResult {
   false_positive_rate?: number | null;
   recommendation: 'approve_for_record' | 'watch' | 'reject' | 'insufficient_data';
   error_code?: string | null;
+  last_error?: string | null;
 }
 
 export interface ActorScreeningRun {
@@ -433,6 +443,8 @@ export interface ActorScreeningRun {
   results?: ActorScreeningResult[];
   result_count?: number;
   completed_count?: number;
+  failed_count?: number;
+  recommended_count?: number;
 }
 
 export type DynamicResolutionStatus = 'pending' | 'resolved' | 'rejected' | 'ambiguous' | 'not_found' | 'provider_failed';

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { resolveHistorical, runActor } = require('../domains/actor-screening/backtest');
 const { getRun, listRuns, retryFailedRun } = require('../domains/actor-screening/service');
+const { deriveRunStatus } = require('../domains/actor-screening/worker');
 
 function candidate(address, symbol) {
   return {
@@ -106,12 +107,24 @@ test('screening lookup rejects an invalid run id before querying PostgreSQL', as
 
 test('screening list falls back to the default limit for invalid input', async () => {
   let params;
+  let query;
   const executor = {
-    async query(_sql, values) {
+    async query(sql, values) {
+      query = sql;
       params = values;
       return { rows: [] };
     }
   };
   await listRuns('invalid', executor);
   assert.deepEqual(params, [50]);
+  assert.match(query, /AS failed_count/);
+  assert.match(query, /AS recommended_count/);
+});
+
+test('screening parent status distinguishes completed, failed, partial and running runs', () => {
+  assert.equal(deriveRunStatus({ completed_count: 2 }), 'completed');
+  assert.equal(deriveRunStatus({ failed_count: 2 }), 'failed');
+  assert.equal(deriveRunStatus({ completed_count: 1, failed_count: 1 }), 'partial');
+  assert.equal(deriveRunStatus({ completed_count: 1, pending_count: 1 }), 'running');
+  assert.equal(deriveRunStatus({ running_count: 1, failed_count: 1 }), 'running');
 });

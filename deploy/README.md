@@ -1,5 +1,9 @@
 # XBOT Production Deployment Assets
 
+日常 GitHub 发布、xiexiu hotfix/完整发布分流、故障处理、原子切换和验收步骤统一遵循
+[`P29_github_and_xiexiu_deployment_operations_runbook.md`](../docs/00_系统架构与全局设计/P29_github_and_xiexiu_deployment_operations_runbook.md)。
+本文件继续定义生产资产和运行时硬约束；P28 保留首次完整部署证据。
+
 These files define the production deployment contract for the current XBOT release.
 
 The production JavaScript runtime is pinned to Node `24.11.x` and npm `11.6.x`. Both package manifests run `deploy/check-node-runtime.js` before dependency installation so a different npm major cannot silently rewrite the lockfiles.

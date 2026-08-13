@@ -18,48 +18,81 @@ const {
 } = require('../domains/research/xai-client');
 const { candidateEvidenceSnapshot, upsertActorCandidate } = require('../domains/research/service');
 const {
-  engineAllowsResearch,
-  persistedEngineAllowsResearch,
+  LIVE_CONCURRENCY,
+  readPersistedEngineRuntime,
   ResearchQueue,
+  runtimeRequestsLiveMode,
   schedulerAllowsResearch
 } = require('../domains/research/queue');
 const { diagnosticPreview } = require('../domains/trade/readiness-service');
 
-test('research queue stays out of GMGN while live execution is armed', () => {
-  assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
-    liveArmed: true
-  }), false);
-  assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }, {
-    liveArmed: false
-  }), true);
+test('research queue admits idle low-priority work regardless of engine mode', () => {
+  assert.equal(schedulerAllowsResearch({ state: 'healthy', reservedWeight: 0, queueByPriority: {} }), true);
+  assert.equal(runtimeRequestsLiveMode({ desired_running: true, status: 'running' }), true);
+  assert.equal(runtimeRequestsLiveMode({ desired_running: false, status: 'stopped' }), false);
 });
 
-test('research queue cannot claim work during desired live recovery windows', async () => {
-  for (const status of ['recovering', 'running', 'paused_transient', 'fault_protected']) {
-    const engine = {
-      getArmed: () => false,
-      getStatus: () => ({ desiredRunning: true, status })
-    };
-    assert.equal(engineAllowsResearch(engine), false);
-    const queue = new ResearchQueue();
-    queue.engine = engine;
-    assert.equal(await queue.runOnce(), 0);
-  }
-  assert.equal(engineAllowsResearch({
-    getArmed: () => false,
-    getStatus: () => ({ desiredRunning: false, status: 'stopped' })
-  }), true);
+test('research queue keeps live trading responsive by reducing research concurrency', async () => {
+  const claimLimits = [];
+  const queue = new ResearchQueue({
+    engine: {
+      getArmed: () => true,
+      getStatus: () => ({ desiredRunning: true, status: 'running' })
+    },
+    db: { query: async () => ({ rows: [{ value_json: { desired_running: true, status: 'running' } }] }) },
+    scheduler: { getStatus: () => ({ state: 'healthy', reservedWeight: 0, availableWeight: 10, queueByPriority: {} }) },
+    claimItems: async (limit) => { claimLimits.push(limit); return []; },
+    processItem: async () => {}
+  });
+  assert.equal(await queue.runOnce(), 0);
+  assert.deepEqual(claimLimits, [LIVE_CONCURRENCY]);
+  assert.equal(queue.getStatus().live_mode, true);
+  assert.equal(queue.getStatus().effective_concurrency, 1);
 });
 
-test('research queue reads shared persisted live intent before claiming work', async () => {
+test('research queue reads shared persisted live intent without treating it as a permanent block', async () => {
   const stoppedDb = {
     query: async () => ({ rows: [{ value_json: { desired_running: false, status: 'stopped' } }] })
   };
   const runningDb = {
     query: async () => ({ rows: [{ value_json: { desired_running: true, status: 'recovering' } }] })
   };
-  assert.equal(await persistedEngineAllowsResearch(stoppedDb), true);
-  assert.equal(await persistedEngineAllowsResearch(runningDb), false);
+  assert.deepEqual(await readPersistedEngineRuntime(stoppedDb), {
+    desired_running: false,
+    status: 'stopped'
+  });
+  assert.deepEqual(await readPersistedEngineRuntime(runningDb), {
+    desired_running: true,
+    status: 'recovering'
+  });
+});
+
+test('research queue waits while GMGN is reserved by a real trade', async () => {
+  let claimed = false;
+  const queue = new ResearchQueue({
+    engine: { getArmed: () => true, getStatus: () => ({ desiredRunning: true, status: 'running' }) },
+    db: { query: async () => ({ rows: [] }) },
+    scheduler: { getStatus: () => ({ state: 'healthy', reservedWeight: 5, queueByPriority: {} }) },
+    claimItems: async () => { claimed = true; return []; },
+    processItem: async () => {}
+  });
+  assert.equal(await queue.runOnce(), 0);
+  assert.equal(claimed, false);
+  assert.equal(queue.getStatus().wait_reason, 'TRADE_PROVIDER_LEASE_ACTIVE');
+});
+
+test('research queue preserves enough live capacity for a new trade lease', async () => {
+  let claimed = false;
+  const queue = new ResearchQueue({
+    engine: { getArmed: () => true, getStatus: () => ({ desiredRunning: true, status: 'running' }) },
+    db: { query: async () => ({ rows: [{ value_json: { desired_running: true, status: 'running' } }] }) },
+    scheduler: { getStatus: () => ({ state: 'healthy', reservedWeight: 0, availableWeight: 8, queueByPriority: {} }) },
+    claimItems: async () => { claimed = true; return []; },
+    processItem: async () => {}
+  });
+  assert.equal(await queue.runOnce(), 0);
+  assert.equal(claimed, false);
+  assert.equal(queue.getStatus().wait_reason, 'TRADE_CAPACITY_RESERVED');
 });
 
 test('diagnostic preview is deterministic and exposes exact expected GMGN weight', () => {

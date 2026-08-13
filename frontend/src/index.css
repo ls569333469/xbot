@@ -1371,6 +1371,11 @@ body {
 .account-research-result-row { border-top: 1px solid var(--border-base); font-size: 12px; }
 .account-research-result-row span { color: var(--color-text-secondary); }
 .account-research-result-row em { color: var(--color-accent); font-style: normal; }
+.account-research-result-row.is-failed { align-items: start; }
+.account-research-error { display: grid; gap: 3px; min-width: 0; color: var(--color-danger) !important; }
+.account-research-error strong { font-size: 12px; }
+.account-research-error small { overflow-wrap: anywhere; color: var(--color-text-secondary); font-size: 10px; line-height: 1.45; }
+.account-research-results .p16-empty-line.is-error { color: var(--color-danger); }
 .p16-workspace-grid.p21-follow-workspace { grid-template-columns: 196px minmax(0, 1fr); margin-top: 14px; }
 .p21-policy-selector { display: grid; gap: 3px; padding: 0 8px 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border-base); }
 .p21-policy-selector > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px; font-size: 11px; }
@@ -1917,6 +1922,7 @@ body {
 .p16-job-summary > div { display: grid; gap: 4px; }
 .p16-job-summary span { color: var(--color-text-muted); font-size: 10px; }
 .p16-job-summary strong { font-size: 11px; }
+.p16-job-wait { grid-column: 1 / -1; margin: 0; padding-top: 9px; border-top: 1px solid var(--border-base); color: var(--color-warning); font-size: 10px; line-height: 1.5; }
 .p16-research-empty { min-height: 430px; display: grid; place-items: center; align-content: center; gap: 9px; color: var(--color-text-muted); text-align: center; }
 .p16-research-empty strong { color: var(--color-text-primary); font-size: 13px; }
 .p16-research-empty span { max-width: 560px; font-size: 11px; line-height: 1.6; }
