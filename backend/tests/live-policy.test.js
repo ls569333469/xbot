@@ -107,6 +107,8 @@ test('strategy-scoped signals require production chain approval without fixed-CA
           id: 2, enabled: true, mode: 'live', archived_at: null, kol_enabled: true,
           revision: 4, context_hash: 'follow-context', event_status: 'resolved',
           event_chain: 'sol', event_ca: 'So11111111111111111111111111111111111111112',
+          watch_sync_status: 'succeeded', watch_desired_present: true,
+          watch_desired_flags: { newFlwBol: true },
           provider_created_at: new Date().toISOString(),
           trade_config_snapshot: {
             chain_budgets: { sol: { budget_per_trade: 0.01, daily_budget: 0.1 } }

@@ -53,6 +53,30 @@ test('readiness monitor pauses transient blockers and reports them once', async 
   assert.deepEqual(alerts[0].blockers, ['GMGN_SCHEDULER_NOT_HEALTHY']);
 });
 
+test('readiness monitor keeps running when a newly saved Follow Watch is only advisory', async () => {
+  let faulted = 0;
+  let paused = 0;
+  const monitor = new ReadinessMonitor({
+    engine: {
+      getArmed: () => true,
+      getStatus: () => ({ status: 'running', desiredRunning: true }),
+      setFaulted: async () => { faulted += 1; },
+      pauseTransient: async () => { paused += 1; }
+    },
+    snapshotProvider: async () => ({
+      readyToArm: true,
+      blockers: [],
+      advisories: ['FOLLOW_WATCH_NOT_SYNCED'],
+      snapshotHash: 'follow-watch-pending'
+    }),
+    onDisarm: async () => {}
+  });
+
+  assert.equal((await monitor.checkOnce()).status, 'ready');
+  assert.equal(faulted, 0);
+  assert.equal(paused, 0);
+});
+
 test('readiness monitor automatically faults critical blockers', async () => {
   let armed = true;
   const alerts = [];

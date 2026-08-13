@@ -11,10 +11,18 @@ async function evaluateSignal(signal, executor = db, options = {}) {
   const result = await executor.query(
     `SELECT policy.*, event.status AS event_status, event.chain_id AS event_chain,
             event.contract_address AS event_ca, event.provider_created_at,
-            kol.enabled AS kol_enabled
+            kol.enabled AS kol_enabled, watch.status AS watch_sync_status,
+            watch.desired_present AS watch_desired_present,
+            watch.desired_flags AS watch_desired_flags
      FROM follow_discovery_policies policy
      JOIN x_kol_accounts kol ON kol.id = policy.kol_id
      LEFT JOIN follow_discovery_events event ON event.id = $2
+     LEFT JOIN LATERAL (
+       SELECT status, desired_present, desired_flags
+       FROM x_watch_sync_outbox
+       WHERE actor_handle = lower(regexp_replace(kol.x_handle, '^@+', ''))
+       ORDER BY updated_at DESC, desired_version DESC LIMIT 1
+     ) watch ON true
      WHERE policy.id = $1 ${options.lock ? 'FOR UPDATE OF policy' : ''}`,
     [Number(signal.follow_discovery_policy_id), Number(signal.follow_discovery_event_id)]
   );
@@ -22,6 +30,11 @@ async function evaluateSignal(signal, executor = db, options = {}) {
   if (!policy) blockers.push('FOLLOW_POLICY_NOT_FOUND');
   if (policy && (policy.archived_at || !policy.enabled || !policy.kol_enabled
       || policy.mode !== 'live')) blockers.push('FOLLOW_POLICY_NOT_LIVE');
+  if (policy && (policy.watch_sync_status !== 'succeeded'
+      || policy.watch_desired_present !== true
+      || policy.watch_desired_flags?.newFlwBol !== true)) {
+    blockers.push('FOLLOW_WATCH_NOT_SYNCED');
+  }
   if (policy && Number(policy.revision) !== Number(signal.follow_discovery_policy_revision)) blockers.push('FOLLOW_POLICY_REVISION_CHANGED');
   if (policy && policy.context_hash !== signal.follow_discovery_context_hash) blockers.push('FOLLOW_POLICY_CONTEXT_CHANGED');
   if (policy && (policy.event_status !== 'resolved' || policy.event_chain !== signal.chain_id

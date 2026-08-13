@@ -1,14 +1,31 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  appendPolicyHealth,
   contractApprovalReady,
+  configurationFingerprintChains,
   followLivePolicyState,
+  followWatchReadiness,
   jsonb,
   normalizeTradeEvidence,
   providerHistoryReadiness,
   strategyChainReady,
   splitChainReadiness
 } = require('../domains/trade/readiness-service');
+
+test('combined scope keeps policy-local configuration faults out of the global stop path', () => {
+  const combined = { blockers: [], advisories: [] };
+  appendPolicyHealth(combined, 'FOLLOW_POLICY_CONFIG_INVALID', false);
+  assert.deepEqual(combined, {
+    blockers: [], advisories: ['FOLLOW_POLICY_CONFIG_INVALID']
+  });
+
+  const explicitPolicy = { blockers: [], advisories: [] };
+  appendPolicyHealth(explicitPolicy, 'FOLLOW_POLICY_CONFIG_INVALID', true);
+  assert.deepEqual(explicitPolicy, {
+    blockers: ['FOLLOW_POLICY_CONFIG_INVALID'], advisories: []
+  });
+});
 
 test('recent GMGN 429 history is advisory and does not block a fresh readiness check', () => {
   assert.deepEqual(providerHistoryReadiness(true), {
@@ -71,6 +88,44 @@ test('P21 readiness derives its balance requirement from each configured chain b
   assert.deepEqual(state.chains, ['sol', 'bsc']);
   assert.deepEqual(state.maxTradeByChain, { sol: 0.2, bsc: 0.05 });
   assert.equal(state.unsyncedRows, 0);
+  assert.deepEqual(state.watchStatusCounts, {
+    succeeded: 1, pending: 0, processing: 0, failed: 0, missing: 0
+  });
+});
+
+test('a newly saved Follow Watch remains policy-local and never blocks the global engine', () => {
+  const state = followLivePolicyState([{
+    id: 3,
+    enabled: true,
+    mode: 'live',
+    kol_enabled: true,
+    profile_status: 'verified',
+    trade_template_id: 4,
+    allowed_chain_ids: ['bsc'],
+    watch_sync_status: 'pending',
+    trade_config_snapshot: {
+      slippage: 10,
+      chain_budgets: { bsc: { budget_per_trade: 0.01, daily_budget: 0.05 } }
+    }
+  }], true);
+
+  assert.equal(state.unsyncedRows, 1);
+  assert.deepEqual(state.watchStatusCounts, {
+    succeeded: 0, pending: 1, processing: 0, failed: 0, missing: 0
+  });
+  assert.deepEqual(followWatchReadiness(state), {
+    blockers: [], advisories: ['FOLLOW_WATCH_NOT_SYNCED']
+  });
+  assert.deepEqual(followWatchReadiness(state, { strict: true }), {
+    blockers: ['FOLLOW_WATCH_NOT_SYNCED'], advisories: []
+  });
+});
+
+test('combined engine fingerprint covers stable infrastructure rather than the hot policy chain list', () => {
+  const baseline = configurationFingerprintChains('combined', new Set(['bsc']));
+  const afterPolicyAdd = configurationFingerprintChains('combined', new Set(['bsc', 'sol']));
+  assert.deepEqual(afterPolicyAdd, baseline);
+  assert.deepEqual(configurationFingerprintChains('follow_discovery', new Set(['bsc'])), ['bsc']);
 });
 
 test('readiness exposes confirmed orders and RPC receipts as per-chain evidence', () => {

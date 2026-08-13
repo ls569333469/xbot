@@ -49,9 +49,19 @@ async function enqueueFollow({ activity, providerEventId, item, kol }, executor 
       || actorUserId.toLowerCase() === actorHandle
       || targetUserId.toLowerCase() === targetHandle) return [];
   const policies = await executor.query(
-    `SELECT * FROM follow_discovery_policies
-     WHERE kol_id = $1 AND archived_at IS NULL
-       AND enabled = true AND mode <> 'paused'`, [Number(kol.id)]
+    `SELECT policy.*
+     FROM follow_discovery_policies policy
+     JOIN x_kol_accounts actor ON actor.id = policy.kol_id
+     JOIN LATERAL (
+       SELECT status, desired_present, desired_flags
+       FROM x_watch_sync_outbox
+       WHERE actor_handle = lower(regexp_replace(actor.x_handle, '^@+', ''))
+       ORDER BY updated_at DESC, desired_version DESC LIMIT 1
+     ) watch ON watch.status = 'succeeded'
+       AND watch.desired_present = true
+       AND watch.desired_flags->>'newFlwBol' = 'true'
+     WHERE policy.kol_id = $1 AND policy.archived_at IS NULL
+       AND policy.enabled = true AND policy.mode <> 'paused'`, [Number(kol.id)]
   );
   const output = [];
   for (const policy of policies.rows) {

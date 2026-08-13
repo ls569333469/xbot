@@ -438,6 +438,8 @@ function authorizationSignal(overrides = {}) {
 function authorizationPolicy(overrides = {}) {
   return {
     id: 9, enabled: true, kol_enabled: true, mode: 'live', archived_at: null,
+    watch_sync_status: 'succeeded', watch_desired_present: true,
+    watch_desired_flags: { newFlwBol: true },
     revision: 2, context_hash: 'ctx', event_status: 'resolved', event_chain: 'bsc',
     event_ca: ADDRESSES[0], provider_created_at: new Date().toISOString(),
     resolver_options: { event_ttl_seconds: 900 },
@@ -455,6 +457,38 @@ test('Follow runtime authorization rejects stale revisions and expired signals',
   }), executor, { env: { P21_FOLLOW_DISCOVERY_ENABLED: 'true' }, skipUsage: true });
   assert.ok(stale.blockers.includes('FOLLOW_POLICY_REVISION_CHANGED'));
   assert.ok(stale.blockers.includes('SIGNAL_EXPIRED'));
+});
+
+test('Follow runtime authorization blocks only the policy whose Watch is not synchronized', async () => {
+  const executor = { async query() { return { rows: [authorizationPolicy({
+    watch_sync_status: 'pending'
+  })] }; } };
+  const result = await evaluateSignal(authorizationSignal(), executor, {
+    env: { P21_FOLLOW_DISCOVERY_ENABLED: 'true' }, skipUsage: true
+  });
+  assert.deepEqual(result.blockers, ['FOLLOW_WATCH_NOT_SYNCED']);
+});
+
+test('Follow event enqueue requires that policy own a synchronized follow Watch', async () => {
+  let inserted = false;
+  const executor = { async query(sql) {
+    if (sql.includes('FROM follow_discovery_policies')) {
+      assert.match(sql, /watch\.status = 'succeeded'/);
+      assert.match(sql, /newFlwBol/);
+      return { rows: [] };
+    }
+    if (sql.includes('INSERT INTO follow_discovery_events')) inserted = true;
+    return { rows: [] };
+  } };
+  const rows = await enqueueFollow({
+    providerEventId: 1,
+    activity: { id: 2 },
+    kol: { id: 3, x_user_id: '10001' },
+    item: { activityType: 'follow', actorHandle: 'cryptogle', targetUserId: '20002',
+      targetHandles: ['new_project'], sourceCreatedAt: new Date().toISOString() }
+  }, executor);
+  assert.deepEqual(rows, []);
+  assert.equal(inserted, false);
 });
 
 test('Follow runtime authorization enforces per-chain daily budget', async () => {

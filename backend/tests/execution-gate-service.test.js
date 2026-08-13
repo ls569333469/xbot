@@ -75,6 +75,35 @@ test('execution gate rejects a readiness snapshot from another runtime scope', (
   );
 });
 
+test('combined execution scope permits hot strategy and chain additions without stopping existing strategies', () => {
+  const combinedEngine = {
+    getArmed: () => true,
+    getStatus: () => ({
+      status: 'running', configurationFingerprint: 'config-1',
+      scope: {
+        scope_type: 'combined', scope_id: null, chain_ids: ['bsc'],
+        revision: null, manifest_hash: 'before-policy-add'
+      }
+    })
+  };
+  const gate = new ExecutionGateService({ engine: combinedEngine });
+  gate.update({
+    readyToArm: true,
+    blockers: [],
+    configurationFingerprint: 'config-1',
+    scope: {
+      scope_type: 'combined', scope_id: null, chains: ['bsc', 'sol'],
+      revision: null, manifest_hash: 'after-policy-add'
+    },
+    chains: [
+      { chain: 'bsc', ready: true, infrastructure_ready: true, blockers: [] },
+      { chain: 'sol', ready: true, infrastructure_ready: true, blockers: [] }
+    ]
+  });
+
+  assert.equal(gate.assertReady('bsc', { strategyScope: true }).configurationFingerprint, 'config-1');
+});
+
 test('execution gate ignores the position-local unprotected advisory', () => {
   const gate = new ExecutionGateService({ engine: engine(), maxAgeMs: 1500 });
   gate.update({

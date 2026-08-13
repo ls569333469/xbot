@@ -78,6 +78,12 @@ function contractApprovalReady(row = {}, evidenceCurrent = false) {
 
 const CHAINS = Object.keys(CHAIN_REGISTRY);
 
+function configurationFingerprintChains(scopeType, selectedChains = []) {
+  // Combined scope is a hot strategy registry. Policy additions and revisions
+  // must not mutate the global engine fingerprint while it is running.
+  return (scopeType === 'combined' ? CHAINS : [...selectedChains]).slice().sort();
+}
+
 function enabled(value) {
   return String(value || 'false').toLowerCase() === 'true';
 }
@@ -140,6 +146,11 @@ function followLivePolicyState(rows = [], runtimeEnabled = enabled(process.env.P
       row.trade_config_snapshot?.chain_budgets?.[chain]?.budget_per_trade || 0
     )))
   ]));
+  const watchStatusCounts = rows.reduce((counts, row) => {
+    const status = String(row.watch_sync_status || 'missing').toLowerCase();
+    counts[status] = Number(counts[status] || 0) + 1;
+    return counts;
+  }, { succeeded: 0, pending: 0, processing: 0, failed: 0, missing: 0 });
   return {
     configured: active.length > 0,
     runtimeEnabled,
@@ -147,9 +158,23 @@ function followLivePolicyState(rows = [], runtimeEnabled = enabled(process.env.P
     validRows: valid.length,
     invalidRows: rows.length - valid.length,
     unsyncedRows: rows.filter((row) => row.watch_sync_status !== 'succeeded').length,
+    watchStatusCounts,
     chains,
     maxTradeByChain
   };
+}
+
+function followWatchReadiness(followPolicy = {}, options = {}) {
+  const unsynced = Number(followPolicy.unsyncedRows || 0) > 0;
+  return unsynced
+    ? options.strict
+      ? { blockers: ['FOLLOW_WATCH_NOT_SYNCED'], advisories: [] }
+      : { blockers: [], advisories: ['FOLLOW_WATCH_NOT_SYNCED'] }
+    : { blockers: [], advisories: [] };
+}
+
+function appendPolicyHealth(target, code, strict = false) {
+  target[strict ? 'blockers' : 'advisories'].push(code);
 }
 
 function jsonb(value) {
@@ -892,6 +917,7 @@ async function getSnapshot(options = {}) {
   const scopeIncludesDynamic = ['combined', 'dynamic_policy'].includes(scopeType);
   const scopeIncludesFollow = ['combined', 'follow_discovery'].includes(scopeType);
   const selectedChains = new Set(executionPolicy.chains);
+  const fingerprintChains = configurationFingerprintChains(scopeType, selectedChains);
   const configurationFingerprint = hashSnapshot({
     mode,
     liveEnabled,
@@ -901,7 +927,7 @@ async function getSnapshot(options = {}) {
     runtimeScope: {
       type: scopeType,
       id: scoped?.scope_id ?? null,
-      chains: [...selectedChains].sort()
+      chains: scopeType === 'combined' ? [] : fingerprintChains
     },
     p20Features: scopeIncludesDynamic ? p20Features : null,
     p21FollowEnabled: scopeIncludesFollow ? followEnabled : null,
@@ -911,8 +937,8 @@ async function getSnapshot(options = {}) {
       privateKey: getGmgnCredentials().privateKey
     }),
     executionSettings: Object.fromEntries(Object.entries(executionSettings)
-      .filter(([chain]) => selectedChains.has(chain))),
-    chainRuntime: Object.fromEntries([...selectedChains].map((chain) => [chain, {
+      .filter(([chain]) => fingerprintChains.includes(chain))),
+    chainRuntime: Object.fromEntries(fingerprintChains.map((chain) => [chain, {
       rpc: process.env[`${chain === 'sol' ? 'SOLANA' : chain.toUpperCase()}_RPC_URL`] || '',
       feeReserve: process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`] || '',
       minimumGasReserve: process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`] || ''
@@ -1182,10 +1208,12 @@ async function getSnapshot(options = {}) {
     blockers.push('DYNAMIC_POLICY_NOT_LIVE');
   }
   if (scopeIncludesDynamic && dynamicPolicy.configuredRows > 0 && !dynamicPolicy.runtimeEnabled) {
-    blockers.push('P20_LIVE_DISABLED');
+    appendPolicyHealth({ blockers, advisories }, 'P20_LIVE_DISABLED', scopeType === 'dynamic_policy');
   }
   if (scopeIncludesDynamic && dynamicPolicy.runtimeEnabled && dynamicPolicy.invalidRows > 0) {
-    blockers.push('DYNAMIC_POLICY_CONFIG_INVALID');
+    appendPolicyHealth(
+      { blockers, advisories }, 'DYNAMIC_POLICY_CONFIG_INVALID', scopeType === 'dynamic_policy'
+    );
   }
   if (policy.whitelistIds.length > 0 && whitelistResult.rows.length !== policy.whitelistIds.length) {
     blockers.push('LIVE_POLICY_WHITELIST_MISSING');
@@ -1200,14 +1228,20 @@ async function getSnapshot(options = {}) {
   if (policy.whitelistIds.length > 0 && !latencySlo.passed) advisories.push('FAST_PATH_SLO_NOT_VERIFIED');
   if (!alertsVerified) advisories.push('TRADE_ALERTS_NOT_VERIFIED');
   if (scopeIncludesFollow && followPolicy.configuredRows > 0 && !followPolicy.runtimeEnabled) {
-    blockers.push('P21_FOLLOW_DISCOVERY_DISABLED');
+    appendPolicyHealth(
+      { blockers, advisories }, 'P21_FOLLOW_DISCOVERY_DISABLED', scopeType === 'follow_discovery'
+    );
   }
   if (scopeIncludesFollow && followPolicy.runtimeEnabled && followPolicy.invalidRows > 0) {
-    blockers.push('FOLLOW_POLICY_CONFIG_INVALID');
+    appendPolicyHealth(
+      { blockers, advisories }, 'FOLLOW_POLICY_CONFIG_INVALID', scopeType === 'follow_discovery'
+    );
   }
-  if (scopeIncludesFollow && followPolicy.unsyncedRows > 0) {
-    blockers.push('FOLLOW_WATCH_NOT_SYNCED');
-  }
+  const followWatchGate = followWatchReadiness(followPolicy, {
+    strict: scopeType === 'follow_discovery'
+  });
+  blockers.push(...followWatchGate.blockers);
+  advisories.push(...followWatchGate.advisories);
   if (scopeType === 'follow_discovery') {
     if (followPolicy.configuredRows === 0 || !scoped.enabled || scoped.mode !== 'live') {
       blockers.push('FOLLOW_POLICY_NOT_LIVE');
@@ -1219,7 +1253,9 @@ async function getSnapshot(options = {}) {
     return scopeType === 'fixed_ca' ? chain.ready : chain.infrastructure_ready;
   });
   if (executionPolicy.chains.length === 0 || !selectedChainReady) blockers.push('NO_LIVE_CHAIN_READY');
-  if (Number(invalidWhitelistResult.rows[0].count) > 0) blockers.push('WHITELIST_HARD_LIMIT_INVALID');
+  if (Number(invalidWhitelistResult.rows[0].count) > 0) {
+    blockers.push('WHITELIST_HARD_LIMIT_INVALID');
+  }
   if (!reconcilerStatus.running) blockers.push('RECONCILER_NOT_RUNNING');
   if (reconcilerStatus.lastError) blockers.push('RECONCILER_ERROR');
   const armedFingerprint = engineState.getConfigurationFingerprint?.();
@@ -1477,9 +1513,12 @@ module.exports = {
   REQUIRED_MIGRATION,
   ReadinessMonitor,
   TRANSIENT_BLOCKERS,
+  appendPolicyHealth,
   applyRpcBalanceFallback,
+  configurationFingerprintChains,
   dynamicLivePolicyState,
   followLivePolicyState,
+  followWatchReadiness,
   getSnapshot,
   getLatestSnapshot,
   schedulerReadiness,

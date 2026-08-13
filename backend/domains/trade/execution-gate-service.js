@@ -76,12 +76,14 @@ class ExecutionGateService {
     if (snapshot.scope && runtime.scope
         && (snapshot.scope.scope_type !== runtime.scope.scope_type
           || Number(snapshot.scope.scope_id || 0) !== Number(runtime.scope.scope_id || 0)
-          || (snapshot.scope.chains.length > 0
+          || (snapshot.scope.scope_type !== 'combined' && snapshot.scope.chains.length > 0
             && JSON.stringify(snapshot.scope.chains)
               !== JSON.stringify([...(runtime.scope.chain_ids || [])].sort()))
-          || (snapshot.scope.revision !== null && snapshot.scope.revision !== undefined
+          || (snapshot.scope.scope_type !== 'combined'
+            && snapshot.scope.revision !== null && snapshot.scope.revision !== undefined
             && Number(snapshot.scope.revision || 0) !== Number(runtime.scope.revision || 0))
-          || (snapshot.scope.manifest_hash && runtime.scope.manifest_hash
+          || (snapshot.scope.scope_type !== 'combined'
+            && snapshot.scope.manifest_hash && runtime.scope.manifest_hash
             && snapshot.scope.manifest_hash !== runtime.scope.manifest_hash))) {
       const error = new Error('Execution gate snapshot belongs to another runtime scope');
       error.code = 'LIVE_SCOPE_SNAPSHOT_MISMATCH';
