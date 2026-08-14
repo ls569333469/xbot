@@ -24,11 +24,19 @@ async function createRun(input = {}, executor = db) {
     error.code = 'ACTOR_SCREENING_INPUT_INVALID';
     throw error;
   }
+  const active = await executor.query(
+    `SELECT * FROM x_actor_screening_runs
+     WHERE status IN ('pending','running')
+       AND input_handles @> $1::text[] AND input_handles <@ $1::text[]
+     ORDER BY created_at DESC LIMIT 1`,
+    [handles]
+  );
+  if (active.rows[0]) return { ...active.rows[0], deduplicated: true };
   const result = await executor.query(
     `INSERT INTO x_actor_screening_runs
       (input_handles, sample_started_at, sample_ended_at, screening_revision)
      VALUES ($1,$2,$3,$4) RETURNING *`,
-    [handles, input.sample_started_at || null, input.sample_ended_at || null, 'p20-screen-v1']
+    [handles, input.sample_started_at || null, input.sample_ended_at || null, 'p32-screen-v2']
   );
   const run = result.rows[0];
   for (const handle of handles) {
@@ -71,10 +79,11 @@ async function retryFailedRun(id, executor = db) {
   const result = await executor.query(
     `UPDATE x_actor_screening_results
      SET status = 'pending', error_code = NULL, last_error = NULL,
+         metrics = jsonb_set(metrics - 'retry_at', '{attempt_count}', '0'::jsonb, true),
          started_at = NULL, completed_at = NULL, updated_at = NOW()
      FROM x_actor_screening_runs AS run
      WHERE x_actor_screening_results.screening_run_id = run.id
-       AND x_actor_screening_results.status = 'failed'
+       AND x_actor_screening_results.status IN ('failed','partial')
        AND run.status <> 'cancelled'
      RETURNING id`, [runId]
   );

@@ -431,6 +431,42 @@ export interface ActorScreeningResult {
   executable_win_rate?: number | null;
   false_positive_rate?: number | null;
   recommendation: 'approve_for_record' | 'watch' | 'reject' | 'insufficient_data';
+  reason_codes?: string[];
+  metrics?: {
+    direct?: number;
+    resolved?: number;
+    ambiguous?: number;
+    coverage?: number;
+    tweets?: number;
+    asset_posts?: number;
+    eligible_posts?: number;
+    explicit_ca_posts?: number;
+    return_samples?: number;
+    return_sample_limit?: number;
+    kline_attempts?: number;
+    kline_skipped?: number;
+    kline_errors?: Record<string, number>;
+    chain_resolution?: Record<string, number>;
+    grok_reused?: boolean;
+    attempt_count?: number;
+    max_attempts?: number;
+    retry_at?: string | null;
+    grok?: {
+      status?: 'analyzed' | 'insufficient';
+      account_type?: 'kol' | 'trader' | 'researcher' | 'project' | 'person' | 'unknown';
+      summary?: string | null;
+      style_tags?: string[];
+      strengths?: string[];
+      risks?: string[];
+      qualitative_rating?: 'promising' | 'watch' | 'high_risk' | 'insufficient';
+      evidence?: Array<{ tweet_id: string; assessment: string }>;
+      citations?: string[];
+      model?: string;
+      prompt_version?: string;
+      duration_ms?: number;
+      x_search_calls?: number;
+    } | null;
+  };
   error_code?: string | null;
   last_error?: string | null;
 }
@@ -445,6 +481,7 @@ export interface ActorScreeningRun {
   completed_count?: number;
   failed_count?: number;
   recommended_count?: number;
+  deduplicated?: boolean;
 }
 
 export type DynamicResolutionStatus = 'pending' | 'resolved' | 'rejected' | 'ambiguous' | 'not_found' | 'provider_failed';
