@@ -8,6 +8,9 @@ function response(payload, options = {}) {
   return {
     ok: options.ok ?? true,
     status: options.status ?? 200,
+    headers: {
+      get: (name) => options.headers?.[String(name).toLowerCase()] ?? null
+    },
     text: async () => JSON.stringify(payload)
   };
 }
@@ -177,7 +180,11 @@ test('X6551Client exposes bounded user tweet and search helpers', async () => {
     id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project',
     is_reply: false, is_retweet: false, is_quote: false, pinned: false
   }]);
-  assert.deepEqual(await client.searchTweets({ keywords: '0xabc', fromUser: '@Project', maxResults: 2 }), [{
+  assert.deepEqual(await client.searchTweets({
+    keywords: '0xabc', fromUser: '@Project', maxResults: 2,
+    sinceDate: '2026-08-01', untilDate: '2026-08-08', excludeReplies: true,
+    excludeRetweets: true, minLikes: 3, minRetweets: 2, minReplies: 1, lang: 'zh'
+  }), [{
     id: '123', text: 'CA 0xabc', created_at: null, user_handle: 'project',
     is_reply: false, is_retweet: false, is_quote: false, pinned: false
   }]);
@@ -187,7 +194,41 @@ test('X6551Client exposes bounded user tweet and search helpers', async () => {
     maxResults: 2,
     product: 'Top',
     keywords: '0xabc',
-    fromUser: 'project'
+    fromUser: 'project',
+    sinceDate: '2026-08-01',
+    untilDate: '2026-08-08',
+    lang: 'zh',
+    excludeReplies: true,
+    excludeRetweets: true,
+    minLikes: 3,
+    minRetweets: 2,
+    minReplies: 1
   });
   assert.deepEqual(normalizeTweets({ data: [{ id: 'profile-only' }] }), []);
+});
+
+test('X6551Client exposes Retry-After and lets read-only callers disable dense retries', async () => {
+  let calls = 0;
+  let sleeps = 0;
+  const client = new X6551Client('test-token', {
+    sleep: async () => { sleeps += 1; },
+    usage: {
+      reserveUsage: async () => ({ reservedCredits: 0 }),
+      finalizeUsage: async () => {}
+    },
+    fetchImpl: async () => {
+      calls += 1;
+      return response(
+        { message: 'too frequent' },
+        { ok: false, status: 429, headers: { 'retry-after': '30' } }
+      );
+    }
+  });
+
+  const error = await client.searchTweets({ fromUser: 'example' }, { maxAttempts: 1 })
+    .then(() => null, (caught) => caught);
+  assert.equal(error.code, 'X6551_RATE_LIMITED');
+  assert.ok(error.retryAfterMs >= 29_000 && error.retryAfterMs <= 30_000);
+  assert.equal(calls, 1);
+  assert.equal(sleeps, 0);
 });

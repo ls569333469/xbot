@@ -392,8 +392,10 @@ export interface FollowDiscoveryPolicy {
 
 export interface FollowDiscoveryPrompts {
   version: number;
+  kol_research_version: number;
   fast_prompt: string;
   relationship_prompt: string;
+  kol_research_prompt: string;
   source: 'default' | 'stored';
   updated_at?: string | null;
   prompt_version: string;
@@ -418,7 +420,169 @@ export interface FollowDiscoveryEvent {
   current_policy_revision: number;
 }
 
-export interface ActorScreeningResult {
+export interface AccountResearchGrokResult {
+  status: 'analyzed' | 'insufficient';
+  account_type: 'kol' | 'trader' | 'researcher' | 'project' | 'person' | 'organization' | 'unknown';
+  summary?: string | null;
+  project_name?: string | null;
+  project_handle?: string | null;
+  relationship?: string | null;
+  candidates: Array<{
+    address: string;
+    chain_id: ChainId;
+    confidence: 'high' | 'medium' | 'low';
+    primary_evidence_id: string;
+  }>;
+  evidence: Array<{
+    evidence_id: string;
+    source_type: 'bio' | 'tweet' | 'website' | 'other';
+    url?: string | null;
+    tweet_id?: string | null;
+    handle?: string | null;
+    published_at?: string | null;
+    excerpt?: string | null;
+  }>;
+  citations: string[];
+  style_tags: string[];
+  strengths: string[];
+  risks: string[];
+  qualitative_rating: 'promising' | 'watch' | 'high_risk' | 'insufficient';
+  model?: string;
+  prompt_version?: string;
+  duration_ms?: number;
+  search_tool_calls?: number;
+}
+
+export interface AccountReturnSample {
+  sample_key?: string;
+  tweet_id?: string;
+  event_id?: string;
+  target_handle?: string;
+  chain: ChainId;
+  contract_address: string;
+  token_name?: string | null;
+  token_symbol?: string | null;
+  event_time?: string;
+  event_time_unix?: number;
+  entry_price?: number;
+  close_price_24h?: number;
+  high_price_24h?: number;
+  close_multiple_24h?: number;
+  max_multiple_24h?: number;
+  return_24h_pct: number;
+  max_gain_24h_pct?: number | null;
+  entry_candle_at?: number | null;
+  close_candle_at?: number | null;
+  entry_method?: string;
+  kline_resolution?: string;
+}
+
+export interface AccountPerformanceResearch {
+  metric_version: string;
+  status: 'completed' | 'partial' | 'deferred';
+  sample_size: number;
+  sample_snapshot?: Array<{
+    id: string;
+    text: string;
+    created_at: string;
+    is_reply?: boolean;
+    is_retweet?: boolean;
+    is_quote?: boolean;
+  }>;
+  sample_window?: { started_at?: string | null; ended_at?: string | null; requested_limit?: number };
+  direct_intent_rate?: number | null;
+  ca_resolution_rate?: number | null;
+  ambiguity_rate?: number | null;
+  provider_coverage_rate?: number | null;
+  historical_candidate_coverage_rate?: number | null;
+  false_positive_rate?: number | null;
+  win_rate_24h?: number | null;
+  return_snapshot?: {
+    kline_source?: string;
+    benchmark?: string;
+    samples?: AccountReturnSample[];
+    median_return_24h_pct?: number | null;
+    median_max_gain_24h_pct?: number | null;
+    median_close_multiple_24h?: number | null;
+    median_max_multiple_24h?: number | null;
+  };
+  metrics?: {
+    direct?: number;
+    resolved?: number;
+    ambiguous?: number;
+    coverage?: number;
+    tweets?: number;
+    asset_posts?: number;
+    eligible_posts?: number;
+    explicit_ca_posts?: number;
+    return_samples?: number;
+    return_sample_limit?: number;
+    kline_attempts?: number;
+    kline_reused?: number;
+    provider_kline_calls?: number;
+    kline_skipped?: number;
+    kline_errors?: Record<string, number>;
+    chain_resolution?: Record<string, number>;
+    attempt_count?: number;
+    max_attempts?: number;
+    retry_at?: string | null;
+  };
+  recommendation: 'approve_for_record' | 'watch' | 'insufficient_data';
+  reason_codes?: string[];
+  error_code?: string | null;
+  last_error?: string | null;
+}
+
+export interface AccountFollowPerformanceResearch {
+  metric_version: string;
+  status: 'completed' | 'partial' | 'deferred';
+  x_handle: string;
+  follow_event_count: number;
+  resolved_ca_event_count: number;
+  unique_ca_trigger_count: number;
+  mature_24h_count: number;
+  ca_trigger_rate?: number | null;
+  win_rate_24h?: number | null;
+  event_snapshot?: Array<{
+    id: string;
+    target_handle?: string;
+    status: string;
+    chain_id?: ChainId | null;
+    contract_address?: string | null;
+    provider_created_at: string;
+    failure_code?: string | null;
+    token_name?: string | null;
+    token_symbol?: string | null;
+    prompt_version?: string | null;
+  }>;
+  return_snapshot?: {
+    kline_source?: string;
+    benchmark?: string;
+    samples?: AccountReturnSample[];
+    median_return_24h_pct?: number | null;
+    median_max_gain_24h_pct?: number | null;
+    median_close_multiple_24h?: number | null;
+    median_max_multiple_24h?: number | null;
+  };
+  metrics?: {
+    return_samples?: number;
+    return_sample_limit?: number;
+    kline_attempts?: number;
+    kline_reused?: number;
+    kline_skipped?: number;
+    kline_errors?: Record<string, number>;
+    provider_kline_calls?: number;
+    attempt_count?: number;
+    max_attempts?: number;
+    retry_at?: string | null;
+  };
+  recommendation: 'watch' | 'insufficient_data';
+  reason_codes?: string[];
+  error_code?: string | null;
+  last_error?: string | null;
+}
+
+export interface AccountResearchResult {
   id: string;
   x_handle: string;
   status: 'pending' | 'running' | 'completed' | 'partial' | 'failed';
@@ -433,54 +597,188 @@ export interface ActorScreeningResult {
   recommendation: 'approve_for_record' | 'watch' | 'reject' | 'insufficient_data';
   reason_codes?: string[];
   metrics?: {
-    direct?: number;
-    resolved?: number;
-    ambiguous?: number;
-    coverage?: number;
-    tweets?: number;
-    asset_posts?: number;
-    eligible_posts?: number;
-    explicit_ca_posts?: number;
-    return_samples?: number;
-    return_sample_limit?: number;
-    kline_attempts?: number;
-    kline_skipped?: number;
-    kline_errors?: Record<string, number>;
-    chain_resolution?: Record<string, number>;
-    grok_reused?: boolean;
-    attempt_count?: number;
-    max_attempts?: number;
-    retry_at?: string | null;
     grok?: {
-      status?: 'analyzed' | 'insufficient';
-      account_type?: 'kol' | 'trader' | 'researcher' | 'project' | 'person' | 'unknown';
-      summary?: string | null;
-      style_tags?: string[];
-      strengths?: string[];
-      risks?: string[];
-      qualitative_rating?: 'promising' | 'watch' | 'high_risk' | 'insufficient';
-      evidence?: Array<{ tweet_id: string; assessment: string }>;
-      citations?: string[];
-      model?: string;
-      prompt_version?: string;
-      duration_ms?: number;
-      x_search_calls?: number;
-    } | null;
+      status: 'completed' | 'failed';
+      result?: AccountResearchGrokResult | null;
+      error?: { code: string; message: string } | null;
+      reused?: boolean;
+    };
+    follow_performance?: {
+      status: 'completed' | 'partial' | 'deferred' | 'failed';
+      result?: AccountFollowPerformanceResearch | null;
+      error?: { code: string; message: string } | null;
+      reused?: boolean;
+    };
+    performance?: {
+      status: 'completed' | 'partial' | 'deferred' | 'failed';
+      result?: AccountPerformanceResearch | null;
+      error?: { code: string; message: string } | null;
+      reused?: boolean;
+    };
   };
   error_code?: string | null;
   last_error?: string | null;
 }
 
-export interface ActorScreeningRun {
+export interface AccountResearchRun {
   id: string;
   input_handles: string[];
   status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
   created_at: string;
-  results?: ActorScreeningResult[];
+  results?: AccountResearchResult[];
   result_count?: number;
   completed_count?: number;
+  finished_count?: number;
   failed_count?: number;
   recommended_count?: number;
+  discovered_count?: number;
+  deduplicated?: boolean;
+}
+
+export type KolPerformanceMode = 'post_calls' | 'follow_discovery';
+export type KolPerformanceRunStatus = 'pending' | 'extracting' | 'pricing' | 'completed' | 'no_samples' | 'partial' | 'price_retry' | 'price_unavailable' | 'failed';
+
+export interface KolPerformanceEvent {
+  id: string;
+  source_type: 'tweet' | 'reply' | 'quote' | 'follow';
+  source_id: string;
+  source_url?: string | null;
+  target_handle?: string | null;
+  source_occurred_at: string;
+  extraction_status: 'resolved' | 'no_match' | 'ambiguous' | 'provider_failed';
+  chain_id?: ChainId | null;
+  contract_address?: string | null;
+  token_name?: string | null;
+  token_symbol?: string | null;
+  content_snapshot?: Record<string, unknown>;
+  evidence_json?: Record<string, unknown>;
+}
+
+export interface KolPerformanceAsset {
+  id: string;
+  first_event_id: string;
+  chain_id: ChainId;
+  contract_address: string;
+  token_name?: string | null;
+  token_symbol?: string | null;
+  entry_price?: number | string | null;
+  entry_candle_at?: string | null;
+  peak_price?: number | string | null;
+  peak_candle_at?: string | null;
+  peak_multiple?: number | string | null;
+  price_status: 'pending' | 'completed' | 'retry' | 'no_data' | 'failed';
+  price_error_code?: string | null;
+  price_error_detail?: string | null;
+  source_type: 'tweet' | 'reply' | 'quote' | 'follow';
+  source_id: string;
+  source_url?: string | null;
+  target_handle?: string | null;
+  source_occurred_at: string;
+  evidence_json?: Record<string, unknown>;
+}
+
+export interface KolPerformanceMetrics {
+  raw_event_count?: number;
+  parsed_ca_count?: number;
+  unique_ca_count?: number;
+  price_ready_ca_count?: number;
+  missing_price_ca_count?: number;
+  win_rate?: number | null;
+  average_peak_multiple?: number | null;
+  median_peak_multiple?: number | null;
+  best_peak_multiple?: number | null;
+  pending_price_ca_count?: number;
+  grok_lookup_count?: number;
+  grok_batch_count?: number;
+  grok_post_count?: number;
+  grok_request_count?: number;
+  grok_search_tool_calls?: number;
+  direct_ca_count?: number;
+  candidate_post_count?: number;
+  provider_failed_count?: number;
+  source_request_count?: number;
+  source_primary_request_count?: number;
+  source_successful_request_count?: number;
+  source_coverage_complete?: boolean;
+  source_saturated_segment_count?: number;
+  source_unprocessed_segment_count?: number;
+  source_window_started_at?: string | null;
+  source_window_ended_at?: string | null;
+  source_earliest_at?: string | null;
+  source_latest_at?: string | null;
+  source_type_counts?: Partial<Record<'tweet' | 'quote' | 'reply' | 'follow', number>>;
+  source_coverage_reason?: string | null;
+  source_error_code?: string | null;
+  source_error_detail?: string | null;
+  source_retry_after_ms?: number;
+  reply_sample_request_count?: number;
+  reply_sample_count?: number;
+  reply_sample_complete?: boolean;
+  reply_sample_error_code?: string | null;
+  reply_sample_error_detail?: string | null;
+  provider_kline_calls?: number;
+  cache_hit_count?: number;
+  progress?: {
+    stage?: 'source_loading' | 'event_loading' | 'follow_research' | 'ca_extraction' | 'pricing' | 'paused' | 'finished';
+    total_assets?: number;
+    processed_assets?: number;
+    successful_assets?: number;
+    unavailable_assets?: number;
+    source_event_count?: number;
+    total_follow_events?: number;
+    processed_follow_events?: number;
+    resolved_follow_events?: number;
+    failed_follow_events?: number;
+    current_follow_index?: number | null;
+    current_target_handle?: string | null;
+    current_asset_id?: string | null;
+    current_asset_index?: number | null;
+    current_chain_id?: ChainId | null;
+    current_contract_address?: string | null;
+    current_token_symbol?: string | null;
+    current_started_at?: string | null;
+    last_asset_id?: string | null;
+    last_contract_address?: string | null;
+    last_outcome?: string | null;
+    started_at?: string | null;
+    updated_at?: string | null;
+    finished_at?: string | null;
+    outcome?: string | null;
+  };
+}
+
+export interface KolPerformanceRun {
+  id: string;
+  mode: KolPerformanceMode;
+  actor_handle: string;
+  sample_started_at?: string | null;
+  sample_ended_at?: string | null;
+  as_of_at: string;
+  status: KolPerformanceRunStatus;
+  metrics?: KolPerformanceMetrics;
+  reason_codes?: string[];
+  error_code?: string | null;
+  last_error?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  unique_ca_count?: number;
+  price_ready_count?: number;
+  events?: KolPerformanceEvent[];
+  assets?: KolPerformanceAsset[];
+  deduplicated?: boolean;
+}
+
+export interface KolProfileRun {
+  id: string;
+  actor_handle: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  result_json?: AccountResearchGrokResult;
+  error_code?: string | null;
+  last_error?: string | null;
+  created_at: string;
+  completed_at?: string | null;
   deduplicated?: boolean;
 }
 

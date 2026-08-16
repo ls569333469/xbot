@@ -59,7 +59,9 @@ function classifyProviderEvent(row = {}) {
     return 'order_recovery';
   }
   if (source.startsWith('research') || source.startsWith('research_market')
-      || source.startsWith('actor_screening')) return 'research';
+      || source.startsWith('actor_screening') || source.startsWith('kol_performance')) {
+    return 'research';
+  }
   if (source === 'asset_metadata') return 'asset_metadata';
   if (source.startsWith('readiness')) return 'readiness';
   return 'unknown';

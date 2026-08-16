@@ -4,6 +4,7 @@ const XAI_DEFAULT_BASE_URL = 'https://api.x.ai/v1';
 const XAI_RESPONSES_URL = `${XAI_DEFAULT_BASE_URL}/responses`;
 const XAI_MODEL = 'grok-4.5';
 const XAI_PROMPT_VERSION = 'p16-project-team-v3';
+const { withXaiTransport } = require('./xai-transport');
 const DEFAULT_TIMEOUT_MS = 150000;
 
 function sanitizeUsage(value) {
@@ -23,6 +24,26 @@ function sanitizeUsage(value) {
     if (Object.keys(details).length > 0) usage.server_side_tool_usage_details = details;
   }
   return Object.keys(usage).length > 0 ? usage : null;
+}
+
+function countSearchToolCalls(payload) {
+  const details = payload?.usage?.server_side_tool_usage_details;
+  const usageCount = details && typeof details === 'object'
+    ? ['x_search_calls', 'web_search_calls']
+      .map((key) => Number(details[key] || 0))
+      .filter(Number.isFinite)
+      .reduce((sum, value) => sum + value, 0)
+    : null;
+  const output = Array.isArray(payload?.output) ? payload.output : [];
+  const outputCount = output.filter((item) => (
+    ['x_search_call', 'web_search_call'].includes(item?.type)
+    || (item?.type === 'custom_tool_call' && (
+      ['x_search', 'web_search'].includes(item?.name)
+      || /^x_(?:user|keyword|semantic)_search$|^x_thread_fetch$/.test(String(item?.name || ''))
+    ))
+  )).length;
+  if (usageCount === null && outputCount === 0) return null;
+  return Math.max(usageCount || 0, outputCount);
 }
 
 function retryAfterMs(value, now = Date.now()) {
@@ -208,12 +229,12 @@ async function discoverCandidates(input, options = {}) {
   let response;
   let payload = {};
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    response = await fetchImpl(responsesUrl, {
+    response = await fetchImpl(responsesUrl, withXaiTransport({
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(timeoutMs)
-    });
+    }, options.proxyUrl));
     payload = await response.json().catch(() => ({}));
     if (response.status !== 429 || attempt === 2) break;
     await sleep(retryAfterMs(response.headers?.get?.('retry-after')));
@@ -271,6 +292,7 @@ module.exports = {
   XAI_RESPONSES_URL,
   candidateSchema,
   classifyXaiError,
+  countSearchToolCalls,
   discoverCandidates,
   extractOutputText,
   resolveResponsesUrl,

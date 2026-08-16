@@ -9,6 +9,7 @@ const {
   receiptMatchesTradedAmount,
   receiptTradedAmountRaw,
   strategyBatchGroupBudget,
+  strategyFailureRetryAt,
   strategyPollingIntervalMs,
   strategyMatchesConfirmedOrder
 } = require('../domains/trade/reconciliation-service');
@@ -42,6 +43,101 @@ test('strategy synchronization batches one open/history query per chain and wall
   }]).length, 2);
   assert.equal(strategyBatchGroupBudget('99'), 4);
   assert.equal(strategyBatchGroupBudget('invalid'), 1);
+});
+
+test('strategy query failures use state-aware persistent retry windows', () => {
+  const now = Date.parse('2026-08-15T00:00:00.000Z');
+  const timeout = Object.assign(new Error('network timeout'), { code: 'GMGN_REQUEST_TIMEOUT' });
+  assert.equal(
+    strategyFailureRetryAt([{ status: 'running' }], timeout, () => 0, now).getTime(),
+    now + 5 * 60_000
+  );
+  assert.equal(
+    strategyFailureRetryAt([{ status: 'running' }], timeout, () => 1, now).getTime(),
+    now + 10 * 60_000
+  );
+  assert.equal(
+    strategyFailureRetryAt([{ status: 'unknown' }], timeout, () => 0, now).getTime(),
+    now + 60_000
+  );
+  assert.equal(
+    strategyFailureRetryAt([{ status: 'triggered' }], timeout, () => 0, now).getTime(),
+    now + 30_000
+  );
+  assert.equal(
+    strategyFailureRetryAt([{ status: 'cancelling' }], timeout, () => 0, now).getTime(),
+    now + 30_000
+  );
+});
+
+test('strategy query 429 waits for provider reset time plus jitter', () => {
+  const now = Date.parse('2026-08-15T00:00:00.000Z');
+  const resetAt = now + 120_000;
+  const rateLimit = Object.assign(new Error('rate limited'), {
+    code: 'GMGN_RATE_LIMIT_COOLDOWN',
+    status: 429,
+    resetAt,
+    retryAfterSeconds: 60
+  });
+  assert.equal(
+    strategyFailureRetryAt([{ status: 'triggered' }], rateLimit, () => 0, now).getTime(),
+    resetAt + 1000
+  );
+});
+
+test('failed strategy batch is deferred and is not queried again on the next cycle', async () => {
+  const now = Date.parse('2026-08-15T00:00:00.000Z');
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const rows = [{
+      id: 551,
+      chain_id: 'robinhood',
+      wallet_address: '0xWallet',
+      provider_order_id: 'strategy-551',
+      status: 'running'
+    }];
+    let deferredUntil = null;
+    let providerCalls = 0;
+    const repository = {
+      listDueOrders: async () => [],
+      listDueStrategyGroups: async () => (
+        !deferredUntil || deferredUntil.getTime() <= Date.now() ? rows : []
+      ),
+      deferStrategyGroups: async (ids, retryAt) => {
+        assert.deepEqual(ids, [551]);
+        deferredUntil = retryAt;
+      },
+      listUncertainAttempts: async () => []
+    };
+    const reconciler = new TradeReconciler({
+      db: {
+        query: async (sql) => (
+          sql.includes('COUNT(*)')
+            ? { rows: [{ count: 0, oldest: null }] }
+            : { rows: [] }
+        )
+      },
+      repository,
+      gmgnHttp: {
+        getStrategyOrders: async () => {
+          providerCalls += 1;
+          throw Object.assign(new Error('network timeout'), { code: 'GMGN_REQUEST_TIMEOUT' });
+        }
+      },
+      logger: { error() {}, warn() {} },
+      random: () => 0
+    });
+
+    const first = await reconciler.runOnce();
+    const second = await reconciler.runOnce();
+    assert.equal(providerCalls, 1);
+    assert.equal(deferredUntil.getTime(), now + 5 * 60_000);
+    assert.equal(first.results[0].error, 'GMGN_REQUEST_TIMEOUT');
+    assert.equal(second.dueStrategies, 0);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 const {
   sellSettlementOutputRaw,

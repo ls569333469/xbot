@@ -210,6 +210,16 @@ class X6551Client {
           error.status = response.status;
           error.retryable = response.status === 429 || response.status >= 500;
           error.actualCost = actualCost;
+          if (response.status === 429) {
+            const retryAfter = response.headers?.get?.('retry-after');
+            if (retryAfter) {
+              const seconds = Number(retryAfter);
+              const retryAt = Number.isFinite(seconds)
+                ? Date.now() + seconds * 1000
+                : new Date(retryAfter).getTime();
+              if (Number.isFinite(retryAt)) error.retryAfterMs = Math.max(0, retryAt - Date.now());
+            }
+          }
           throw error;
         }
 
@@ -234,7 +244,10 @@ class X6551Client {
           );
         }
         if (!error.retryable || attempt >= maxAttempts) throw error;
-        await this.sleep(Math.min(10000, 1000 * (2 ** (attempt - 1))));
+        const retryDelayMs = Number.isFinite(error.retryAfterMs)
+          ? Math.min(120_000, Math.max(1_000, error.retryAfterMs))
+          : Math.min(10_000, 1_000 * (2 ** (attempt - 1)));
+        await this.sleep(retryDelayMs);
       }
     }
     throw new Error('6551 request exhausted all retry attempts');
@@ -258,18 +271,18 @@ class X6551Client {
     return this.request('twitter_tweet_by_id', { twId: String(tweetId) });
   }
 
-  async getUserTweets(handle, options = {}) {
+  async getUserTweets(handle, options = {}, requestOptions = {}) {
     const payload = await this.request('twitter_user_tweets', {
       username: normalizeXHandle(handle),
       maxResults: Math.min(100, Math.max(1, Number(options.maxResults || 20))),
       product: options.product === 'Top' ? 'Top' : 'Latest',
       includeReplies: options.includeReplies === true,
       includeRetweets: options.includeRetweets === true
-    });
+    }, requestOptions);
     return normalizeTweets(payload);
   }
 
-  async searchTweets(filters = {}) {
+  async searchTweets(filters = {}, requestOptions = {}) {
     const body = {
       maxResults: Math.min(100, Math.max(1, Number(filters.maxResults || 20))),
       product: filters.product === 'Latest' ? 'Latest' : 'Top'
@@ -279,7 +292,18 @@ class X6551Client {
         ? normalizeXHandle(filters[key])
         : String(filters[key]).trim();
     }
-    const payload = await this.request('twitter_search', body);
+    for (const key of ['sinceDate', 'untilDate', 'lang']) {
+      if (filters[key]) body[key] = String(filters[key]).trim();
+    }
+    for (const key of ['excludeReplies', 'excludeRetweets']) {
+      if (filters[key] !== undefined) body[key] = filters[key] === true;
+    }
+    for (const key of ['minLikes', 'minRetweets', 'minReplies']) {
+      if (filters[key] === undefined || filters[key] === null || filters[key] === '') continue;
+      const value = Number(filters[key]);
+      if (Number.isFinite(value) && value >= 0) body[key] = Math.floor(value);
+    }
+    const payload = await this.request('twitter_search', body, requestOptions);
     return normalizeTweets(payload);
   }
 

@@ -17,6 +17,10 @@ test('environment settings validate GMGN and RPC contracts without exposing valu
   assert.equal(validateValue('XAI_API_KEY', 'xai-test-value'), 'xai-test-value');
   assert.equal(validateValue('XAI_BASE_URL', 'https://api.apikey.fun/v1/'), 'https://api.apikey.fun/v1');
   assert.equal(validateValue('XAI_MODEL', 'grok-4.5'), 'grok-4.5');
+  assert.equal(validateValue('XAI_PROXY_URL', 'http://127.0.0.1:7897/'), 'http://127.0.0.1:7897');
+  assert.throws(() => validateValue('XAI_PROXY_URL', 'socks5://127.0.0.1:7897'), {
+    code: 'ENV_VALUE_INVALID'
+  });
   assert.throws(() => validateValue('XAI_BASE_URL', 'http://api.example.com/v1'), {
     code: 'ENV_VALUE_INVALID'
   });
@@ -43,10 +47,10 @@ test('production settings keep the live provider and mode contract narrow', () =
 });
 
 test('configuration impact registry keeps research hot and scopes monitoring restarts', () => {
-  assert.deepEqual(impactForKeys(['XAI_API_KEY', 'XAI_MODEL']), {
+  assert.deepEqual(impactForKeys(['XAI_API_KEY', 'XAI_MODEL', 'XAI_PROXY_URL']), {
     impact_scope: 'research_only',
     impact_scopes: ['research_only'],
-    changed_keys: ['XAI_API_KEY', 'XAI_MODEL'],
+    changed_keys: ['XAI_API_KEY', 'XAI_MODEL', 'XAI_PROXY_URL'],
     restart_required: false,
     restart_roles: [],
     manual_rearm_required: false

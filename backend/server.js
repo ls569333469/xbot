@@ -30,7 +30,7 @@ const { researchQueue } = require('./domains/research/queue');
 const { kolProfileEnrichmentWorker } = require('./jobs/kol-profile-enrichment');
 const { dynamicSignalWorker } = require('./domains/dynamic-signal/event-worker');
 const { dynamicPaperSessionWorker } = require('./domains/dynamic-signal/paper-worker');
-const { actorScreeningWorker } = require('./domains/actor-screening/worker');
+const { kolPerformanceWorker, kolProfileWorker } = require('./domains/kol-performance/worker');
 const { followDiscoveryWorker } = require('./domains/follow-discovery/event-worker');
 const { assetMetadataWorker } = require('./domains/asset-metadata/worker');
 const { releaseInfo } = require('./lib/release-info');
@@ -87,7 +87,10 @@ app.use('/api/system', require('./domains/system/routes'));
 app.use('/api/kol', require('./domains/kol/routes'));
 app.use('/api/trade', require('./domains/trade/routes'));
 app.use('/api/dynamic-signal', require('./domains/dynamic-signal/routes'));
-app.use('/api/actor-screening', require('./domains/actor-screening/routes'));
+app.use('/api/account-research', require('./domains/account-research/routes'));
+const { performanceRouter, profileRouter } = require('./domains/kol-performance/routes');
+app.use('/api/kol-performance', performanceRouter);
+app.use('/api/kol-research', profileRouter);
 app.use('/api/follow-discovery', require('./domains/follow-discovery/routes'));
 
 app.get('/api/health', async (req, res) => {
@@ -127,7 +130,8 @@ async function gracefulShutdown(signal) {
     kolProfileEnrichmentWorker.stop();
     dynamicSignalWorker.stop();
     dynamicPaperSessionWorker.stop();
-    actorScreeningWorker.stop();
+    kolPerformanceWorker.stop();
+    kolProfileWorker.stop();
     followDiscoveryWorker.stop();
     assetMetadataWorker.stop();
     researchQueue.stop();
@@ -189,7 +193,8 @@ async function startServer() {
     kolProfileEnrichmentWorker.start({ intervalMs: 5000 });
     dynamicSignalWorker.start({ wsBroadcast, intervalMs: 500 });
     dynamicPaperSessionWorker.start({ intervalMs: 60_000 });
-    actorScreeningWorker.start({ intervalMs: 2000 });
+    kolPerformanceWorker.start({ intervalMs: 2000 });
+    kolProfileWorker.start({ intervalMs: 2000 });
     followDiscoveryWorker.start({ intervalMs: 1000 });
     assetMetadataWorker.start({ intervalMs: 5000 });
   }
@@ -241,6 +246,8 @@ async function startServer() {
           whitelistActivation: whitelistActivationWorker.getStatus()
         },
         kolProfileEnrichment: kolProfileEnrichmentWorker.getStatus(),
+        kolPerformance: kolPerformanceWorker.getStatus(),
+        kolResearchProfile: kolProfileWorker.getStatus(),
         assetMetadata: assetMetadataWorker.getStatus(),
         followDiscovery: followDiscoveryWorker.getStatus()
       } : {})
@@ -278,6 +285,8 @@ startServer().catch(err => {
   outboxWorker.stop();
   whitelistActivationWorker.stop();
   kolProfileEnrichmentWorker.stop();
+  kolPerformanceWorker.stop();
+  kolProfileWorker.stop();
   followDiscoveryWorker.stop();
   assetMetadataWorker.stop();
   providerRateRecorder.stop();

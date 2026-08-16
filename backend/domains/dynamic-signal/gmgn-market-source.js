@@ -27,7 +27,16 @@ async function fetchKline(input = {}, dependencies = {}) {
     throw error;
   }
   const http = marketAccess(dependencies, 'research_kline');
-  const data = await http.getTokenKline(chain, address, resolution, from, to, input.requestOptions || {});
+  // gmgn-cli accepts Unix seconds from callers, then converts the OpenAPI
+  // token_kline query window to milliseconds before sending it.
+  const data = await http.getTokenKline(
+    chain,
+    address,
+    resolution,
+    Math.trunc(from * 1000),
+    Math.trunc(to * 1000),
+    input.requestOptions || {}
+  );
   const rows = gmgnAdapter.normalizeKline(data);
   return { source: 'gmgn_token_kline', rows, coverage: { returned_count: rows.length, complete: rows.length > 0 } };
 }

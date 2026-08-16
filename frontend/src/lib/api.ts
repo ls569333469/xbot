@@ -4,7 +4,7 @@ import {
   ChainId, ChainConfig, TradeAttempt, TradeAttemptDetails, TradeRuntimePolicy,
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
   RuntimePolicyDetailPage, RuntimeSummary, DynamicPolicy, DynamicResolution,
-  DynamicSignalStatus, DynamicPaperSession, ActorScreeningRun, DynamicPolicyTemplate, EntityId
+  DynamicSignalStatus, DynamicPaperSession, AccountResearchRun, DynamicPolicyTemplate, EntityId
 } from './types';
 
 const configuredApiBase = import.meta.env.VITE_API_URL;
@@ -59,7 +59,7 @@ function validatePayloadSchema(endpoint: string, payload: any) {
         console.warn(`%c[Schema Drift Warning] Obsolete camelCase fields (tokenAddress/projectName) detected in Whitelist response!`, 'color: #ffa502;');
       }
     });
-  } else if (endpoint.startsWith('/api/kol')) {
+  } else if (/^\/api\/kol(?:[/?]|$)/.test(endpoint)) {
     items.forEach(item => {
       checkKeys(item, ['x_handle', 'display_name', 'chain_ids', 'enabled'], 'KolAccount');
     });
@@ -238,16 +238,28 @@ export const api = {
     paperSessions: (params?: Record<string, string>) => fetchApi<ApiResponse<DynamicPaperSession[]>>(`/api/dynamic-signal/paper-sessions${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
   },
 
-  actorScreening: {
-    list: (limit = 50) => fetchApi<ApiResponse<ActorScreeningRun[]>>(`/api/actor-screening?limit=${Math.min(100, Math.max(1, limit))}`),
-    get: (id: string) => fetchApi<ApiResponse<ActorScreeningRun>>(`/api/actor-screening/${id}`),
-    create: (data: { handles: string[]; sample_started_at?: string; sample_ended_at?: string }) => fetchApi<ApiResponse<ActorScreeningRun>>('/api/actor-screening', { method: 'POST', body: JSON.stringify(data) }),
-    retry: (id: string) => fetchApi<ApiResponse<{ queued: boolean }>>(`/api/actor-screening/${id}/retry`, { method: 'POST', body: '{}' }),
+  accountResearch: {
+    list: (limit = 50) => fetchApi<ApiResponse<AccountResearchRun[]>>(`/api/account-research?limit=${Math.min(100, Math.max(1, limit))}`),
+    get: (id: string) => fetchApi<ApiResponse<AccountResearchRun>>(`/api/account-research/${id}`),
+  },
+
+  kolPerformance: {
+    list: (mode: import('./types').KolPerformanceMode, limit = 50) => fetchApi<ApiResponse<import('./types').KolPerformanceRun[]>>(`/api/kol-performance/runs?${new URLSearchParams({ mode, limit: String(Math.min(100, Math.max(1, limit))) }).toString()}`),
+    get: (id: string) => fetchApi<ApiResponse<import('./types').KolPerformanceRun>>(`/api/kol-performance/runs/${id}`),
+    createPostRun: (data: { actor_handle: string; sample_started_at?: string | null; sample_ended_at?: string | null }) => fetchApi<ApiResponse<import('./types').KolPerformanceRun>>('/api/kol-performance/post-runs', { method: 'POST', body: JSON.stringify(data) }),
+    createFollowRun: (data: { actor_handle: string; sample_started_at?: string | null; sample_ended_at?: string | null }) => fetchApi<ApiResponse<import('./types').KolPerformanceRun>>('/api/kol-performance/follow-runs', { method: 'POST', body: JSON.stringify(data) }),
+    retryPrice: (id: string) => fetchApi<ApiResponse<{ queued: boolean }>>(`/api/kol-performance/runs/${id}/retry-price`, { method: 'POST', body: '{}' }),
+  },
+
+  kolResearch: {
+    listProfileRuns: (limit = 20) => fetchApi<ApiResponse<import('./types').KolProfileRun[]>>(`/api/kol-research/profile-runs?limit=${Math.min(100, Math.max(1, limit))}`),
+    createProfileRun: (data: { actor_handle: string }) => fetchApi<ApiResponse<import('./types').KolProfileRun>>('/api/kol-research/profile-runs', { method: 'POST', body: JSON.stringify(data) }),
+    getProfileRun: (id: string) => fetchApi<ApiResponse<import('./types').KolProfileRun>>(`/api/kol-research/profile-runs/${id}`),
   },
 
   followDiscovery: {
     prompts: () => fetchApi<ApiResponse<import('./types').FollowDiscoveryPrompts>>('/api/follow-discovery/prompts'),
-    updatePrompts: (data: Pick<import('./types').FollowDiscoveryPrompts, 'version' | 'fast_prompt' | 'relationship_prompt'>) =>
+    updatePrompts: (data: Pick<import('./types').FollowDiscoveryPrompts, 'version' | 'fast_prompt' | 'relationship_prompt' | 'kol_research_prompt'>) =>
       fetchApi<ApiResponse<import('./types').FollowDiscoveryPrompts>>('/api/follow-discovery/prompts', { method: 'PUT', body: JSON.stringify(data) }),
     resetPrompts: (version: number) =>
       fetchApi<ApiResponse<import('./types').FollowDiscoveryPrompts>>('/api/follow-discovery/prompts/reset', { method: 'POST', body: JSON.stringify({ version }) }),

@@ -8,6 +8,7 @@ const CACHE_TTL_MS = 1000;
 
 const DEFAULT_PROMPTS = Object.freeze({
   version: 1,
+  kol_research_version: 1,
   fast_prompt: [
     '请快速检索 X 账号 @{{target_handle}} 的项目关联信息，找出最可信的完整 CA、所属区块链、代币名称和官方来源。',
     '',
@@ -17,6 +18,11 @@ const DEFAULT_PROMPTS = Object.freeze({
     '请进一步检索 X 账号 @{{target_handle}} 与项目官方账号、创始人、CEO 或核心团队的关系，并找出对应项目的完整 CA、所属区块链和官方来源。',
     '',
     '重点查看 Bio、置顶、原创、转发、回复、关联账号和官网。只保留公开内容能够支持的关系和 CA；多个候选分别列出来源，证据不足时不要猜测。'
+  ].join('\n'),
+  kol_research_prompt: [
+    '请直接研究 X 账号 @{{target_handle}}，判断账号身份、内容定位、关联项目和主要公开活动，并找出有原始证据支持的完整 CA 与所属区块链。',
+    '',
+    '优先查看 Bio、置顶、近期原创、回复、引用、关联项目官方账号和官网。总结其内容特点、优势与风险；多个 CA 必须分别列出来源，证据不足时不要猜测。'
   ].join('\n')
 });
 
@@ -46,8 +52,13 @@ function normalizeStoredConfig(value) {
   try {
     return {
       version: normalizeVersion(value.version),
+      kol_research_version: normalizeVersion(value.kol_research_version),
       fast_prompt: normalizePrompt(value.fast_prompt, 'fast_prompt'),
-      relationship_prompt: normalizePrompt(value.relationship_prompt, 'relationship_prompt')
+      relationship_prompt: normalizePrompt(value.relationship_prompt, 'relationship_prompt'),
+      kol_research_prompt: normalizePrompt(
+        value.kol_research_prompt || DEFAULT_PROMPTS.kol_research_prompt,
+        'kol_research_prompt'
+      )
     };
   } catch {
     return { ...DEFAULT_PROMPTS };
@@ -60,7 +71,8 @@ function validateDraft(value) {
   }
   return {
     fast_prompt: normalizePrompt(value.fast_prompt, 'fast_prompt'),
-    relationship_prompt: normalizePrompt(value.relationship_prompt, 'relationship_prompt')
+    relationship_prompt: normalizePrompt(value.relationship_prompt, 'relationship_prompt'),
+    kol_research_prompt: normalizePrompt(value.kol_research_prompt, 'kol_research_prompt')
   };
 }
 
@@ -76,15 +88,17 @@ function renderPrompt(template, targetHandle) {
 
 function contentHash(config) {
   return crypto.createHash('sha256')
-    .update(`${config.fast_prompt}\n---\n${config.relationship_prompt}`)
+    .update(`${config.fast_prompt}\n---\n${config.relationship_prompt}\n---\n${config.kol_research_prompt}`)
     .digest('hex');
 }
 
 function publicConfig(config, metadata = {}) {
   return {
     version: normalizeVersion(config.version),
+    kol_research_version: normalizeVersion(config.kol_research_version),
     fast_prompt: config.fast_prompt,
     relationship_prompt: config.relationship_prompt,
+    kol_research_prompt: config.kol_research_prompt,
     source: metadata.source || 'stored',
     updated_at: metadata.updated_at || null,
     prompt_version: `${PROMPT_SERIES}.${normalizeVersion(config.version)}`
@@ -135,7 +149,13 @@ function createPromptService(database = db, options = {}) {
           'FOLLOW_PROMPT_VERSION_CONFLICT'
         );
       }
-      const next = { version: current.version + 1, ...draft };
+      const next = {
+        version: current.version + 1,
+        kol_research_version: current.kol_research_prompt === draft.kol_research_prompt
+          ? normalizeVersion(current.kol_research_version)
+          : normalizeVersion(current.kol_research_version) + 1,
+        ...draft
+      };
       const saved = await client.query(
         `INSERT INTO config (key, value_json) VALUES ($1, $2)
          ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = NOW()

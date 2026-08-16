@@ -349,7 +349,8 @@ export default function SettingsPage() {
     const response = await api.followDiscovery.updatePrompts({
       version: followPrompts.version,
       fast_prompt: followPrompts.fast_prompt,
-      relationship_prompt: followPrompts.relationship_prompt
+      relationship_prompt: followPrompts.relationship_prompt,
+      kol_research_prompt: followPrompts.kol_research_prompt
     });
     setPromptSaving(false);
     if (!response.ok || !response.data) {
@@ -363,7 +364,7 @@ export default function SettingsPage() {
       return;
     }
     setFollowPrompts(response.data);
-    toast('Grok 提示词已保存，后续新关注研究将使用新版本', 'success');
+    toast('Grok 提示词已保存，后续新关注研究和 KOL 投研将使用新版本', 'success');
   };
 
   const resetFollowPrompts = async () => {
@@ -1096,11 +1097,21 @@ export default function SettingsPage() {
                 />
                 <span className="text-xs text-secondary">只有首次研究无结果、结果不唯一或证据冲突时才执行。</span>
               </label>
+              <label className="flex flex-col gap-xs" style={{ gridColumn: '1 / -1' }}>
+                <span className="text-xs text-secondary font-medium">KOL 账号投研提示词</span>
+                <textarea
+                  className="input font-mono text-sm"
+                  rows={7}
+                  value={followPrompts.kol_research_prompt}
+                  onChange={event => setFollowPrompts({ ...followPrompts, kol_research_prompt: event.target.value })}
+                />
+                <span className="text-xs text-secondary">用于 KOL 页面直接检索账号身份、项目关系、CA、链和公开证据。</span>
+              </label>
             </div>
           )}
 
           <div className="settings-footer-actions">
-            <span className="text-xs text-secondary">修改仅影响后续关注事件；正在处理的事件保持原提示词版本，不重启服务、不改变真实交易状态。</span>
+            <span className="text-xs text-secondary">修改仅影响后续研究任务；正在处理的任务保持原提示词版本，不重启服务、不改变真实交易状态。</span>
             <div className="flex gap-sm">
               <button type="button" className="btn btn-secondary" onClick={resetFollowPrompts} disabled={!followPrompts || promptSaving}>
                 <RotateCcw size={15} /> 恢复默认

@@ -1,11 +1,13 @@
 const {
   classifyXaiError,
+  countSearchToolCalls,
   extractOutputText,
   resolveResponsesUrl,
   retryAfterMs,
   sanitizeUsage
 } = require('../research/xai-client');
 const { safeHandle, safeText, safeUrl } = require('../research/sanitizers');
+const { withXaiTransport } = require('../research/xai-transport');
 const { DEFAULT_PROMPTS, PROMPT_SERIES, promptService, renderPrompt } = require('./prompt-service');
 
 const FOLLOW_XAI_PROMPT_VERSION = PROMPT_SERIES;
@@ -131,14 +133,7 @@ function parseJsonDocuments(text) {
   return documents;
 }
 
-function searchToolCalls(payload) {
-  const details = payload?.usage?.server_side_tool_usage_details;
-  if (!details || typeof details !== 'object') return null;
-  return ['x_search_calls', 'web_search_calls']
-    .map((key) => Number(details[key] || 0))
-    .filter(Number.isFinite)
-    .reduce((sum, value) => sum + value, 0);
-}
+const searchToolCalls = countSearchToolCalls;
 
 function roleTypesFor(targetType, relationship) {
   if (targetType !== 'person') return targetType === 'project' || targetType === 'organization'
@@ -277,12 +272,12 @@ async function requestResearch(input, options, mode, promptConfig = DEFAULT_PROM
   let payload = {};
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      response = await fetchImpl(responsesUrl, {
+      response = await fetchImpl(responsesUrl, withXaiTransport({
         method: 'POST',
         headers: { Authorization: `Bearer ${String(process.env.XAI_API_KEY).trim()}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs)
-      });
+      }, options.proxyUrl));
       payload = await response.json().catch(() => ({}));
     } catch (error) {
       if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {

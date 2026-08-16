@@ -30,7 +30,7 @@ const ALLOWED_KEYS = [
   'SOLANA_RPC_URL', 'BSC_RPC_URL', 'BASE_RPC_URL', 'ETH_RPC_URL', 'ROBINHOOD_RPC_URL',
   'TRADE_ALERTS_VERIFIED',
   'EMERGENCY_STOP',
-  'OPENNEWS_TOKEN', 'XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL',
+  'OPENNEWS_TOKEN', 'XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL', 'XAI_PROXY_URL',
   'P21_FOLLOW_DISCOVERY_ENABLED',
   'SIGNAL_MAX_AGE_SECONDS', 'XBOT_STRATEGY_SYNC_GROUP_BUDGET',
   'LIVE_TRADING_ENABLED', 'ADMIN_TOKEN', 'XBOT_PROCESS_ROLE'
@@ -57,7 +57,7 @@ const POSITIVE_INTEGER_KEYS = new Set([
 ]);
 
 function impactScopeForKey(key) {
-  if (['XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL'].includes(key)) return 'research_only';
+  if (['XAI_API_KEY', 'XAI_BASE_URL', 'XAI_MODEL', 'XAI_PROXY_URL'].includes(key)) return 'research_only';
   if (key === 'TRADE_ALERTS_VERIFIED') return 'observability';
   if (['P22_GMGN_SHARED_LIMIT_ENABLED', 'P22_GMGN_RATE_SCOPE',
     'GMGN_FAST_CACHE_TTL_MS', 'GMGN_WALLET_CACHE_TTL_MS', 'GMGN_TOKEN_CACHE_TTL_MS'].includes(key)) {
@@ -177,6 +177,24 @@ function validateValue(key, value) {
       throw error;
     }
     normalized = normalized.replace(/\/+$/, '');
+  }
+  if (key === 'XAI_PROXY_URL' && normalized) {
+    let parsed;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      const error = new Error('XAI_PROXY_URL must be a valid HTTP(S) proxy URL');
+      error.code = 'ENV_VALUE_INVALID';
+      throw error;
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)
+        || parsed.username || parsed.password || parsed.search || parsed.hash
+        || (parsed.pathname && parsed.pathname !== '/')) {
+      const error = new Error('XAI_PROXY_URL must use HTTP or HTTPS without credentials, path, query, or fragment');
+      error.code = 'ENV_VALUE_INVALID';
+      throw error;
+    }
+    normalized = parsed.origin;
   }
   if (key === 'XAI_MODEL' && normalized && !/^[A-Za-z0-9._:-]+$/.test(normalized)) {
     const error = new Error('XAI_MODEL contains unsupported characters');

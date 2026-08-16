@@ -2301,6 +2301,22 @@ async function listDueStrategyGroups(limit = 20) {
   return result.rows;
 }
 
+async function deferStrategyGroups(groupIds, nextQueryAt) {
+  const ids = [...new Set((groupIds || []).map((id) => String(id)).filter(Boolean))];
+  if (ids.length === 0) return [];
+  const result = await db.query(
+    `UPDATE strategy_groups
+     SET last_reconciled_at = NOW(),
+         next_query_at = GREATEST(next_query_at, $2::timestamptz),
+         query_count = query_count + 1,
+         updated_at = NOW()
+     WHERE id = ANY($1::bigint[])
+     RETURNING id, next_query_at, query_count`,
+    [ids, nextQueryAt]
+  );
+  return result.rows;
+}
+
 function normalizeLegStatus(value) {
   const status = String(value || '').trim().toLowerCase();
   if (['cancel', 'cancelled', 'canceled'].includes(status)) return 'cancelled';
@@ -3201,6 +3217,7 @@ module.exports = {
   getSignalForExecution,
   failOrder,
   finalizeConfirmedOrder,
+  deferStrategyGroups,
   listAttempts,
   listDueOrders,
   listDuePositionBalances,

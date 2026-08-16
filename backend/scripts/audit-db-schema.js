@@ -69,7 +69,9 @@ async function main() {
       '046_p27_reliable_notification_outbox.sql',
       '047_p27_local_candidate_metadata_backfill.sql',
       '048_p27_shared_gmgn_asset_metadata.sql',
-      '049_p27_metadata_enqueue_missing_only.sql']]
+      '049_p27_metadata_enqueue_missing_only.sql',
+      '050_p33_kol_performance_analysis.sql',
+      '051_p34_kol_research_result_convergence.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -95,6 +97,8 @@ async function main() {
   if (!migrations.has('047_p27_local_candidate_metadata_backfill.sql')) throw new Error('Migration 047 is not applied');
   if (!migrations.has('048_p27_shared_gmgn_asset_metadata.sql')) throw new Error('Migration 048 is not applied');
   if (!migrations.has('049_p27_metadata_enqueue_missing_only.sql')) throw new Error('Migration 049 is not applied');
+  if (!migrations.has('050_p33_kol_performance_analysis.sql')) throw new Error('Migration 050 is not applied');
+  if (!migrations.has('051_p34_kol_research_result_convergence.sql')) throw new Error('Migration 051 is not applied');
 
   await requireColumns('schema_migrations', [
     'checksum_sha256', 'migration_manifest_id', 'release_sha'
@@ -108,6 +112,27 @@ async function main() {
     'name', 'symbol', 'logo_url', 'decimals', 'status', 'attempt_count',
     'next_attempt_at', 'locked_at', 'locked_by', 'last_error',
     'provider_snapshot', 'fetched_at'
+  ]);
+  await requireColumns('kol_performance_runs', [
+    'mode', 'actor_handle', 'sample_started_at', 'sample_ended_at', 'as_of_at',
+    'status', 'metrics', 'reason_codes', 'error_code', 'last_error'
+  ]);
+  await requireColumns('kol_performance_events', [
+    'run_id', 'source_type', 'source_id', 'source_url', 'target_handle',
+    'source_occurred_at', 'extraction_status', 'chain_id', 'contract_address',
+    'contract_address_key', 'evidence_json'
+  ]);
+  await requireColumns('kol_performance_assets', [
+    'run_id', 'first_event_id', 'chain_id', 'contract_address', 'contract_address_key',
+    'entry_price', 'entry_candle_at', 'peak_price', 'peak_candle_at', 'peak_multiple',
+    'price_status', 'provider_snapshot'
+  ]);
+  await requireColumns('kol_price_replay_cache', [
+    'chain_id', 'contract_address_key', 'resolution', 'from_unix', 'to_unix',
+    'provider_version', 'rows_json', 'fetched_at'
+  ]);
+  await requireColumns('kol_profile_runs', [
+    'actor_handle', 'status', 'result_json', 'error_code', 'last_error'
   ]);
   await requireColumns('notification_outbox', [
     'channel', 'dedupe_key', 'locked_at', 'locked_by'

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  fetchKline,
   fetchHotSearches,
   fetchRank,
   fetchTopHolders,
@@ -8,6 +9,27 @@ const {
 } = require('../domains/dynamic-signal/gmgn-market-source');
 
 const CA = '0x39dbed3a2bd333467115de45665cc57f813c4571';
+
+test('GMGN K-line converts the documented Unix-second window to OpenAPI milliseconds', async () => {
+  const calls = [];
+  const from = 1_786_275_420;
+  const to = from + 86_400;
+  const result = await fetchKline({
+    chain: 'bsc', address: CA, resolution: '1m', from, to
+  }, {
+    http: {
+      getTokenKline: async (...args) => {
+        calls.push(args);
+        return { list: [{ time: from * 1000, open: '1', high: '2', low: '0.5', close: '1.5' }] };
+      }
+    }
+  });
+
+  assert.equal(calls[0][3], from * 1000);
+  assert.equal(calls[0][4], to * 1000);
+  assert.equal(result.rows[0].timestamp, from * 1000);
+  assert.equal(result.rows[0].close, 1.5);
+});
 
 test('GMGN market sources call only read endpoints and expose schema coverage', async () => {
   const calls = [];

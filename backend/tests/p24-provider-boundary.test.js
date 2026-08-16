@@ -101,15 +101,19 @@ test('P26 global audit separates background work and enforces Attempt-level swap
     },
     {
       source: 'research', stage: 'token_info', http_status: 200, context_json: {}
+    },
+    {
+      source: 'kol_performance_replay', stage: 'token_kline', http_status: 200,
+      context_json: {}
     }
   ];
   assert.deepEqual(rows.map(classifyProviderEvent), [
-    'buy', 'close', 'strategy_sync', 'research'
+    'buy', 'close', 'strategy_sync', 'research', 'research'
   ]);
   const audit = auditAllEvents(rows, { allowedSignalIds: [81] });
   assert.equal(audit.audit_truncated, false);
   assert.deepEqual(audit.category_counts, {
-    buy: 1, close: 1, strategy_sync: 1, research: 1
+    buy: 1, close: 1, strategy_sync: 1, research: 2
   });
   assert.equal(audit.unauthorized_buy_requests.length, 0);
   assert.equal(audit.invalid_swap_sessions.length, 0);

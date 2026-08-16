@@ -7,22 +7,20 @@ const frontendRoot = path.resolve(__dirname, '../../frontend');
 const panelPath = path.join(frontendRoot, 'src/pages/kol/AccountResearchPanel.tsx');
 const typesPath = path.join(frontendRoot, 'src/lib/types.ts');
 
-test('P31 loads details for every selected screening run and retains terminal results', () => {
+test('P33 loads details for every selected performance run and retains terminal results', () => {
   const source = fs.readFileSync(panelPath, 'utf8');
-  assert.match(source, /api\.actorScreening\.get\(selectedRunId\)/);
-  assert.match(source, /if \(\['pending', 'running'\]\.includes\(response\.data\.status\)\) \{[\s\S]*?setTimeout/);
-  assert.doesNotMatch(source, /setSelectedRunDetail\(null\)[\s\S]{0,200}void refresh\(\)/);
-  assert.match(source, /selectedRunSummary\?\.completed_count/);
-  assert.match(source, /selectedRunSummary\?\.recommended_count/);
+  assert.match(source, /api\.kolPerformance\.get\(selectedRunId\)/);
+  assert.match(source, /\['pending', 'extracting', 'pricing'\]\.includes\(response\.data\.status\)[\s\S]*?setTimeout/);
+  assert.match(source, /selectedRun\?\.metrics/);
+  assert.match(source, /peak_multiple/);
 });
 
-test('P31 exposes account-level screening failures instead of rendering an empty result', () => {
+test('P33 exposes separate replay and profile failures instead of rendering an empty result', () => {
   const panel = fs.readFileSync(panelPath, 'utf8');
   const types = fs.readFileSync(typesPath, 'utf8');
-  assert.match(panel, /result\.status === 'failed'/);
-  assert.match(panel, /result\.error_code/);
-  assert.match(panel, /result\.last_error/);
-  assert.match(panel, /研究批次详情加载失败/);
+  assert.match(panel, /selectedRun\.last_error/);
+  assert.match(panel, /profileRun\.status === 'failed'/);
+  assert.match(panel, /price_retry/);
   assert.match(types, /last_error\?: string \| null/);
 });
 
@@ -37,5 +35,5 @@ test('P31 restores fixed-CA research while preserving trade-priority admission',
   assert.match(queue, /TRADE_CAPACITY_RESERVED/);
   assert.match(queue, /GMGN_COOLDOWN/);
   assert.match(workspace, /queueWaitLabel/);
-  assert.match(workspace, /投研会在本次交易请求完成后自动继续/);
+  assert.match(workspace, /\u6295\u7814\u4f1a\u5728\u672c\u6b21\u4ea4\u6613\u8bf7\u6c42\u5b8c\u6210\u540e\u81ea\u52a8\u7ee7\u7eed/);
 });

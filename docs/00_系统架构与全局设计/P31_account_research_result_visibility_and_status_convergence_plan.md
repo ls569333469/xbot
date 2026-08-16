@@ -8,6 +8,8 @@
 >
 > 非目标：不修改研究算法和 Provider 调用步骤，不修改三策略、Engine 或真实交易配置
 
+> 后续修订：P31 只负责结果可见性和 Research 调度。KOL 账号研究的完整算法边界、双分支 Provider 职责、指标口径和防回归要求，以 [P32 KOL 账号投研架构与防回归基线](./P32_kol_account_research_architecture_and_regression_baseline.md) 为准。
+
 ## 1. 生产问题与证据
 
 用户在 xiexiu 的账号研究页面创建了 `@riley_gmi` 批次。页面显示“输入账号 1、完成分析 0、批次已完成”，结果表为空。

@@ -7,7 +7,7 @@ const gmgnAdapter = require('../../lib/gmgn-adapter');
 const receiptService = require('./chain-receipt-service');
 const repository = require('./trade-repository');
 const { requireChain } = require('./chain-adapters');
-const { PRIORITIES } = require('../../lib/gmgn-rate-scheduler');
+const { PRIORITIES, parseResetAt } = require('../../lib/gmgn-rate-scheduler');
 const { decimalToRaw } = require('../../lib/decimal-units');
 const { tradeFailureEvidenceService } = require('./trade-failure-evidence-service');
 
@@ -66,6 +66,33 @@ function strategyPollingIntervalMs(state, random = Math.random) {
 
 function nextStrategyQueryAt(state, random) {
   return new Date(Date.now() + strategyPollingIntervalMs(state, random));
+}
+
+function strategyFailureRetryAt(rows, error, random = Math.random, now = Date.now()) {
+  const states = new Set((rows || []).map((row) => String(row.status || '').toLowerCase()));
+  const urgent = states.has('triggered') || states.has('cancelling');
+  const unknown = states.has('unknown');
+  const normalDelayMs = urgent
+    ? 30_000
+    : unknown
+      ? 60_000
+      : Math.round(5 * 60_000 + random() * 5 * 60_000);
+  const code = String(error?.code || '').toUpperCase();
+  const rateLimited = Number(error?.status) === 429 || code.includes('RATE_LIMIT');
+  if (!rateLimited) return new Date(now + normalDelayMs);
+
+  const explicitRetryTimes = [];
+  if (error?.resetAt != null) explicitRetryTimes.push(parseResetAt(error.resetAt, now));
+  const retryAfterSeconds = Number(error?.retryAfterSeconds);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    explicitRetryTimes.push(now + retryAfterSeconds * 1000);
+  }
+  const explicitRetryAt = explicitRetryTimes.length ? Math.max(...explicitRetryTimes) : null;
+  if (Number.isFinite(explicitRetryAt) && explicitRetryAt > now) {
+    const jitterMs = Math.round(1000 + random() * 4000);
+    return new Date(explicitRetryAt + jitterMs);
+  }
+  return new Date(now + Math.max(normalDelayMs, 5 * 60_000));
 }
 
 function strategyBatchKey(row = {}) {
@@ -852,12 +879,29 @@ class TradeReconciler {
           prefetched = await this.fetchStrategyBatch(strategyGroup);
         } catch (error) {
           this.lastError = error.message;
+          const retryAt = strategyFailureRetryAt(strategyGroup, error, this.random);
+          try {
+            await this.repository.deferStrategyGroups(
+              strategyGroup.map((strategy) => strategy.id),
+              retryAt
+            );
+          } catch (deferError) {
+            this.logger.error(
+              'trade-reconciler',
+              `Strategy batch ${strategyBatchKey(strategyGroup[0])} retry deferral failed: ${deferError.message}`
+            );
+          }
           this.logger.error(
             'trade-reconciler',
-            `Strategy batch ${strategyBatchKey(strategyGroup[0])} failed: ${error.message}`
+            `Strategy batch ${strategyBatchKey(strategyGroup[0])} failed: ${error.message}; retry after ${retryAt.toISOString()}`
           );
           for (const strategy of strategyGroup) {
-            results.push({ strategyGroupId: strategy.id, status: 'error', error: error.code || error.message });
+            results.push({
+              strategyGroupId: strategy.id,
+              status: 'error',
+              error: error.code || error.message,
+              retryAt
+            });
           }
           continue;
         }
@@ -1028,6 +1072,7 @@ module.exports = {
   receiptTradedAmountRaw,
   orderWithReceiptTradedAmount,
   strategyPollingIntervalMs,
+  strategyFailureRetryAt,
   strategyBatchGroupBudget,
   strategyBatchKey,
   strategyMatchesConfirmedOrder,
