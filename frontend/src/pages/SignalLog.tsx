@@ -130,14 +130,9 @@ export default function SignalLog() {
                       <span>{sig.execution.blockers.map(blockerLabel).join(' · ')}</span>
                     </div>
                   )}
-                  {(sig.risk.hard_failures.length > 0 || sig.risk.warnings.length > 0) && (
+                  {sig.risk.hard_failures.length > 0 && (
                     <div className="signal-risk-panel">
-                      {sig.risk.hard_failures.length > 0 && (
-                        <span className="text-danger">安全失败：{sig.risk.hard_failures.map(riskLabel).join(' · ')}</span>
-                      )}
-                      {sig.risk.warnings.length > 0 && (
-                        <span className="text-warning">风险观察：{sig.risk.warnings.map(riskLabel).join(' · ')}</span>
-                      )}
+                      <span className="text-danger">安全失败：{sig.risk.hard_failures.map(riskLabel).join(' · ')}</span>
                     </div>
                   )}
                   {sig.observation_ended_at && (

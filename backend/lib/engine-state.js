@@ -243,6 +243,59 @@ async function recoverTransient(snapshot, options = {}) {
   });
 }
 
+async function refreshAuthorizedScope(snapshot = {}) {
+  const runtime = getStatus();
+  if (!isArmed || runtime.status !== 'running' || !state.desired_running) {
+    return { updated: false, reason: 'not_running', runtime };
+  }
+  if (!snapshot.readyToArm || !snapshot.scope) {
+    return { updated: false, reason: 'snapshot_not_ready', runtime };
+  }
+  if (!state.configuration_fingerprint
+      || state.configuration_fingerprint !== snapshot.configurationFingerprint) {
+    return { updated: false, reason: 'configuration_mismatch', runtime };
+  }
+
+  const scopeType = snapshot.scope.scope_type || 'combined';
+  const scopeId = snapshot.scope.scope_id ?? null;
+  if (scopeType !== state.scope_type
+      || Number(scopeId || 0) !== Number(state.scope_id || 0)) {
+    return { updated: false, reason: 'scope_identity_mismatch', runtime };
+  }
+
+  const revision = snapshot.scope.policy_revision ?? snapshot.scope.scope_revision ?? null;
+  const manifestHash = snapshot.scope.manifest_hash
+    || snapshot.scope.scope_manifest_hash
+    || null;
+  if (scopeType !== 'combined' && !manifestHash) {
+    return { updated: false, reason: 'scope_manifest_missing', runtime };
+  }
+  if (state.scope_revision !== null && revision !== null
+      && Number(revision) < Number(state.scope_revision)) {
+    return { updated: false, reason: 'scope_revision_rollback', runtime };
+  }
+
+  const chainIds = [...new Set(
+    snapshot.scope.chains || snapshot.scope.scope_chain_ids || []
+  )].map(String).sort();
+  const changed = JSON.stringify([...(state.scope_chain_ids || [])].sort()) !== JSON.stringify(chainIds)
+    || Number(state.scope_revision || 0) !== Number(revision || 0)
+    || state.scope_manifest_hash !== manifestHash;
+  if (!changed) return { updated: false, reason: 'unchanged', runtime };
+
+  const now = new Date().toISOString();
+  await persist(normalize({
+    ...state,
+    readiness_snapshot_hash: snapshot.snapshotHash || state.readiness_snapshot_hash,
+    scope_chain_ids: chainIds,
+    scope_revision: revision,
+    scope_manifest_hash: manifestHash,
+    last_checked_at: now
+  }));
+  logger.info('engine-state', `Authorized live scope refreshed to ${scopeType}:${scopeId || 'all'} revision ${revision ?? 'n/a'}`);
+  return { updated: true, reason: 'scope_refreshed', runtime: getStatus() };
+}
+
 async function restoreDesiredState(snapshotProvider, options = {}) {
   if (!state.desired_running) return { status: 'skipped', reason: 'stopped' };
   const maxAttempts = Math.max(1, Number(options.maxAttempts || 1));
@@ -342,6 +395,7 @@ module.exports = {
   getStatus,
   init,
   pauseTransient,
+  refreshAuthorizedScope,
   recoverTransient,
   restoreDesiredState,
   setArmed: (value, options = {}) => value ? arm(options) : stop(options),

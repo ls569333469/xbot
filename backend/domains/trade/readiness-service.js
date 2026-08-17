@@ -1405,9 +1405,13 @@ class ReadinessMonitor {
     try {
       const scope = this.engine.getScopeInput?.();
       const snapshot = await this.snapshotProvider(scope ? { scope } : {});
+      const scopeRefresh = snapshot.readyToArm && !transientPaused
+        && typeof this.engine.refreshAuthorizedScope === 'function'
+        ? await this.engine.refreshAuthorizedScope(snapshot)
+        : null;
       executionGateService.update(snapshot);
       if (snapshot.readyToArm) {
-        if (!transientPaused) return { status: 'ready', snapshot };
+        if (!transientPaused) return { status: 'ready', snapshot, scopeRefresh };
         this.healthyCount += 1;
         if (this.healthyCount < this.recoveryHealthyChecks) {
           return { status: 'recovering', healthyChecks: this.healthyCount, snapshot };

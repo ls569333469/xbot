@@ -104,3 +104,77 @@ test('live engine persists intent, restores matching configuration, and faults o
     delete require.cache[require.resolve('../lib/engine-state')];
   }
 });
+
+test('live engine refreshes only a ready revision of the same authorized scope', async () => {
+  const db = require('../lib/db');
+  const originalQuery = db.query;
+  const originalMode = process.env.TRADING_MODE;
+  let saved = null;
+  let staleSignalsClosed = 0;
+  db.query = async (sql, params = []) => {
+    if (sql.includes('SELECT value_json FROM trade_runtime_state')) {
+      return { rows: saved ? [{ value_json: saved }] : [] };
+    }
+    if (sql.includes('INSERT INTO trade_runtime_state')) {
+      saved = structuredClone(params[1]);
+      return { rows: [] };
+    }
+    if (sql.includes('UPDATE trade_signals')) {
+      staleSignalsClosed += 1;
+      return { rows: [], rowCount: 1 };
+    }
+    throw new Error(`Unexpected SQL in engine-state scope refresh test: ${sql}`);
+  };
+  process.env.TRADING_MODE = 'live';
+  delete require.cache[require.resolve('../lib/engine-state')];
+  const engine = require('../lib/engine-state');
+
+  try {
+    await engine.init();
+    await engine.arm({
+      operator: 'tester',
+      readiness: {
+        readyToArm: true,
+        snapshotHash: 'snapshot-8',
+        configurationFingerprint: 'config-1',
+        scope: {
+          scope_type: 'dynamic_policy', scope_id: 1, chains: ['bsc'],
+          policy_revision: 8, manifest_hash: 'manifest-8'
+        }
+      }
+    });
+    const armedAt = engine.getStatus().armedAt;
+    const refreshed = await engine.refreshAuthorizedScope({
+      readyToArm: true,
+      snapshotHash: 'snapshot-9',
+      configurationFingerprint: 'config-1',
+      scope: {
+        scope_type: 'dynamic_policy', scope_id: 1, chains: ['bsc'],
+        policy_revision: 9, manifest_hash: 'manifest-9'
+      }
+    });
+    assert.equal(refreshed.updated, true);
+    assert.equal(engine.getStatus().scope.revision, 9);
+    assert.equal(engine.getStatus().scope.manifest_hash, 'manifest-9');
+    assert.equal(engine.getStatus().armedAt, armedAt);
+    assert.equal(staleSignalsClosed, 1);
+
+    const rejected = await engine.refreshAuthorizedScope({
+      readyToArm: true,
+      snapshotHash: 'another-policy',
+      configurationFingerprint: 'config-1',
+      scope: {
+        scope_type: 'dynamic_policy', scope_id: 2, chains: ['bsc'],
+        policy_revision: 1, manifest_hash: 'manifest-other'
+      }
+    });
+    assert.equal(rejected.updated, false);
+    assert.equal(rejected.reason, 'scope_identity_mismatch');
+    assert.equal(engine.getStatus().scope.revision, 9);
+  } finally {
+    db.query = originalQuery;
+    if (originalMode === undefined) delete process.env.TRADING_MODE;
+    else process.env.TRADING_MODE = originalMode;
+    delete require.cache[require.resolve('../lib/engine-state')];
+  }
+});

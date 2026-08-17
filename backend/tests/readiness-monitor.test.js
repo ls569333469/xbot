@@ -77,6 +77,41 @@ test('readiness monitor keeps running when a newly saved Follow Watch is only ad
   assert.equal(paused, 0);
 });
 
+test('readiness monitor refreshes an authorized scope before accepting a hot policy revision', async () => {
+  const calls = [];
+  const snapshot = {
+    readyToArm: true,
+    blockers: [],
+    snapshotHash: 'dynamic-revision-9',
+    configurationFingerprint: 'config-1',
+    scope: {
+      scope_type: 'dynamic_policy',
+      scope_id: 1,
+      policy_revision: 9,
+      manifest_hash: 'manifest-9',
+      chains: ['bsc']
+    }
+  };
+  const monitor = new ReadinessMonitor({
+    engine: {
+      getArmed: () => true,
+      getStatus: () => ({ status: 'running', desiredRunning: true }),
+      getScopeInput: () => ({ scope_type: 'dynamic_policy', scope_id: 1, chain_ids: ['bsc'] }),
+      refreshAuthorizedScope: async (value) => {
+        calls.push(value.snapshotHash);
+        return { updated: true, reason: 'scope_refreshed' };
+      }
+    },
+    snapshotProvider: async () => snapshot,
+    onDisarm: async () => {}
+  });
+
+  const result = await monitor.checkOnce();
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(calls, ['dynamic-revision-9']);
+  assert.equal(result.scopeRefresh.updated, true);
+});
+
 test('readiness monitor automatically faults critical blockers', async () => {
   let armed = true;
   const alerts = [];
