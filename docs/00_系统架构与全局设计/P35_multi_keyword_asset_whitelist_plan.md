@@ -1,14 +1,14 @@
 # P35 动态喊单多关键词资产路由方案
 
-> 文档状态：`IMPLEMENTED LOCALLY / REAL BUY AND SELL VERIFIED / NOT DEPLOYED`
+> 文档状态：`PRODUCTION DEPLOYED / THREE-STRATEGY LIVE ACCEPTANCE PASSED`
 >
 > 设计日期：2026-08-16
 >
-> 实施日期：2026-08-16 至 2026-08-17
+> 实施与生产验收日期：2026-08-16 至 2026-08-17
 >
 > 已确认前端：**方案 B，主从资产路由工作区**
 >
-> 实施边界：正式 React、Migration、动态 Worker 与授权快照已按本方案更新；既有 GMGN Swap、Order Query、Position、平仓以及固定 CA、关注策略执行逻辑未增加 P35 分支。本地已完成长文本关键词触发、GMGN 真实买入、保护持仓和手动平仓闭环；尚未部署 xiexiu，尚未执行生产 Migration 或服务器真实交易验收。
+> 实施边界：正式 React、Migration、动态 Worker 与授权快照已按本方案更新；既有 GMGN Swap、Order Query、Position、平仓以及固定 CA、关注策略执行逻辑未增加 P35 分支。本地已完成四条路由的真实买入验证；xiexiu 已部署 P35/P35.1，并完成固定 CA、动态喊单和关注策略从真实信号到 GMGN 买入、保护持仓、手动平仓的生产闭环验收。
 
 ## 1. 最终结论
 
@@ -721,7 +721,8 @@ P35 不会因为关键词数量增加而增加 GMGN 解析请求：
 
 - P35 专项 `17/17`：关键词规范化、歧义、CA 冲突、Cashtag 与路由词同资产归并、不同 Cashtag 多资产拒绝、RPC、缓存边界、事务外预检、并发保存、资产登记、审计快照和匹配预览全部通过。
 - P20 共享链路 `22/22`：固定 CA、动态喊单、关注策略共用的解析与授权链路通过。
-- 后端全量 `636/636`：固定 CA、动态喊单、关注策略、Signal、GMGN 执行、持仓和平仓回归通过。
+- 后端全量 `639/639`：固定 CA、动态喊单、关注策略、Signal、GMGN 执行、持仓和平仓回归通过。
+- 集成回归 `38/38`：P27 合同流、Migration 演练、Schema Audit 和生产角色边界通过。
 - 前端：TypeScript production build 与 Vite production build 通过。
 - `git diff --check` 无空白错误；只有仓库现有 Windows LF/CRLF 提示。
 - 本轮改动限定在 P35 动态路由、其必要的可选授权快照、数据库审计、专项测试、方案 B 前端和 P35 文档/原型。
@@ -760,12 +761,38 @@ P35 不会因为关键词数量增加而增加 GMGN 解析请求：
 3. 修复不停止 Engine、不重放已拒绝 Signal、不新增 GMGN 调用。定向回归覆盖 Revision `8 -> 9` 热更新和跨范围拒绝，全量测试通过。
 4. P25 快速交易链路有意不在买入前调用 GMGN Security / Pool / Quote。此前前端把这些“未查询字段”显示为风险观察，容易被误解为真实风险。最终规则改为：只有错误真正阻止买入时显示安全失败或执行阻断；已成功交易的缺失字段只保留在审计快照，不在信号卡片提醒。
 
-### 18.6 尚未完成的生产验收
+### 18.6 P35.1 Readiness 生产热修
 
-以下项目不得因自动测试通过而标记为完成：
+生产验收前发现，正常 Receipt 对账短暂处于 `reconciliation_required` 时，旧 Readiness 逻辑会在 `requires_manual_review=false` 的情况下误报 `UNRESOLVED_TRADE_ATTEMPTS`，并将 Engine 全局切入 `fault_protected`。P35.1 将规则收敛为：
 
-1. xiexiu 部署、Migration 052、schema audit、Supervisor 角色与 Watch/Readiness 复核。
-2. 将服务器动态策略数据显式同步为五条资产路由，不能假设代码部署会复制本地数据库策略数据。
-3. xiexiu 部署后完成三策略与 P35 多路由的最终人工验收。
+- `submission_uncertain` 继续阻断。
+- `reconciliation_required + requires_manual_review=true` 继续阻断。
+- `reconciliation_required + requires_manual_review=false` 只记录对账进度，不停止 Engine。
 
-P35 当前已完成自动回归、四条路由的本地真实买入证据，以及 Ignore Coins 的真实买入和手动平仓闭环；尚未部署到 xiexiu，因此不能写成“生产部署完成”。
+热修提交为 `4f0de6aaab0b715f5f5ce250a9aaf0423562ab9d`，tag 为 `p35.1-production-20260817`。xiexiu 使用相同 SHA，部署后 Supervisor、ingestion 和 execution 角色唯一，`NRestarts=0`，Watch Outbox 同步成功。
+
+### 18.7 xiexiu 三策略真实买入与平仓验收
+
+2026-08-17 在 xiexiu 生产 Engine 中完成三策略小额实盘验收，每条链路都由真实 6551 事件触发，不是模拟交易，也未重放过期 Signal。
+
+| 策略 | 真实触发与资产 | Signal / Buy / Sell / Position | 买入 Tx | 平仓 Tx | 最终状态 |
+|---|---|---|---|---|---|
+| 固定 CA | `@xueqiu88` 互动，`HMM`，Robinhood | `810 / 131 / 132 / 569` | `0xeea472a9a3a824748c752aba869c0c5e384a3ea84cb7ca62bd68330676881443` | `0x50564d3829e835d4d3297fc1bade32ee5f5445e1c35ff3856eb8d4b67c581f54` | `closed` |
+| 动态喊单 | `@wanshenme`，`utility token`，BSC | `812 / 133 / 134 / 570` | `0x8e9902d3b2538810a081766464dd58e4341c0e893381da73cc4506704dba1146` | `0xb6e000ab42c5b56f1faa5695d5c065eeb3f59819df27fea4b1cea054275c98d2` | `closed` |
+| 关注策略 | `@xueqiu88 -> @RobbieOnRH`，`$ROBBIE`，Robinhood | `813 / 135 / 136 / 571` | `0xf5cd2b902df01f66a7aab6f297ef291f890163ca4ad126650abfbf34286c7a80` | `0x88a72473795294f38a99eea700a37e81a7a4af1bfef07afe061a2aa9451984ef` | `closed` |
+
+关注策略的详细生产证据：
+
+- Follow Event `2 / resolved`，自动解析 Robinhood CA `0xe0eba1b76b73be7bfa7716b6ca96f724930e2263`。
+- 买入 `0.001 ETH`，收到 `1122.697317691959343276 $ROBBIE`，Receipt `confirmed / 10 confirmations`。
+- 保护策略 `555 / running`；手动平仓后转为 `cancelled`。
+- 平仓收到 `0.000970131567373625 ETH`，Receipt `confirmed / 4 confirmations`，Position `571 / closed`。
+
+### 18.8 最终生产结论
+
+- 固定 CA、动态喊单和关注策略均完成“6551 事件 -> 解析/路由 -> Signal -> GMGN Swap -> Receipt -> 保护持仓 -> 平仓”真实闭环。
+- 六个买卖 Attempt `131-136` 全部为 `confirmed`，三个 Position `569-571` 全部为 `closed`，保护策略全部正常取消。
+- 验收全程 Engine 保持 `running`，最终 `readyToArm=true`、`blockers=[]`、GMGN scheduler `healthy`、队列深度 `0`。
+- 部署和三策略验收窗口 GMGN 429 增量为 `0`。
+
+P35/P35.1 已完成本地自动回归、真实路由交易、xiexiu 生产部署和三策略真实买入/平仓验收，可以作为后续生产运行的 verified baseline。
