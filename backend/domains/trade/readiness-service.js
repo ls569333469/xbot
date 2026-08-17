@@ -56,6 +56,32 @@ function providerHistoryReadiness(recent429) {
   };
 }
 
+function tradeAttemptReadiness(row = {}) {
+  const unresolvedAttempts = Math.max(0, Number(row.unresolved_attempts || 0));
+  const reconcilingAttempts = Math.max(0, Number(row.reconciling_attempts || 0));
+  return {
+    unresolvedAttempts,
+    reconcilingAttempts,
+    blockers: unresolvedAttempts > 0 ? ['UNRESOLVED_TRADE_ATTEMPTS'] : []
+  };
+}
+
+async function loadTradeAttemptReadiness(executor = db) {
+  const result = await executor.query(
+    `SELECT
+       COUNT(*) FILTER (
+         WHERE status = 'submission_uncertain'
+            OR (status = 'reconciliation_required' AND requires_manual_review = true)
+       )::int AS unresolved_attempts,
+       COUNT(*) FILTER (
+         WHERE status = 'reconciliation_required' AND requires_manual_review = false
+       )::int AS reconciling_attempts
+     FROM trade_attempts
+     WHERE status IN ('submission_uncertain', 'reconciliation_required')`
+  );
+  return tradeAttemptReadiness(result.rows[0]);
+}
+
 function splitChainReadiness(blockers = []) {
   const unique = [...new Set(blockers)];
   return {
@@ -730,12 +756,12 @@ async function getSnapshot(options = {}) {
     chains: scoped ? scoped.chains
       : [...new Set([...policy.chains, ...dynamicPolicy.chains, ...followPolicy.chains])]
   };
-  const [chainResult, uncertainResult, unprotectedResult, rate429Result, outboxResult,
+  const [chainResult, attemptReadiness, unprotectedResult, rate429Result, outboxResult,
     reconcilerStatus, chainConfigResult, invalidWhitelistResult, whitelistResult,
     relationResult, latestEvidenceResult, latencyResult, tradeEvidenceResult,
     readinessEvidenceResult, retryStatus, quarantineResult, acceptanceScope] = await Promise.all([
     db.query('SELECT * FROM chain_live_readiness ORDER BY chain'),
-    db.query("SELECT COUNT(*)::int AS count FROM trade_attempts WHERE status IN ('submission_uncertain','reconciliation_required')"),
+    loadTradeAttemptReadiness(),
     db.query("SELECT COUNT(*)::int AS count FROM positions WHERE execution_mode = 'live' AND status = 'open_unprotected'"),
     db.query("SELECT MAX(created_at) AS last_at FROM provider_rate_events WHERE event_type = '429'"),
     db.query("SELECT COUNT(*)::int AS count FROM notification_outbox WHERE status IN ('pending','failed') AND next_attempt_at <= NOW()"),
@@ -1190,7 +1216,7 @@ async function getSnapshot(options = {}) {
     blockers.push('STRATEGY_PROBE_FAILED');
   }
   if (scopeIncludesFixed && acceptanceScope?.expired) blockers.push('LIVE_ACCEPTANCE_SCOPE_EXPIRED');
-  if (Number(uncertainResult.rows[0].count) > 0) blockers.push('UNRESOLVED_TRADE_ATTEMPTS');
+  blockers.push(...attemptReadiness.blockers);
   if (Number(quarantineResult.rows[0].count) > 0) advisories.push('WALLET_QUARANTINE_ACTIVE');
   if (Number(unprotectedResult.rows[0].count) > 0) {
     // An unprotected position must remain visible and closable, but it is a
@@ -1281,7 +1307,8 @@ async function getSnapshot(options = {}) {
       keyExclusive,
       alertsVerified,
       recent429: Boolean(recent429),
-      uncertainAttempts: Number(uncertainResult.rows[0].count),
+      uncertainAttempts: attemptReadiness.unresolvedAttempts,
+      reconcilingAttempts: attemptReadiness.reconcilingAttempts,
       walletQuarantines: Number(quarantineResult.rows[0].count),
       unprotectedPositions: Number(unprotectedResult.rows[0].count),
       pendingAlerts: Number(outboxResult.rows[0].count)
@@ -1531,10 +1558,12 @@ module.exports = {
   contractApprovalReady,
   splitChainReadiness,
   jsonb,
+  loadTradeAttemptReadiness,
   monitor,
   normalizeTradeEvidence,
   persistContractProbeEvidence,
   runDiagnostic,
   diagnosticPreview,
-  persistedEngineDesiredRunning
+  persistedEngineDesiredRunning,
+  tradeAttemptReadiness
 };

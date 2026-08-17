@@ -7,10 +7,12 @@ const {
   followLivePolicyState,
   followWatchReadiness,
   jsonb,
+  loadTradeAttemptReadiness,
   normalizeTradeEvidence,
   providerHistoryReadiness,
   strategyChainReady,
-  splitChainReadiness
+  splitChainReadiness,
+  tradeAttemptReadiness
 } = require('../domains/trade/readiness-service');
 
 test('combined scope keeps policy-local configuration faults out of the global stop path', () => {
@@ -33,6 +35,50 @@ test('recent GMGN 429 history is advisory and does not block a fresh readiness c
     advisories: ['GMGN_RECENT_429']
   });
   assert.deepEqual(providerHistoryReadiness(false), { blockers: [], advisories: [] });
+});
+
+test('ordinary receipt reconciliation is observable without blocking live trading', () => {
+  assert.deepEqual(tradeAttemptReadiness({
+    unresolved_attempts: 0,
+    reconciling_attempts: 1
+  }), {
+    unresolvedAttempts: 0,
+    reconcilingAttempts: 1,
+    blockers: []
+  });
+});
+
+test('submission uncertainty remains a global readiness blocker', async () => {
+  let sql = '';
+  const readiness = await loadTradeAttemptReadiness({
+    query: async (statement) => {
+      sql = statement;
+      return { rows: [{ unresolved_attempts: 1, reconciling_attempts: 0 }] };
+    }
+  });
+
+  assert.match(sql, /status = 'submission_uncertain'/);
+  assert.deepEqual(readiness.blockers, ['UNRESOLVED_TRADE_ATTEMPTS']);
+});
+
+test('manual-review reconciliation remains a global readiness blocker', async () => {
+  let sql = '';
+  const readiness = await loadTradeAttemptReadiness({
+    query: async (statement) => {
+      sql = statement;
+      return { rows: [{ unresolved_attempts: 1, reconciling_attempts: 0 }] };
+    }
+  });
+
+  assert.match(
+    sql,
+    /status = 'reconciliation_required' AND requires_manual_review = true/
+  );
+  assert.match(
+    sql,
+    /status = 'reconciliation_required' AND requires_manual_review = false/
+  );
+  assert.deepEqual(readiness.blockers, ['UNRESOLVED_TRADE_ATTEMPTS']);
 });
 
 test('chain readiness separates fixed CA contract evidence from shared infrastructure', () => {
