@@ -4,7 +4,8 @@ import {
   ChainId, ChainConfig, TradeAttempt, TradeAttemptDetails, TradeRuntimePolicy,
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
   RuntimePolicyDetailPage, RuntimeSummary, DynamicPolicy, DynamicResolution,
-  DynamicSignalStatus, DynamicPaperSession, AccountResearchRun, DynamicPolicyTemplate, EntityId
+  DynamicSignalStatus, DynamicPaperSession, AccountResearchRun, DynamicPolicyTemplate, EntityId,
+  DynamicPolicyInput, DynamicPresetAssetRouteInput, DynamicPresetRouteMatchPreview
 } from './types';
 
 const configuredApiBase = import.meta.env.VITE_API_URL;
@@ -231,7 +232,21 @@ export const api = {
       update: (id: string, data: { name?: string; config?: Partial<DynamicPolicyTemplate['config']> }) => fetchApi<ApiResponse<DynamicPolicyTemplate>>(`/api/dynamic-signal/templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
       remove: (id: string) => fetchApi<ApiResponse<{ deleted: boolean }>>(`/api/dynamic-signal/templates/${id}`, { method: 'DELETE' }),
     },
-    savePolicy: (kolId: string, data: Partial<DynamicPolicy>) => fetchApi<ApiResponse<DynamicPolicy>>(`/api/dynamic-signal/policies/${kolId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    savePolicy: (kolId: string, data: DynamicPolicyInput) => fetchApi<ApiResponse<DynamicPolicy>>(`/api/dynamic-signal/policies/${kolId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    verifyPresetRoute: (route: DynamicPresetAssetRouteInput, bypassCache = false) => fetchApi<ApiResponse<{
+      route: DynamicPresetAssetRouteInput;
+      verification: { status: 'verified'; source: 'local_rpc'; verified_at: string };
+    }>>('/api/dynamic-signal/preset-routes/verify', {
+      method: 'POST', body: JSON.stringify({ route, bypass_cache: bypassCache }),
+    }),
+    previewPresetRouteMatch: (data: {
+      text: string;
+      event_type?: 'tweet' | 'quote' | 'reply';
+      approved_aliases?: DynamicPolicy['approved_aliases'];
+      preset_asset_routes: DynamicPresetAssetRouteInput[];
+    }) => fetchApi<ApiResponse<DynamicPresetRouteMatchPreview>>('/api/dynamic-signal/preset-routes/match-preview', {
+      method: 'POST', body: JSON.stringify(data),
+    }),
     removePolicy: (id: string) => fetchApi<ApiResponse<{ deleted: boolean }>>(`/api/dynamic-signal/policies/${id}`, { method: 'DELETE' }),
     resolutions: (params?: Record<string, string>) => fetchApi<ApiResponse<DynamicResolution[]>>(`/api/dynamic-signal/resolutions${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
     resolution: (id: string) => fetchApi<ApiResponse<DynamicResolution>>(`/api/dynamic-signal/resolutions/${id}`),
@@ -374,6 +389,13 @@ export const api = {
     prepareSignal: (id: EntityId) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/signals/${id}/prepare`, { method: 'POST', body: '{}' }),
     executeSignal: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/signals/${id}/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE BUY' }) }),
     prepareClose: (id: EntityId, percent = 100) => fetchApi<ApiResponse<import('./types').ClosePreparation>>(`/api/trade/positions/${id}/close/prepare`, { method: 'POST', body: JSON.stringify({ percent }) }),
-    executeClose: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/positions/${id}/close/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE CLOSE' }) })
+    executeClose: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/positions/${id}/close/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE CLOSE' }) }),
+    reconcileExternalClose: (id: EntityId) => fetchApi<ApiResponse<import('./types').ExternalCloseReconciliation>>(
+      `/api/trade/positions/${id}/reconcile-external-close`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'SYNC EXTERNAL CLOSE' }),
+        signal: AbortSignal.timeout(75_000)
+      }
+    )
   }
 };

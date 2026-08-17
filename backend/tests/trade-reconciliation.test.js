@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  activityAmountMatchesRaw,
   groupStrategyRows,
   TradeReconciler,
   pollingIntervalMs,
@@ -379,6 +380,55 @@ test('Solana sell settlement excludes closed token-account rent from wallet delt
   }, '4814642', null), '4814642');
 });
 
+test('only external wallet recovery allows provider quote output to differ from router proceeds', async () => {
+  const options = [];
+  const reconciler = new TradeReconciler({
+    receiptService: {
+      verify: async (_chain, _hash, verifyOptions) => {
+        options.push(verifyOptions);
+        return {
+          status: 'pending', confirmations: 1, blockRef: '100', transfers: [], raw: {}
+        };
+      }
+    },
+    repository: {
+      saveChainReceipt: async () => {}
+    },
+    db: { query: async () => ({ rows: [] }) },
+    logger: { error() {}, warn() {} }
+  });
+  const row = {
+    id: 61,
+    attempt_id: 155,
+    chain: 'robinhood',
+    side: 'sell',
+    wallet_address: '0x1111111111111111111111111111111111111111',
+    input_token: '0x2222222222222222222222222222222222222222',
+    output_token: '0x0000000000000000000000000000000000000000',
+    normalized_status: 'chain_verifying',
+    tx_hash: '0xexternal',
+    input_amount_raw: '400',
+    output_amount_raw: '975',
+    report_json: { input_amount: '400', output_amount: '975' },
+    last_response_json: {},
+    attempt_metadata: {},
+    submitted_at: new Date()
+  };
+
+  await reconciler.reconcileClaimedOrder({
+    ...row,
+    provider_order_id: 'activity:0xexternal'
+  });
+  await reconciler.reconcileClaimedOrder({
+    ...row,
+    id: 62,
+    provider_order_id: 'gmgn-order-62'
+  });
+
+  assert.equal(options[0].allowProviderOutputMismatch, true);
+  assert.equal(options[1].allowProviderOutputMismatch, false);
+});
+
 test('EVM replacement is accepted only from a refreshed GMGN order hash', async () => {
   const calls = [];
   const reconciler = new TradeReconciler({
@@ -602,6 +652,69 @@ test('position balance deficit with an active strategy fails to manual review', 
   const result = await reconciler.reconcilePositionBalance({ id: 10 });
   assert.equal(result.status, 'active_strategy_conflict');
   assert.equal(alerts[0].reason, 'ACTIVE_STRATEGY_BALANCE_DEFICIT');
+});
+
+test('explicit position recovery can resolve active strategies before claiming one external sell', async () => {
+  const calls = [];
+  const reconciler = new TradeReconciler({
+    gmgnHttp: {
+      getWalletTokenBalance: async () => ({ balances: [{ balance: '0', decimal: 18 }] }),
+      getWalletActivity: async () => ({
+        activities: [{
+          event_type: 'sell',
+          token: { address: 'TokenMint' },
+          token_amount: '341.2644021868568',
+          quote_token: { decimals: 9 },
+          quote_amount: '0.25',
+          timestamp: 1_800_000_000,
+          tx_hash: 'external-sell-tx'
+        }]
+      })
+    },
+    repository: {
+      getPositionBalanceState: async () => ({
+        position_id: 12,
+        chain_id: 'sol',
+        contract_address: 'TokenMint',
+        wallet_address: 'Wallet',
+        token_decimals: 18,
+        remaining_amount_raw: '341264402186856766960',
+        active_strategy_count: 1,
+        opened_at: new Date(1_700_000_000 * 1000)
+      }),
+      observePositionBalance: async () => ({
+        deficitRaw: '341264402186856766960',
+        externalRaw: '0'
+      }),
+      claimExternalClose: async (_id, activity) => {
+        calls.push(activity);
+        return { attempt: { id: 77 }, orderId: 91, existing: false };
+      }
+    },
+    logger: { error() {}, warn() {} }
+  });
+  let strategyGuardCalls = 0;
+  const result = await reconciler.reconcilePositionBalance({ id: 12 }, {
+    operatorId: 'tester',
+    holdExternalVerification: true,
+    resolveActiveStrategies: async () => {
+      strategyGuardCalls += 1;
+      return { handled: false };
+    }
+  });
+  assert.equal(strategyGuardCalls, 1);
+  assert.equal(result.status, 'chain_verifying');
+  assert.equal(result.attemptId, 77);
+  assert.equal(calls[0].inputAmountRaw, '341264402186856766960');
+  assert.equal(calls[0].operatorId, 'tester');
+  assert.equal(calls[0].holdVerification, true);
+});
+
+test('wallet activity matching accepts only negligible provider display rounding', () => {
+  const expected = '341264402186856766960';
+  assert.equal(activityAmountMatchesRaw('341.2644021868568', 18, expected), true);
+  assert.equal(activityAmountMatchesRaw('341.2644021868', 18, expected), false);
+  assert.equal(activityAmountMatchesRaw('340.2644021868568', 18, expected), false);
 });
 
 test('cancelled strategy uncertainty recovers only when balance proves no sell occurred', async () => {

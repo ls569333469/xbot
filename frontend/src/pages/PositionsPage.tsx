@@ -6,7 +6,7 @@ import { useToast } from '../components/ui/ToastContext';
 import { DataTable } from '../components/ui/DataTable';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { TableSkeleton } from '../components/ui/Skeleton';
-import { TrendingUp, TrendingDown, Power } from 'lucide-react';
+import { TrendingUp, TrendingDown, Power, RefreshCw } from 'lucide-react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 
 const CLOSE_ERROR_MESSAGES: Record<string, string> = {
@@ -32,6 +32,7 @@ export default function PositionsPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(true);
   const [closingIds, setClosingIds] = useState<Set<EntityId>>(new Set());
+  const [syncingIds, setSyncingIds] = useState<Set<EntityId>>(new Set());
   const { toast } = useToast();
   const { lastEvent } = useWebSocket();
 
@@ -80,6 +81,40 @@ export default function PositionsPage() {
     }
   }, [lastEvent, toast, fetchPositions]);
 
+  const handleWalletSync = async (id: EntityId, confirmed = false) => {
+    if (!confirmed && !confirm(
+      '确认同步交易钱包？\n\n系统将查询该代币余额和卖出记录；如发现遗留保护策略，会先核验并取消。只有找到唯一链上卖出证据后才会更新仓位。'
+    )) return;
+    setSyncingIds(previous => new Set(previous).add(id));
+    try {
+      const response = await api.trade.reconcileExternalClose(id);
+      if (!response.ok || !response.data) {
+        throw new Error(closeErrorMessage(response, '钱包同步失败'));
+      }
+      const messages: Record<string, { message: string; type: 'success' | 'warning' | 'info' }> = {
+        matched: { message: '钱包仍持有完整仓位，无需同步', type: 'info' },
+        external_balance_present: { message: '钱包余额不少于系统仓位，未修改仓位记录', type: 'info' },
+        no_open_lot: { message: '该仓位已经完成同步', type: 'success' },
+        chain_verifying: { message: '已找到钱包卖出交易，正在等待链上确认', type: 'success' },
+        protection_close_detected: { message: '检测到保护策略成交，正在等待链上确认', type: 'success' },
+        manual_reconciliation_required: { message: '卖出记录无法唯一匹配，仓位已转为待人工核对', type: 'warning' }
+      };
+      const feedback = messages[response.data.status]
+        || { message: `钱包同步状态：${response.data.status}`, type: 'info' as const };
+      toast(feedback.message, feedback.type);
+      void fetchPositions();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : '钱包同步异常', 'error');
+      void fetchPositions();
+    } finally {
+      setSyncingIds(previous => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
   const handleClose = async (id: EntityId) => {
     const position = positions.find(item => item.id === id);
     if (!position) return;
@@ -93,7 +128,17 @@ export default function PositionsPage() {
     setClosingIds(previous => new Set(previous).add(id));
     try {
       const prepared = await api.trade.prepareClose(id, 100);
-      if (!prepared.ok || !prepared.data) throw new Error(closeErrorMessage(prepared, '平仓准备失败'));
+      if (!prepared.ok || !prepared.data) {
+        if (prepared.code === 'POSITION_BALANCE_EMPTY') {
+          if (confirm(
+            '交易钱包中已没有该代币。是否立即同步钱包卖出记录，并清理遗留保护策略？'
+          )) {
+            await handleWalletSync(id, true);
+          }
+          return;
+        }
+        throw new Error(closeErrorMessage(prepared, '平仓准备失败'));
+      }
       const summary = prepared.data;
       const confirmed = confirm(
         `确认提交真实平仓？\n\n链: ${summary.chain}\n卖出: ${summary.sell_amount}\n钱包可用 raw: ${summary.wallet_available_raw}\n策略动作: ${summary.strategy_action}\n\n提交后仓位会保持显示，直到链上确认。`
@@ -234,14 +279,26 @@ export default function PositionsPage() {
     {
       header: '操作',
       accessor: (row: Position) => (
-        <button
-          className="btn btn-danger text-xs flex items-center gap-xs"
-          style={{ padding: '6px 10px' }}
-          onClick={() => handleClose(row.id)}
-          disabled={closingIds.has(row.id) || ['closing', 'close_uncertain'].includes(row.status)}
-        >
-          <Power size={12} /> {closingIds.has(row.id) ? '准备中' : row.status === 'closing' ? '确认中' : '平仓'}
-        </button>
+        <div className="flex items-center gap-xs" style={{ minWidth: 112 }}>
+          <button
+            className="btn btn-danger text-xs flex items-center gap-xs"
+            style={{ padding: '6px 10px' }}
+            onClick={() => handleClose(row.id)}
+            disabled={closingIds.has(row.id) || syncingIds.has(row.id) || ['closing', 'close_uncertain'].includes(row.status)}
+          >
+            <Power size={12} /> {closingIds.has(row.id) ? '准备中' : row.status === 'closing' ? '确认中' : '平仓'}
+          </button>
+          <button
+            className="btn btn-secondary"
+            style={{ width: 30, height: 30, padding: 0 }}
+            onClick={() => handleWalletSync(row.id)}
+            disabled={syncingIds.has(row.id) || closingIds.has(row.id)}
+            title="同步交易钱包"
+            aria-label="同步交易钱包"
+          >
+            <RefreshCw size={13} className={syncingIds.has(row.id) ? 'spin' : ''} />
+          </button>
+        </div>
       )
     }
   ];

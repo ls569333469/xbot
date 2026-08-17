@@ -22,6 +22,7 @@ const engineState = require('../../lib/engine-state');
 const { TRADE_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
 const { closedPositionCsv } = require('./contract-projector');
 const { createDiagnosticHandler } = require('./diagnostic-handler');
+const { externalCloseService } = require('./external-close-service');
 
 const ACTIVE_POSITION_STATUSES = [
   'open', 'open_unprotected', 'open_protected', 'partially_closed', 'closing',
@@ -307,6 +308,26 @@ router.post('/positions/:id/close/execute', async (req, res) => {
       operatorId(req)
     );
     res.status(202).json({ ok: true, data });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.post('/positions/:id/reconcile-external-close', async (req, res) => {
+  try {
+    if (req.body?.confirmation !== 'SYNC EXTERNAL CLOSE') {
+      return res.status(400).json({
+        ok: false,
+        error: 'Explicit external close synchronization confirmation is required',
+        code: 'CONFIRMATION_REQUIRED'
+      });
+    }
+    const data = await externalCloseService.sync(req.params.id, operatorId(req));
+    req.app.get('wsBroadcast')?.({
+      type: 'position:update',
+      payload: { position_id: Number(req.params.id), ...data }
+    });
+    res.json({ ok: true, data });
   } catch (error) {
     sendError(res, error);
   }

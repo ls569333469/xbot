@@ -1263,7 +1263,7 @@ async function saveChainReceipt(orderId, chain, txHash, receipt) {
   return result.rows[0];
 }
 
-function sellSettlementOutputRaw(chain, receipt, reportOutputRaw, storedOutputRaw) {
+function verifiedNativeSettlementRaw(chain, receipt) {
   const routerProceeds = String(receipt?.nativeProceedsRaw || '');
   if (chain !== 'sol' && /^\d+$/.test(routerProceeds) && BigInt(routerProceeds) > 0n) {
     return routerProceeds;
@@ -1280,6 +1280,12 @@ function sellSettlementOutputRaw(chain, receipt, reportOutputRaw, storedOutputRa
       return nativeDelta;
     }
   }
+  return null;
+}
+
+function sellSettlementOutputRaw(chain, receipt, reportOutputRaw, storedOutputRaw) {
+  const verifiedNativeRaw = verifiedNativeSettlementRaw(chain, receipt);
+  if (verifiedNativeRaw) return verifiedNativeRaw;
   return String(reportOutputRaw || storedOutputRaw || '');
 }
 
@@ -1750,7 +1756,9 @@ async function finalizeConfirmedSellOrder(orderId, normalizedOrder, receipt) {
       throw error;
     }
     const chain = requireChain(row.chain);
-    const outputDecimals = Number(report.outputDecimals ?? row.output_decimals ?? chain.decimals);
+    const outputDecimals = verifiedNativeSettlementRaw(row.chain, receipt)
+      ? chain.decimals
+      : Number(report.outputDecimals ?? row.output_decimals ?? chain.decimals);
     const outputDisplay = rawToDecimal(outputRaw, outputDecimals, 18);
     const previousConfirmed = await client.query(
       `SELECT COUNT(*)::int AS count FROM trade_attempts
@@ -2756,8 +2764,8 @@ async function backfillLegacyPosition(positionId, facts) {
   }
 }
 
-async function getPositionBalanceState(positionId) {
-  const result = await db.query(
+async function getPositionBalanceState(positionId, executor = db) {
+  const result = await executor.query(
     `SELECT position.id AS position_id, position.chain_id, position.contract_address,
             position.status AS position_status, position.signal_id, position.whitelist_id,
             signal.trace_id,
@@ -2774,7 +2782,7 @@ async function getPositionBalanceState(positionId) {
      JOIN position_lots AS lot ON lot.position_id = position.id
      LEFT JOIN trade_signals AS signal ON signal.id = position.signal_id
      WHERE position.id = $1
-     GROUP BY position.id`,
+     GROUP BY position.id, signal.trace_id`,
     [positionId]
   );
   return result.rows[0] || null;
@@ -2843,7 +2851,9 @@ async function markPositionBalanceMismatch(positionId, details) {
     await client.query('BEGIN');
     await client.query(
       `UPDATE positions SET status = 'close_uncertain', updated_at = NOW()
-       WHERE id = $1 AND status IN ('open','open_protected','open_unprotected','partially_closed')`,
+       WHERE id = $1 AND status IN (
+         'open','open_protected','open_unprotected','partially_closed','closing','close_uncertain'
+       )`,
       [positionId]
     );
     await writeOutbox(client, 'position.wallet_balance_mismatch', 'position', positionId, {
@@ -2930,7 +2940,12 @@ async function claimExternalClose(positionId, activity) {
         ? rawToDecimal(activity.outputAmountRaw, activity.outputDecimals, 18)
         : null,
       requestFingerprint,
-      metadata: { source: 'gmgn_wallet_activity', provider_activity: activity.raw || {} },
+      metadata: {
+        source: 'gmgn_wallet_activity',
+        operator_id: activity.operatorId || null,
+        verification_held_for_strategy: activity.holdVerification === true,
+        provider_activity: activity.raw || {}
+      },
       submittedAt: activity.submittedAt
     });
     const report = {
@@ -2947,13 +2962,17 @@ async function claimExternalClose(positionId, activity) {
          input_token, output_token, input_amount_raw, output_amount_raw,
          input_decimals, output_decimals, price_usd, gas_native,
          report_json, last_response_json, submitted_at, next_query_at)
-       VALUES ($1,$2,$3,'confirmed','chain_verifying',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+       VALUES (
+         $1,$2,$3,'confirmed','chain_verifying',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+         CASE WHEN $15::boolean THEN 'infinity'::timestamptz ELSE NOW() END
+       )
        RETURNING *`,
       [attempt.id, `activity:${activity.txHash}`, activity.txHash,
         position.contract_address, chain.nativeToken,
         activity.inputAmountRaw, activity.outputAmountRaw,
         tokenDecimals, activity.outputDecimals,
-        activity.priceUsd, activity.gasNative, report, activity.raw || {}, activity.submittedAt]
+        activity.priceUsd, activity.gasNative, report, activity.raw || {}, activity.submittedAt,
+        activity.holdVerification === true]
     );
     await client.query(
       `UPDATE positions SET status = 'closing', updated_at = NOW() WHERE id = $1`,
@@ -2976,6 +2995,19 @@ async function claimExternalClose(positionId, activity) {
   } finally {
     client.release();
   }
+}
+
+async function releaseExternalCloseVerification(orderId) {
+  const result = await db.query(
+    `UPDATE trade_orders
+     SET next_query_at = NOW(), updated_at = NOW()
+     WHERE id = $1
+       AND normalized_status = 'chain_verifying'
+       AND provider_order_id LIKE 'activity:%'
+     RETURNING *`,
+    [orderId]
+  );
+  return result.rows[0] || null;
 }
 
 async function updateStrategyGroupStatus(groupId, expectedStatuses, nextStatus, providerParams = {}) {
@@ -3201,6 +3233,7 @@ module.exports = {
   addAttemptEvent,
   backfillLegacyPosition,
   claimExternalClose,
+  releaseExternalCloseVerification,
   claimStrategyClose,
   createBuyAttempt,
   beginBuySubmission,

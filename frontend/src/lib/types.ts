@@ -327,6 +327,7 @@ export interface DynamicPolicy {
   allowed_event_types: Array<'tweet' | 'quote' | 'reply'>;
   allowed_term_types: Array<'ca' | 'cashtag' | 'hashtag' | 'approved_name'>;
   approved_aliases: Array<string | { name: string; normalized?: string }>;
+  preset_asset_routes: DynamicPresetAssetRoute[];
   chain_budgets: Record<ChainId, DynamicChainBudget>;
   budget_per_trade: number;
   daily_budget: number;
@@ -341,6 +342,48 @@ export interface DynamicPolicy {
   watch_sync_error?: string | null;
   watch_synced_at?: string | null;
   watch_desired_version?: number | null;
+  updated_at?: string;
+}
+
+export interface DynamicPresetAssetRouteInput {
+  route_id?: EntityId | null;
+  label: string;
+  aliases: string[];
+  chain_id: ChainId;
+  contract_address: string;
+  enabled: boolean;
+}
+
+export interface DynamicPresetAssetRoute extends DynamicPresetAssetRouteInput {
+  route_id: EntityId;
+  variant_id: EntityId;
+  asset_family_id?: EntityId | null;
+  verification: {
+    status: 'verified';
+    source: 'local_rpc';
+    verified_at: string;
+    error_code: null;
+    snapshot?: Record<string, unknown>;
+  };
+}
+
+export type DynamicPolicyInput = Omit<Partial<DynamicPolicy>, 'preset_asset_routes'> & {
+  preset_asset_routes?: DynamicPresetAssetRouteInput[];
+};
+
+export interface DynamicPresetRouteMatchPreview {
+  status: 'none' | 'matched' | 'ambiguous' | 'conflict' | 'binding_required' | 'invalid';
+  failure_code?: string | null;
+  matched_route_ids: EntityId[];
+  candidate?: {
+    presetRouteId?: EntityId;
+    routeLabel?: string;
+    chainId?: ChainId;
+    contractAddress?: string;
+    matchedAliases?: string[];
+  } | null;
+  intent?: { intentClass?: string; reasonCodes?: string[] };
+  normalized_terms: Array<Record<string, unknown>>;
 }
 
 export interface DynamicChainBudget {
@@ -351,7 +394,9 @@ export interface DynamicChainBudget {
 export type DynamicPolicyTemplateConfig = Pick<DynamicPolicy,
   'allowed_chain_ids' | 'allowed_event_types' | 'allowed_term_types' |
   'approved_aliases' | 'chain_budgets' | 'daily_new_token_limit' |
-  'per_token_buy_limit' | 'slippage' | 'exit_strategy' | 'resolver_options'>;
+  'per_token_buy_limit' | 'slippage' | 'exit_strategy' | 'resolver_options'> & {
+  preset_asset_routes: DynamicPresetAssetRouteInput[];
+};
 
 export interface DynamicPolicyTemplate {
   id: string;
@@ -1001,6 +1046,18 @@ export interface ClosePreparation {
   strategy_action: 'sell' | 'cancel_then_sell';
   prepare_token: string;
   expires_in_seconds: number;
+}
+
+export interface ExternalCloseReconciliation {
+  positionId: EntityId;
+  status: 'matched' | 'external_balance_present' | 'no_open_lot'
+    | 'manual_reconciliation_required' | 'chain_verifying' | 'protection_close_detected';
+  attemptId?: EntityId | null;
+  orderId?: EntityId | null;
+  existing?: boolean;
+  strategyAction?: 'cancelled' | 'none';
+  cancelledStrategyCount?: number;
+  strategyGroupId?: EntityId | null;
 }
 
 export interface TradeSignal {

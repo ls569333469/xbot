@@ -54,7 +54,36 @@ test('P24 close preparation does not add a GMGN gas read', () => {
     path.join(BACKEND, 'domains', 'trade', 'close-service.js'),
     'utf8'
   );
-  assert.equal(closeService.includes('gmgnAccess.getGasPrice'), false);
+  const start = closeService.indexOf('async function buildClosePrepared');
+  const end = closeService.indexOf('\nasync function prepare', start);
+  const preparation = closeService.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.equal(preparation.includes('getGasPrice'), false);
+});
+
+test('P35 close execution validates submission evidence before cancelling protection', () => {
+  const closeService = fs.readFileSync(
+    path.join(BACKEND, 'domains', 'trade', 'close-service.js'),
+    'utf8'
+  );
+  const executeStart = closeService.indexOf('async function execute');
+  const retryStart = closeService.indexOf('async function retryIntent');
+  const exportStart = closeService.indexOf('module.exports');
+  const paths = [
+    closeService.slice(executeStart, retryStart),
+    closeService.slice(retryStart, exportStart)
+  ];
+
+  for (const source of paths) {
+    const submission = source.indexOf('await buildCloseSubmission');
+    const evidence = source.indexOf('capturePreSubmitSnapshot');
+    const cancellation = source.indexOf('await cancelStrategies');
+    const swap = source.indexOf('await gmgnAccess.swap');
+    assert.ok(submission >= 0);
+    assert.ok(submission < evidence);
+    assert.ok(evidence < cancellation);
+    assert.ok(cancellation < swap);
+  }
 });
 
 test('P24 provider audit is bounded and reports only local request evidence', async () => {

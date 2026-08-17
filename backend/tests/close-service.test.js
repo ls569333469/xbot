@@ -2,8 +2,10 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   CANCEL_VERIFY_DELAYS_MS,
+  buildCloseSubmission,
   cancelConfirmed,
   cancellationFailureCode,
+  closeTradeReservationWeight,
   closeRequestContext,
   closeSnapshotIdentity,
   normalizeBalanceRaw,
@@ -13,6 +15,30 @@ const {
   sumRemainingRaw,
   waitForStrategyCancellation
 } = require('../domains/trade/close-service');
+
+function restoreEnvironment(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+function bscPrepared(overrides = {}) {
+  return {
+    chain: {
+      id: 'bsc',
+      nativeToken: '0x0000000000000000000000000000000000000000'
+    },
+    wallet: { address: '0x2222222222222222222222222222222222222222' },
+    position: {
+      id: 576,
+      signal_id: 900,
+      contract_address: '0x1111111111111111111111111111111111111111'
+    },
+    inputAmountRaw: '1000000000000000000',
+    slippage: 10,
+    gas: null,
+    ...overrides
+  };
+}
 
 test('sell swaps use an attempt session independent from the originating buy signal', () => {
   const context = closeRequestContext({
@@ -26,6 +52,65 @@ test('sell swaps use an attempt session independent from the originating buy sig
   assert.equal(context.attemptId, 155);
   assert.equal(context.positionId, 44);
   assert.equal(context.side, 'sell');
+});
+
+test('BSC and Base close execution reserve one gas read plus one swap', () => {
+  assert.equal(closeTradeReservationWeight('bsc'), 6);
+  assert.equal(closeTradeReservationWeight('base'), 6);
+  assert.equal(closeTradeReservationWeight('sol'), 5);
+  assert.equal(closeTradeReservationWeight('eth'), 5);
+  assert.equal(closeTradeReservationWeight('robinhood'), 5);
+});
+
+test('close submission resolves and validates BSC gas before returning swap params', async () => {
+  const previous = process.env.GMGN_BSC_GAS_PRICE;
+  delete process.env.GMGN_BSC_GAS_PRICE;
+  const calls = [];
+  const rateLease = { consume() {} };
+  try {
+    const result = await buildCloseSubmission(bscPrepared(), {
+      rateLease,
+      deadlineAt: 123456,
+      attemptId: 151,
+      attemptNo: 1,
+      slippage: 8
+    }, {
+      gmgnAccess: {
+        async getGasPrice(chain, options) {
+          calls.push({ chain, options });
+          return { average: '100000000', native_token_usd_price: '600' };
+        }
+      }
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].chain, 'bsc');
+    assert.equal(calls[0].options.rateLease, rateLease);
+    assert.equal(calls[0].options.deadlineAt, 123456);
+    assert.equal(calls[0].options.requestContext.attemptId, 151);
+    assert.equal(calls[0].options.requestContext.stage, 'gas');
+    assert.equal(result.gas.native_token_usd_price, 600);
+    assert.equal(result.swapParams.gas_price, '100000000');
+    assert.equal(result.swapParams.input_amount, '1000000000000000000');
+    assert.equal(result.swapParams.slippage, 8);
+  } finally {
+    restoreEnvironment('GMGN_BSC_GAS_PRICE', previous);
+  }
+});
+
+test('close submission rejects missing BSC gas before a swap can be submitted', async () => {
+  const previous = process.env.GMGN_BSC_GAS_PRICE;
+  delete process.env.GMGN_BSC_GAS_PRICE;
+  try {
+    await assert.rejects(
+      buildCloseSubmission(bscPrepared(), { attemptId: 152 }, {
+        gmgnAccess: { getGasPrice: async () => ({}) }
+      }),
+      (error) => error.code === 'GMGN_GAS_PRICE_UNAVAILABLE'
+    );
+  } finally {
+    restoreEnvironment('GMGN_BSC_GAS_PRICE', previous);
+  }
 });
 
 test('close service sums lots and accepts only explicit strategy cancellation', () => {

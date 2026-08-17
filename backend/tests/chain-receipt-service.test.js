@@ -54,6 +54,27 @@ test('GMGN router event proves exact EVM native proceeds when historical balance
     expectedInputAmountRaw: '400',
     expectedOutputAmountRaw: '975'
   }), null);
+
+  const externalRecovery = gmgnRouterNativeProceeds({
+    from: wallet,
+    to: router,
+    logs: [{
+      address: router,
+      topics: [
+        GMGN_SWAP_TOPIC,
+        `0x${wallet.slice(2).padStart(64, '0')}`,
+        `0x${wallet.slice(2).padStart(64, '0')}`
+      ],
+      data: `0x${uint256(401)}${uint256(950)}`
+    }]
+  }, wallet, {
+    expectedInputAmountRaw: '401',
+    expectedOutputAmountRaw: '975',
+    allowProviderOutputMismatch: true
+  });
+  assert.equal(externalRecovery.amountRaw, '950');
+  assert.equal(externalRecovery.verification.provider_output_amount_raw, '975');
+  assert.equal(externalRecovery.verification.provider_output_matched, false);
 });
 
 test('GMGN live ETH router event proves proceeds when approve and swap share the block', () => {

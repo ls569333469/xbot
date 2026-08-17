@@ -192,6 +192,19 @@ function receiptMatchesTradedAmount(row, normalizedOrder, receipt) {
   return row.chain === 'robinhood' && BigInt(expected) - BigInt(actual) <= 1n;
 }
 
+const ACTIVITY_AMOUNT_RELATIVE_SCALE = 1_000_000_000_000_000n;
+
+function activityAmountMatchesRaw(displayAmount, decimals, expectedRaw) {
+  const expectedText = String(expectedRaw || '');
+  if (!/^\d+$/.test(expectedText)) return false;
+  const expected = BigInt(expectedText);
+  const actual = BigInt(decimalToRaw(displayAmount, decimals));
+  if (actual === expected) return true;
+  if (expected <= 0n) return false;
+  const difference = actual > expected ? actual - expected : expected - actual;
+  return difference * ACTIVITY_AMOUNT_RELATIVE_SCALE <= expected;
+}
+
 function orderWithReceiptTradedAmount(row, normalizedOrder, receipt) {
   if (row.side === 'sell') return normalizedOrder;
   const actual = receiptTradedAmountRaw(row, receipt);
@@ -347,6 +360,7 @@ class TradeReconciler {
       tradedToken: row.side === 'sell' ? row.input_token : row.output_token,
       expectedInputAmountRaw: normalized.report.inputAmountRaw || row.input_amount_raw,
       expectedOutputAmountRaw: normalized.report.outputAmountRaw || row.output_amount_raw,
+      allowProviderOutputMismatch: String(row.provider_order_id || '').startsWith('activity:'),
       verifyNativeBalanceDelta: row.side === 'sell'
         && String(row.output_token) === String(requireChain(row.chain).nativeToken)
     });
@@ -643,7 +657,7 @@ class TradeReconciler {
     };
   }
 
-  async reconcilePositionBalance(row) {
+  async reconcilePositionBalance(row, options = {}) {
     const state = await this.repository.getPositionBalanceState(row.id);
     if (!state || BigInt(state.remaining_amount_raw.split('.')[0]) === 0n) {
       return { positionId: row.id, status: 'no_open_lot' };
@@ -678,12 +692,21 @@ class TradeReconciler {
       };
     }
     if (Number(state.active_strategy_count) > 0) {
-      await this.repository.markPositionBalanceMismatch(row.id, {
-        reason: 'ACTIVE_STRATEGY_BALANCE_DEFICIT',
-        deficit_raw: observation.deficitRaw,
-        active_strategy_count: Number(state.active_strategy_count)
-      });
-      return { positionId: row.id, status: 'active_strategy_conflict' };
+      if (typeof options.resolveActiveStrategies !== 'function') {
+        await this.repository.markPositionBalanceMismatch(row.id, {
+          reason: 'ACTIVE_STRATEGY_BALANCE_DEFICIT',
+          deficit_raw: observation.deficitRaw,
+          active_strategy_count: Number(state.active_strategy_count)
+        });
+        return { positionId: row.id, status: 'active_strategy_conflict' };
+      }
+      const resolution = await options.resolveActiveStrategies({ state, observation });
+      if (resolution?.handled) {
+        return {
+          positionId: row.id,
+          ...(resolution.result || { status: 'strategy_close_detected' })
+        };
+      }
     }
 
     const activityResponse = await this.gmgnAccess.getWalletActivity(
@@ -703,7 +726,11 @@ class TradeReconciler {
           !== String(state.contract_address).toLowerCase()) return false;
       if (Number(activity.timestamp || 0) * 1000 < new Date(state.opened_at).getTime()) return false;
       try {
-        return decimalToRaw(activity.token_amount, state.token_decimals) === observation.deficitRaw;
+        return activityAmountMatchesRaw(
+          activity.token_amount,
+          state.token_decimals,
+          observation.deficitRaw
+        );
       } catch {
         return false;
       }
@@ -723,6 +750,8 @@ class TradeReconciler {
       error.code = 'GMGN_SCHEMA_INVALID';
       throw error;
     }
+    const holdVerification = options.holdExternalVerification === true
+      && Number(state.active_strategy_count) > 0;
     const claimed = await this.repository.claimExternalClose(row.id, {
       txHash: String(activity.tx_hash),
       inputAmountRaw: observation.deficitRaw,
@@ -731,12 +760,16 @@ class TradeReconciler {
       priceUsd: Number(activity.price_usd || 0) || null,
       gasNative: Number(activity.gas_native || 0) || null,
       submittedAt: new Date(Number(activity.timestamp) * 1000),
-      raw: activity
+      raw: activity,
+      operatorId: options.operatorId || null,
+      holdVerification
     });
     return {
       positionId: row.id,
       status: 'chain_verifying',
+      attemptId: claimed.attempt?.id || null,
       orderId: claimed.orderId,
+      verificationHeld: holdVerification,
       existing: Boolean(claimed.existing)
     };
   }
@@ -1059,6 +1092,7 @@ class TradeReconciler {
 const reconciler = new TradeReconciler();
 
 module.exports = {
+  activityAmountMatchesRaw,
   DEFAULT_STRATEGY_BATCH_GROUP_BUDGET,
   RECONCILER_LOCK,
   TradeReconciler,

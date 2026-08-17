@@ -53,8 +53,10 @@ function gmgnRouterNativeProceeds(receipt, walletAddress, dependencies = {}) {
   const sender = String(receipt?.from || '').toLowerCase();
   const expectedInput = String(dependencies.expectedInputAmountRaw || '');
   const expectedOutput = String(dependencies.expectedOutputAmountRaw || '');
+  const allowProviderOutputMismatch = dependencies.allowProviderOutputMismatch === true;
   if (!wallet || sender !== wallet || !router
-      || !/^\d+$/.test(expectedInput) || !/^\d+$/.test(expectedOutput)) return null;
+      || !/^\d+$/.test(expectedInput)
+      || (!allowProviderOutputMismatch && !/^\d+$/.test(expectedOutput))) return null;
 
   for (const log of receipt.logs || []) {
     const topics = Array.isArray(log.topics) ? log.topics : [];
@@ -66,7 +68,9 @@ function gmgnRouterNativeProceeds(receipt, walletAddress, dependencies = {}) {
     if (!/^[0-9a-f]+$/i.test(data) || data.length < 128) continue;
     const inputRaw = BigInt(`0x${data.slice(0, 64)}`).toString();
     const outputRaw = BigInt(`0x${data.slice(64, 128)}`).toString();
-    if (inputRaw !== expectedInput || outputRaw !== expectedOutput || BigInt(outputRaw) <= 0n) continue;
+    if (inputRaw !== expectedInput
+        || (!allowProviderOutputMismatch && outputRaw !== expectedOutput)
+        || BigInt(outputRaw) <= 0n) continue;
     return {
       amountRaw: outputRaw,
       verification: {
@@ -76,6 +80,8 @@ function gmgnRouterNativeProceeds(receipt, walletAddress, dependencies = {}) {
         event_topic: String(topics[0]).toLowerCase(),
         input_amount_raw: inputRaw,
         output_amount_raw: outputRaw,
+        provider_output_amount_raw: /^\d+$/.test(expectedOutput) ? expectedOutput : null,
+        provider_output_matched: outputRaw === expectedOutput,
         recipient: wallet
       }
     };
