@@ -56,6 +56,7 @@ function authorizationSnapshot(value = {}, type = strategyType(value)) {
       revision: revision ?? null,
       context_hash: nullableText(contextHash)
     },
+    ...(value.asset_route_snapshot ? { asset_route_snapshot: value.asset_route_snapshot } : {}),
     execution_decision: { status: 'not_attempted', blockers: [] }
   };
   return { ...body, snapshot_hash: hashSnapshot(body) };

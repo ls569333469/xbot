@@ -71,7 +71,8 @@ async function main() {
       '048_p27_shared_gmgn_asset_metadata.sql',
       '049_p27_metadata_enqueue_missing_only.sql',
       '050_p33_kol_performance_analysis.sql',
-      '051_p34_kol_research_result_convergence.sql']]
+      '051_p34_kol_research_result_convergence.sql',
+      '052_p35_dynamic_preset_asset_routes.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -99,6 +100,7 @@ async function main() {
   if (!migrations.has('049_p27_metadata_enqueue_missing_only.sql')) throw new Error('Migration 049 is not applied');
   if (!migrations.has('050_p33_kol_performance_analysis.sql')) throw new Error('Migration 050 is not applied');
   if (!migrations.has('051_p34_kol_research_result_convergence.sql')) throw new Error('Migration 051 is not applied');
+  if (!migrations.has('052_p35_dynamic_preset_asset_routes.sql')) throw new Error('Migration 052 is not applied');
 
   await requireColumns('schema_migrations', [
     'checksum_sha256', 'migration_manifest_id', 'release_sha'
@@ -172,6 +174,19 @@ async function main() {
     'kol_id', 'mode', 'enabled', 'allowed_chain_ids', 'allowed_event_types',
     'allowed_term_types', 'chain_budgets', 'revision', 'context_hash'
   ]);
+  await requireColumns('dynamic_policy_asset_routes', [
+    'actor_policy_id', 'label', 'variant_id', 'enabled', 'verification_source',
+    'verification_snapshot', 'verified_at', 'archived_at'
+  ]);
+  await requireColumns('dynamic_policy_asset_aliases', [
+    'route_id', 'actor_policy_id', 'alias_text', 'normalized_key', 'sort_order', 'archived_at'
+  ]);
+  await requireColumns('dynamic_ca_resolution_attempts', [
+    'selected_preset_route_id', 'preset_route_snapshot'
+  ]);
+  await requireColumns('dynamic_ca_resolution_candidates', [
+    'preset_route_id', 'preset_route_snapshot'
+  ]);
   await requireColumns('dynamic_policy_usage_daily_by_chain', [
     'actor_policy_id', 'usage_date', 'chain_id', 'spent_native', 'reserved_native',
     'new_token_count', 'signal_count'
@@ -227,6 +242,10 @@ async function main() {
     'idx_asset_metadata_claim',
     'uq_dynamic_resolution_job',
     'uq_dynamic_paper_session_running',
+    'uq_dynamic_policy_asset_routes_active_asset',
+    'uq_dynamic_policy_asset_aliases_active_key',
+    'idx_dynamic_policy_asset_routes_policy',
+    'idx_dynamic_policy_asset_aliases_route',
     'uq_whitelist_dynamic_actor_ca_chain_active',
     'uq_trade_signal_dynamic_resolution',
     'uq_follow_discovery_policy_kol_current',

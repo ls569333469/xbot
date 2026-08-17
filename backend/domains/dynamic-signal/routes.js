@@ -7,12 +7,29 @@ const { dynamicSignalWorker } = require('./event-worker');
 const { dynamicPaperSessionWorker } = require('./paper-worker');
 const { p20FeatureState } = require('../../lib/p20-features');
 const { enqueueWatchSyncForHandles } = require('../x-monitor/6551/watch-sync-outbox');
+const { normalizePresetRoutes } = require('./preset-route-schema');
+const { verifyPresetRoute } = require('./preset-route-verification');
+const { extractWithPresetRoutes, withPreviewRouteEvidence } = require('./preset-route-resolver');
+const { classifyIntent } = require('./intent-gate');
 
 const router = express.Router();
 
 function sendError(res, error) {
-  const status = error.code?.includes('NOT_FOUND') ? 404 : 400;
-  res.status(status).json({ ok: false, error: error.message, code: error.code || 'BAD_REQUEST' });
+  const code = error.code || 'BAD_REQUEST';
+  const status = code === 'DYNAMIC_POLICY_CONCURRENT_UPDATE'
+      || code === 'DYNAMIC_ROUTE_BINDING_REQUIRED'
+      || code.includes('CONFLICT') || code.includes('DUPLICATE') || code.includes('POLICY_MISMATCH')
+    ? 409
+      : code.includes('RPC_UNAVAILABLE') ? 503
+      : code.includes('CHAIN_NOT_ALLOWED') || code.includes('CONTRACT_NOT_FOUND')
+          || code.includes('SOL_MINT_INVALID') || code.includes('RPC_CHAIN_MISMATCH') ? 422
+        : code.includes('NOT_FOUND') ? 404 : 400;
+  res.status(status).json({
+    ok: false,
+    error: error.message,
+    code,
+    ...(error.details ? { details: error.details } : {})
+  });
 }
 
 router.get('/status', async (_req, res) => {
@@ -54,10 +71,16 @@ router.delete('/templates/:id', async (req, res) => {
 });
 
 router.put('/policies/:kolId', async (req, res) => {
+  let prepared;
+  try {
+    prepared = await policyService.preparePolicyUpsert(req.params.kolId, req.body);
+  } catch (error) {
+    return sendError(res, error);
+  }
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    await policyService.upsert(req.params.kolId, req.body, client);
+    await policyService.commitPreparedPolicyUpsert(prepared, client);
     const kolResult = await client.query(
       'SELECT x_handle FROM x_kol_accounts WHERE id = $1', [Number(req.params.kolId)]
     );
@@ -69,6 +92,37 @@ router.put('/policies/:kolId', async (req, res) => {
     await client.query('ROLLBACK');
     sendError(res, error);
   } finally { client.release(); }
+});
+
+router.post('/preset-routes/verify', async (req, res) => {
+  try {
+    const [route] = normalizePresetRoutes([req.body?.route || req.body]);
+    const verification = await verifyPresetRoute(route, { bypassCache: req.body?.bypass_cache === true });
+    res.json({ ok: true, data: { route, verification } });
+  } catch (error) { sendError(res, error); }
+});
+
+router.post('/preset-routes/match-preview', async (req, res) => {
+  try {
+    const normalized = normalizePresetRoutes(req.body?.preset_asset_routes || [], {
+      legacyAliases: req.body?.approved_aliases || []
+    });
+    const routes = withPreviewRouteEvidence(normalized);
+    const state = extractWithPresetRoutes({
+      eventType: req.body?.event_type || 'tweet',
+      actorText: req.body?.text || '',
+      presetRoutes: routes,
+      legacyApprovedAliases: req.body?.approved_aliases || []
+    });
+    res.json({ ok: true, data: {
+      status: state.status,
+      failure_code: state.failureCode,
+      matched_route_ids: state.matchedRoutes || [],
+      candidate: state.candidate,
+      intent: classifyIntent(state.extraction),
+      normalized_terms: state.extraction.authorOwnedTerms || []
+    } });
+  } catch (error) { sendError(res, error); }
 });
 
 router.delete('/policies/:id', async (req, res) => {

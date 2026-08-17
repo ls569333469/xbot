@@ -3,6 +3,7 @@ const {
   CandidateIndex, boundedIndexText, candidateKey, normalizeCandidate
 } = require('./candidate-index');
 const { normalizeName, normalizeSymbol } = require('./content-extractor');
+const assetRegistry = require('./asset-registry');
 
 const DEFAULT_GMGN_CANDIDATE_TTL_MS = 5 * 60_000;
 const MIN_GMGN_CANDIDATE_TTL_MS = 60_000;
@@ -56,10 +57,6 @@ async function loadIndex(options = {}, executor = db) {
   return new CandidateIndex(candidates);
 }
 
-function familyKey(candidate) {
-  return candidate.assetFamilyKey || `variant:${candidateKey(candidate)}`;
-}
-
 async function upsertCandidate(value, sourceType, executor = db, options = {}) {
   const candidate = normalizeCandidate(value);
   if (!candidate) return null;
@@ -69,57 +66,12 @@ async function upsertCandidate(value, sourceType, executor = db, options = {}) {
   const verifiedTtlMs = boundedGmgnCandidateTtlMs();
   const expiresAt = explicitExpiry || (sourceType === 'gmgn_info'
     ? new Date(new Date(fetchedAt).getTime() + verifiedTtlMs) : null);
-  const identity = familyKey(candidate);
-  const familyResult = await executor.query(
-    `INSERT INTO dynamic_asset_families
-      (identity_key, canonical_name, canonical_symbol, evidence)
-     VALUES ($1,$2,$3,$4)
-     ON CONFLICT (identity_key) DO UPDATE SET
-       canonical_name = COALESCE(NULLIF(EXCLUDED.canonical_name, ''), dynamic_asset_families.canonical_name),
-       canonical_symbol = COALESCE(NULLIF(EXCLUDED.canonical_symbol, ''), dynamic_asset_families.canonical_symbol),
-       evidence = dynamic_asset_families.evidence || EXCLUDED.evidence,
-       updated_at = NOW()
-     RETURNING id`,
-    [identity, candidate.name || null, candidate.symbol || null,
-      JSON.stringify({ sources: candidate.sources || [sourceType] })]
-  );
-  const market = {
-    market_cap_usd: candidate.marketCapUsd ?? null,
-    liquidity_usd: candidate.liquidityUsd ?? null,
-    holder_count: candidate.holderCount ?? null
-  };
-  const variantResult = await executor.query(
-    `INSERT INTO dynamic_asset_variants
-      (asset_family_id, chain_id, contract_address, name, symbol, launchpad,
-       official_x_handles, source_types, provider_status, tradable_status,
-       market_snapshot, security_snapshot, field_availability, fetched_at, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-     ON CONFLICT (chain_id, contract_address) DO UPDATE SET
-       asset_family_id = EXCLUDED.asset_family_id,
-       name = COALESCE(NULLIF(EXCLUDED.name, ''), dynamic_asset_variants.name),
-       symbol = COALESCE(NULLIF(EXCLUDED.symbol, ''), dynamic_asset_variants.symbol),
-       launchpad = COALESCE(NULLIF(EXCLUDED.launchpad, ''), dynamic_asset_variants.launchpad),
-       official_x_handles = ARRAY(SELECT DISTINCT unnest(
-         dynamic_asset_variants.official_x_handles || EXCLUDED.official_x_handles)),
-       source_types = ARRAY(SELECT DISTINCT unnest(
-         dynamic_asset_variants.source_types || EXCLUDED.source_types)),
-       provider_status = EXCLUDED.provider_status,
-       tradable_status = EXCLUDED.tradable_status,
-       market_snapshot = dynamic_asset_variants.market_snapshot || EXCLUDED.market_snapshot,
-       security_snapshot = dynamic_asset_variants.security_snapshot || EXCLUDED.security_snapshot,
-       field_availability = dynamic_asset_variants.field_availability || EXCLUDED.field_availability,
-       fetched_at = EXCLUDED.fetched_at, expires_at = EXCLUDED.expires_at, updated_at = NOW()
-     RETURNING *`,
-    [familyResult.rows[0].id, candidate.chainId, candidate.contractAddress,
-      candidate.name || null, candidate.symbol || null, candidate.launchpad || null,
-      candidate.xHandles || [], [...new Set([...(candidate.sources || []), sourceType])],
-      candidate.providerStatus || 'unknown', candidate.tradableStatus || 'unknown',
-      JSON.stringify(market),
-      JSON.stringify(candidate.security || candidate.providerSnapshot?.security || {}),
-      JSON.stringify(candidate.fieldAvailability || {}),
-      fetchedAt, expiresAt]
-  );
-  const variant = variantResult.rows[0];
+  const variant = await assetRegistry.ensureVariant(candidate, sourceType, executor, {
+    fetchedAt,
+    expiresAt,
+    lock: false,
+    skipExistingLookup: true
+  });
   const sourceRef = boundedIndexText(options.sourceRef) || null;
   const keys = [
     ['chain_ca', `${candidate.chainId}:${candidate.contractAddress}`],
@@ -154,7 +106,7 @@ async function upsertMany(values, sourceType, executor = db, options = {}) {
 
 module.exports = {
   boundedGmgnCandidateTtlMs,
-  familyKey,
+  familyKey: assetRegistry.familyKey,
   loadIndex,
   upsertCandidate,
   upsertMany

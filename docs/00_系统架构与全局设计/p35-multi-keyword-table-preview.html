@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xbot P35 - 批量资产路由表格</title>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: hsl(240 10% 3.9%);
+      --surface: #0f0f14;
+      --surface-2: #13131a;
+      --surface-hover: #16161e;
+      --border: rgba(255,255,255,.08);
+      --border-strong: rgba(255,255,255,.14);
+      --text: #e7e7e7;
+      --secondary: #aaa;
+      --muted: #74747d;
+      --accent: hsl(250 84% 63%);
+      --accent-hover: hsl(250 84% 68%);
+      --success: hsl(154 94% 51%);
+      --warning: hsl(40 95% 50%);
+      --danger: hsl(359 100% 65%);
+      --bsc: #f3ba2f;
+      --radius: 8px;
+      --mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); letter-spacing: 0; }
+    button, input, select, textarea { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: flex; }
+    .sidebar { position: fixed; inset: 0 auto 0 0; width: 240px; border-right: 1px solid var(--border); background: #0b0b0e; padding: 18px 12px; display: flex; flex-direction: column; z-index: 10; }
+    .brand { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 10px 16px; border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 760; }
+    .brand-mark { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; background: var(--accent); color: white; }
+    .nav { display: grid; gap: 4px; padding-top: 14px; }
+    .nav-item { height: 40px; border: 0; border-left: 2px solid transparent; border-radius: 6px; padding: 0 11px; display: flex; align-items: center; gap: 10px; background: transparent; color: var(--secondary); text-align: left; }
+    .nav-item.active { background: rgba(124,92,255,.12); border-left-color: var(--accent); color: var(--text); }
+    .nav-item svg, .brand svg { width: 18px; height: 18px; flex: none; }
+    .sidebar-foot { margin-top: auto; padding: 14px 10px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+    .sidebar-foot strong { display: block; color: var(--success); font-size: 13px; }
+    .main { width: calc(100% - 240px); margin-left: 240px; min-width: 0; }
+    .topbar { height: 64px; padding: 0 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; background: rgba(9,9,11,.9); position: sticky; top: 0; z-index: 8; backdrop-filter: blur(14px); }
+    .crumb { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+    .crumb strong { color: var(--text); }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .btn { height: 38px; border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; background: var(--surface-2); color: var(--text); font-weight: 650; white-space: nowrap; }
+    .btn:hover { border-color: rgba(255,255,255,.26); background: var(--surface-hover); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .btn.primary:hover { background: var(--accent-hover); }
+    .btn.danger { color: var(--danger); }
+    .btn.icon { width: 36px; padding: 0; }
+    .btn svg { width: 16px; height: 16px; }
+    .workspace { width: min(100%, 1540px); padding: 24px 28px 100px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
+    .page-head h1 { font-size: 20px; line-height: 28px; }
+    .page-head p { margin-top: 4px; color: var(--secondary); }
+    .account-strip { display: grid; grid-template-columns: minmax(220px,1.4fr) repeat(3,minmax(118px,.6fr)); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; margin-bottom: 18px; }
+    .account-cell { min-height: 70px; padding: 13px 16px; border-left: 1px solid var(--border); display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+    .account-cell:first-child { border-left: 0; }
+    .account-cell span { color: var(--muted); font-size: 12px; }
+    .account-cell strong { margin-top: 3px; overflow-wrap: anywhere; }
+    .account-main { flex-direction: row; justify-content: flex-start; align-items: center; gap: 12px; }
+    .avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: #ececf1; color: #0b0b0e; font-weight: 800; }
+    .stepper { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+    .step { min-height: 58px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 10px 8px; text-align: left; }
+    .step span { display: block; font-size: 11px; }
+    .step strong { color: inherit; font-size: 13px; }
+    .step.complete { color: var(--secondary); }
+    .step.active { color: var(--text); border-bottom-color: var(--accent); }
+    .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
+    .section-head h2 { font-size: 16px; }
+    .section-head p { margin-top: 2px; color: var(--secondary); font-size: 13px; }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .term-strip { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
+    .term { height: 36px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--secondary); display: inline-flex; align-items: center; gap: 7px; }
+    .term.active { border-color: rgba(124,92,255,.7); background: rgba(124,92,255,.1); color: var(--text); }
+    .term svg { width: 15px; height: 15px; }
+    .route-table { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .route-head, .route-row { display: grid; grid-template-columns: 42px 200px minmax(260px,1.4fr) 112px minmax(280px,1fr) 108px 88px; align-items: stretch; }
+    .route-head { min-height: 42px; background: #0c0c10; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .route-head > div, .route-row > div { min-width: 0; padding: 11px 12px; border-left: 1px solid var(--border); display: flex; align-items: center; }
+    .route-head > div:first-child, .route-row > div:first-child { border-left: 0; }
+    .route-row { border-top: 1px solid var(--border); min-height: 112px; transition: background .15s ease; }
+    .route-row:hover { background: rgba(255,255,255,.012); }
+    .route-row.invalid { box-shadow: inset 3px 0 0 var(--danger); }
+    .drag { justify-content: center; color: var(--muted); }
+    .drag svg { width: 16px; height: 16px; }
+    .field { width: 100%; display: flex; flex-direction: column; gap: 6px; }
+    .input, select, textarea { width: 100%; border: 1px solid var(--border-strong); border-radius: 6px; background: #0b0b0f; color: var(--text); outline: none; }
+    .input, select { height: 38px; padding: 0 10px; }
+    textarea { min-height: 76px; padding: 9px 10px; resize: vertical; }
+    .input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    .ca { font: 12px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .aliases { align-items: flex-start !important; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { max-width: 100%; min-height: 29px; padding: 4px 7px 4px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: #101016; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
+    .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip button { border: 0; background: transparent; color: var(--muted); display: grid; place-items: center; }
+    .chip button:hover { color: var(--danger); }
+    .chip svg { width: 13px; height: 13px; }
+    .alias-add { width: 30px; height: 29px; border: 1px dashed var(--border-strong); border-radius: 6px; display: grid; place-items: center; background: transparent; color: var(--secondary); }
+    .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+    .status.success { color: var(--success); }
+    .status.warning { color: var(--warning); }
+    .status.danger { color: var(--danger); }
+    .status svg { width: 14px; height: 14px; }
+    .switch { position: relative; width: 38px; height: 22px; display: inline-block; }
+    .switch input { position: absolute; opacity: 0; }
+    .switch i { display: block; width: 38px; height: 22px; border-radius: 999px; background: #303039; transition: .15s; }
+    .switch i::after { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%; background: #8a8a94; transition: .15s; }
+    .switch input:checked + i { background: var(--accent); }
+    .switch input:checked + i::after { left: 19px; background: white; }
+    .row-actions { justify-content: center; gap: 4px; }
+    .row-actions button { width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); display: grid; place-items: center; }
+    .row-actions button:hover { background: var(--surface-hover); color: var(--text); }
+    .row-actions button:last-child:hover { color: var(--danger); }
+    .row-actions svg { width: 15px; height: 15px; }
+    .empty-row { padding: 34px; text-align: center; color: var(--secondary); }
+    .route-footer { padding: 12px 14px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+    .route-footer strong { color: var(--text); }
+    .test-band { margin-top: 22px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 20px 0; }
+    .test-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(280px,.65fr); gap: 18px; }
+    .test-input { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .test-result { min-height: 82px; border-left: 2px solid var(--success); padding: 10px 14px; background: rgba(20,241,149,.04); }
+    .test-result.warning { border-left-color: var(--danger); background: rgba(255,76,82,.04); }
+    .test-result strong, .test-result span { display: block; }
+    .test-result span { margin-top: 4px; color: var(--secondary); font-size: 12px; overflow-wrap: anywhere; }
+    .mono { font-family: var(--mono); }
+    .footer { position: fixed; left: 240px; right: 0; bottom: 0; min-height: 66px; padding: 12px 28px; border-top: 1px solid var(--border); background: rgba(11,11,14,.96); backdrop-filter: blur(14px); display: flex; align-items: center; justify-content: space-between; gap: 16px; z-index: 9; }
+    .footer-status { color: var(--secondary); }
+    .footer-status strong { color: var(--success); }
+    .footer-actions { display: flex; gap: 8px; }
+    .toast { position: fixed; right: 24px; bottom: 88px; max-width: 360px; padding: 11px 14px; border: 1px solid var(--border-strong); border-radius: 7px; background: #17171e; box-shadow: 0 12px 36px rgba(0,0,0,.45); transform: translateY(16px); opacity: 0; pointer-events: none; transition: .2s; z-index: 30; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .dialog-layer { position: fixed; inset: 0; display: none; place-items: center; padding: 20px; background: rgba(0,0,0,.62); z-index: 25; }
+    .dialog-layer.open { display: grid; }
+    .dialog { width: min(520px,100%); border: 1px solid var(--border-strong); border-radius: var(--radius); background: #111117; box-shadow: 0 20px 60px rgba(0,0,0,.65); }
+    .dialog-head, .dialog-body, .dialog-foot { padding: 16px 18px; }
+    .dialog-head { border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .dialog-body { display: grid; gap: 8px; }
+    .dialog-body small { color: var(--secondary); }
+    .dialog-foot { border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+    @media (max-width: 1450px) {
+      .route-head { display: none; }
+      .route-row { grid-template-columns: 36px 1fr 1fr; min-height: 0; padding: 8px 0; }
+      .route-row > div { border-left: 0; }
+      .route-row .aliases, .route-row .address { grid-column: 2 / -1; }
+      .route-row .row-actions { grid-column: 3; }
+      .route-row .drag { grid-row: 1 / 4; }
+    }
+    @media (max-width: 760px) {
+      .sidebar { display: none; }
+      .main { width: 100%; margin-left: 0; }
+      .workspace { padding: 18px 14px 104px; }
+      .topbar { padding: 0 14px; }
+      .topbar .btn span { display: none; }
+      .page-head { display: block; }
+      .page-head .toolbar { margin-top: 12px; }
+      .account-strip { grid-template-columns: 1fr 1fr; }
+      .account-cell { border-top: 1px solid var(--border); }
+      .account-cell:nth-child(2) { border-left: 0; }
+      .account-main { grid-column: 1 / -1; border-top: 0; }
+      .stepper { grid-template-columns: repeat(4,1fr); }
+      .step span { display: none; }
+      .step { text-align: center; }
+      .route-row { grid-template-columns: 28px 1fr; }
+      .route-row > div { grid-column: 2; }
+      .route-row .drag { grid-column: 1; grid-row: 1 / 7; padding: 10px 3px; }
+      .route-row .row-actions { grid-column: 2; justify-content: flex-end; }
+      .test-grid { grid-template-columns: 1fr; }
+      .test-input { grid-template-columns: 1fr; }
+      .footer { left: 0; padding: 10px 14px; }
+      .footer-status { display: none; }
+      .footer-actions { width: 100%; }
+      .footer-actions .btn { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark"><i data-lucide="trending-up"></i></span><span>xbot</span></div>
+      <nav class="nav">
+        <button class="nav-item"><i data-lucide="layout-dashboard"></i>总览</button>
+        <button class="nav-item"><i data-lucide="users"></i>KOL 账号</button>
+        <button class="nav-item active"><i data-lucide="route"></i>策略管理</button>
+        <button class="nav-item"><i data-lucide="radio"></i>信号</button>
+        <button class="nav-item"><i data-lucide="briefcase-business"></i>持仓</button>
+        <button class="nav-item"><i data-lucide="history"></i>交易记录</button>
+      </nav>
+      <div class="sidebar-foot"><strong>方案 A · 未采用</strong>仅保留设计比较 · 不连接后端</div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="crumb"><span>策略管理</span><i data-lucide="chevron-right"></i><strong>动态喊单策略</strong></div>
+        <div class="top-actions">
+          <button class="btn icon" title="撤销本页修改" id="resetBtn"><i data-lucide="rotate-ccw"></i></button>
+          <button class="btn" id="switchPreview"><i data-lucide="panels-top-left"></i><span>返回正式主从方案</span></button>
+        </div>
+      </header>
+      <div class="workspace">
+        <div class="page-head">
+          <div><h1>编辑动态喊单策略</h1><p>将账号关键词绑定到唯一链和合约地址。</p></div>
+          <div class="toolbar"><button class="btn"><i data-lucide="library"></i>更换模板</button><button class="btn" id="importBtn"><i data-lucide="clipboard-paste"></i>批量导入</button></div>
+        </div>
+
+        <section class="account-strip" aria-label="策略上下文">
+          <div class="account-cell account-main"><div class="avatar">W</div><div><span>监听账号</span><strong>@wanshenme</strong></div></div>
+          <div class="account-cell"><span>运行阶段</span><strong>实盘</strong></div>
+          <div class="account-cell"><span>当前 Revision</span><strong>v18</strong></div>
+          <div class="account-cell"><span>配置来源</span><strong>多链小额标准 · v2</strong></div>
+        </section>
+
+        <nav class="stepper" aria-label="配置步骤">
+          <button class="step complete"><span>步骤 1</span><strong>账号与模板</strong></button>
+          <button class="step active"><span>步骤 2</span><strong>词条与解析</strong></button>
+          <button class="step"><span>步骤 3</span><strong>资金与离场</strong></button>
+          <button class="step"><span>步骤 4</span><strong>确认并保存</strong></button>
+        </nav>
+
+        <div class="section-head">
+          <div><h2>识别词条</h2><p>完整 CA 保持原路径；项目关键词使用下方确定资产路由。</p></div>
+        </div>
+        <div class="term-strip">
+          <button class="term active"><i data-lucide="badge-check"></i>完整 CA</button>
+          <button class="term active"><i data-lucide="circle-dollar-sign"></i>Cashtag</button>
+          <button class="term active"><i data-lucide="hash"></i>Hashtag</button>
+          <button class="term active"><i data-lucide="text-search"></i>项目关键词</button>
+        </div>
+
+        <div class="section-head">
+          <div><h2>资产路由白名单</h2><p>一条资产可配置多个关键词；一段文本只允许命中一个确定 CA。</p></div>
+          <div class="toolbar">
+            <button class="btn" id="conflictBtn"><i data-lucide="triangle-alert"></i>演示歧义</button>
+            <button class="btn primary" id="addRouteBtn"><i data-lucide="plus"></i>新增资产</button>
+          </div>
+        </div>
+
+        <section class="route-table">
+          <div class="route-head"><div></div><div>资产名称</div><div>关键词 / 别名</div><div>链</div><div>合约地址</div><div>验证</div><div>操作</div></div>
+          <div id="routeRows"></div>
+          <div class="route-footer"><span>启用 <strong id="routeCount">0</strong> 条资产路由 · 关键词 <strong id="aliasCount">0</strong> / 50</span><span id="validationSummary">没有冲突</span></div>
+        </section>
+
+        <section class="test-band">
+          <div class="section-head"><div><h2>文本匹配测试</h2><p>使用正式归一化规则预览命中结果，不调用 Grok 或 GMGN。</p></div></div>
+          <div class="test-grid">
+            <div class="test-input"><textarea id="testText">何必东奔西走，币安全部都有。</textarea><button class="btn primary" id="runTestBtn"><i data-lucide="play"></i>运行匹配</button></div>
+            <div class="test-result" id="testResult"><strong>唯一命中 · 币有</strong><span>BSC · <span class="mono">0xe9337d...8e7777</span></span></div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="footer">
+        <div class="footer-status">校验状态：<strong id="footerState">可以保存</strong></div>
+        <div class="footer-actions"><button class="btn">上一步</button><button class="btn primary" id="saveBtn"><i data-lucide="save"></i>保存并进入下一步</button></div>
+      </footer>
+    </main>
+  </div>
+
+  <div class="dialog-layer" id="aliasDialog">
+    <div class="dialog" role="dialog" aria-modal="true">
+      <div class="dialog-head"><strong>新增关键词</strong><button class="btn icon" id="closeDialog" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="dialog-body"><input class="input" id="aliasInput" maxlength="80" placeholder="输入完整项目词或短语"><small id="normalizedPreview">归一化预览：-</small></div>
+      <div class="dialog-foot"><button class="btn" id="cancelAlias">取消</button><button class="btn primary" id="confirmAlias">添加关键词</button></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const seedRoutes = [
+      { id:'biyou', label:'币有', aliases:['何必东奔西走，币安全部都有。','何必东奔西走 币安全部都有'], chain:'bsc', ca:'0xe9337dde3dd9e97f1f45a56412767ce5098e7777', enabled:true, verified:true },
+      { id:'utility', label:'Utility', aliases:['utility','utility token'], chain:'bsc', ca:'0xede00776439f9c49c592e43eee34777a51847777', enabled:true, verified:true },
+      { id:'bstocks', label:'bStocks Never Sleep', aliases:['bStocks Never Sleep'], chain:'bsc', ca:'0x244b112cf746e62a5df723cbde9906a6defd7777', enabled:true, verified:true },
+      { id:'gme', label:'GameStop', aliases:['GME','GMEB','GameStop'], chain:'bsc', ca:'0x2cee25fe4f13ec3d94558d41b3c7e0f4ee087777', enabled:true, verified:true }
+    ];
+    let routes = structuredClone(seedRoutes);
+    let activeAliasRoute = null;
+    const rows = document.querySelector('#routeRows');
+    const dialog = document.querySelector('#aliasDialog');
+    const aliasInput = document.querySelector('#aliasInput');
+    const toast = document.querySelector('#toast');
+
+    function normalize(value) { return String(value || '').normalize('NFKC').toLocaleLowerCase('en-US').replace(/[\p{P}\p{Z}\s]+/gu,''); }
+    function isAsciiWord(value) { return /^[a-z0-9_]$/i.test(value || ''); }
+    function matchesAlias(textValue, aliasValue) {
+      const text = normalize(textValue), alias = normalize(aliasValue);
+      if (!alias) return false;
+      let offset = 0;
+      while ((offset = text.indexOf(alias, offset)) !== -1) {
+        const before = offset > 0 ? text[offset - 1] : '';
+        const after = text[offset + alias.length] || '';
+        const validStart = !(isAsciiWord(alias[0]) && isAsciiWord(before));
+        const validEnd = !(isAsciiWord(alias.at(-1)) && isAsciiWord(after));
+        if (validStart && validEnd) return true;
+        offset += Math.max(1, alias.length);
+      }
+      return false;
+    }
+    function shortCa(value) { return value.length > 18 ? `${value.slice(0,10)}...${value.slice(-6)}` : value; }
+    function icon(name) { return `<i data-lucide="${name}"></i>`; }
+    function flash(message) { toast.textContent = message; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 1900); }
+    function conflicts() {
+      const seen = new Map(), result = new Set();
+      routes.filter(r => r.enabled).forEach(route => route.aliases.forEach(alias => {
+        const key = normalize(alias); if (!key) return;
+        const owner = seen.get(key);
+        if (owner && owner !== route.id) { result.add(owner); result.add(route.id); }
+        else seen.set(key, route.id);
+      }));
+      return result;
+    }
+    function render() {
+      const invalid = conflicts();
+      rows.innerHTML = routes.length ? routes.map((route, index) => `
+        <div class="route-row ${invalid.has(route.id) ? 'invalid' : ''}" data-id="${route.id}">
+          <div class="drag" title="拖动排序">${icon('grip-vertical')}</div>
+          <div><label class="field"><input class="input route-label" value="${route.label.replaceAll('&','&amp;').replaceAll('"','&quot;')}"><span class="status ${route.enabled ? 'success' : 'warning'}">${route.enabled ? '参与匹配' : '已停用'}</span></label></div>
+          <div class="aliases"><div class="chips">${route.aliases.map((alias, aliasIndex) => `<span class="chip" title="归一化：${normalize(alias)}"><span>${alias}</span><button data-action="remove-alias" data-alias="${aliasIndex}" title="删除关键词">${icon('x')}</button></span>`).join('')}<button class="alias-add" data-action="add-alias" title="新增关键词">${icon('plus')}</button></div></div>
+          <div><select class="route-chain"><option value="bsc" ${route.chain==='bsc'?'selected':''}>BNB Chain</option><option value="sol" ${route.chain==='sol'?'selected':''}>Solana</option><option value="base" ${route.chain==='base'?'selected':''}>Base</option><option value="eth" ${route.chain==='eth'?'selected':''}>Ethereum</option><option value="robinhood" ${route.chain==='robinhood'?'selected':''}>Robinhood</option></select></div>
+          <div class="address"><label class="field"><input class="input ca route-ca" value="${route.ca}"><span class="mono" style="color:var(--muted);font-size:11px">${shortCa(route.ca)}</span></label></div>
+          <div><span class="status ${invalid.has(route.id) ? 'danger' : route.verified ? 'success' : 'warning'}">${icon(invalid.has(route.id) ? 'circle-x' : route.verified ? 'badge-check' : 'clock-3')}${invalid.has(route.id) ? '关键词冲突' : route.verified ? '链上已验证' : '等待验证'}</span></div>
+          <div class="row-actions"><label class="switch" title="启用或停用"><input class="route-enabled" type="checkbox" ${route.enabled?'checked':''}><i></i></label><button data-action="copy" title="复制资产">${icon('copy')}</button><button data-action="remove" title="删除资产">${icon('trash-2')}</button></div>
+        </div>`).join('') : '<div class="empty-row">尚未配置资产路由</div>';
+      const enabled = routes.filter(r => r.enabled);
+      const aliases = enabled.reduce((sum, route) => sum + route.aliases.length, 0);
+      document.querySelector('#routeCount').textContent = enabled.length;
+      document.querySelector('#aliasCount').textContent = aliases;
+      document.querySelector('#validationSummary').textContent = invalid.size ? `${invalid.size} 条路由存在冲突` : '没有冲突';
+      document.querySelector('#validationSummary').style.color = invalid.size ? 'var(--danger)' : 'var(--success)';
+      document.querySelector('#footerState').textContent = invalid.size ? '需要处理关键词冲突' : '可以保存';
+      document.querySelector('#footerState').style.color = invalid.size ? 'var(--danger)' : 'var(--success)';
+      document.querySelector('#saveBtn').disabled = Boolean(invalid.size);
+      if (window.lucide) lucide.createIcons();
+    }
+    rows.addEventListener('input', event => {
+      const row = event.target.closest('.route-row'); if (!row) return;
+      const route = routes.find(item => item.id === row.dataset.id); if (!route) return;
+      if (event.target.matches('.route-label')) route.label = event.target.value;
+      if (event.target.matches('.route-ca')) { route.ca = event.target.value.trim(); route.verified = false; }
+    });
+    rows.addEventListener('change', event => {
+      const row = event.target.closest('.route-row'); if (!row) return;
+      const route = routes.find(item => item.id === row.dataset.id); if (!route) return;
+      if (event.target.matches('.route-chain')) { route.chain = event.target.value; route.verified = false; }
+      if (event.target.matches('.route-enabled')) route.enabled = event.target.checked;
+      render();
+    });
+    rows.addEventListener('click', event => {
+      const button = event.target.closest('[data-action]'); if (!button) return;
+      const row = button.closest('.route-row'); const index = routes.findIndex(item => item.id === row.dataset.id); if (index < 0) return;
+      const action = button.dataset.action;
+      if (action === 'remove') { routes.splice(index,1); render(); flash('资产路由已从草稿删除'); }
+      if (action === 'copy') { const clone = structuredClone(routes[index]); clone.id = `${clone.id}-${Date.now()}`; clone.label += ' 副本'; clone.aliases = clone.aliases.map(x => `${x} copy`); clone.verified = false; routes.splice(index+1,0,clone); render(); flash('已复制为新资产路由'); }
+      if (action === 'remove-alias') { routes[index].aliases.splice(Number(button.dataset.alias),1); render(); }
+      if (action === 'add-alias') { activeAliasRoute = routes[index].id; aliasInput.value=''; document.querySelector('#normalizedPreview').textContent='归一化预览：-'; dialog.classList.add('open'); aliasInput.focus(); }
+    });
+    function closeDialog() { dialog.classList.remove('open'); activeAliasRoute = null; }
+    aliasInput.addEventListener('input', () => document.querySelector('#normalizedPreview').textContent = `归一化预览：${normalize(aliasInput.value) || '-'}`);
+    document.querySelector('#closeDialog').onclick = closeDialog;
+    document.querySelector('#cancelAlias').onclick = closeDialog;
+    document.querySelector('#confirmAlias').onclick = () => {
+      const value = aliasInput.value.trim(); const route = routes.find(item => item.id === activeAliasRoute);
+      if (!value || !route) return;
+      route.aliases.push(value); closeDialog(); render(); flash('关键词已添加到当前资产');
+    };
+    document.querySelector('#addRouteBtn').onclick = () => { routes.push({ id:`new-${Date.now()}`, label:'新资产', aliases:['新关键词'], chain:'bsc', ca:'', enabled:true, verified:false }); render(); flash('已新增空白资产路由'); };
+    document.querySelector('#conflictBtn').onclick = () => { if (!routes[1].aliases.includes('GME')) routes[1].aliases.push('GME'); render(); document.querySelector('#testText').value='GME'; flash('已制造跨 CA 重复关键词，保存被阻止'); };
+    document.querySelector('#runTestBtn').onclick = () => {
+      const text = document.querySelector('#testText').value;
+      const hits = routes.filter(route => route.enabled && route.aliases.some(alias => matchesAlias(text, alias)));
+      const assets = [...new Map(hits.map(route => [`${route.chain}:${route.ca}`, route])).values()];
+      const result = document.querySelector('#testResult');
+      result.classList.toggle('warning', assets.length !== 1);
+      if (assets.length === 1) result.innerHTML = `<strong>唯一命中 · ${assets[0].label}</strong><span>${assets[0].chain.toUpperCase()} · <span class="mono">${shortCa(assets[0].ca)}</span></span>`;
+      else if (assets.length > 1) result.innerHTML = `<strong style="color:var(--danger)">DYNAMIC_ROUTE_AMBIGUOUS</strong><span>同时命中 ${assets.map(x=>x.label).join('、')}，不会创建交易信号。</span>`;
+      else result.innerHTML = '<strong style="color:var(--warning)">未命中资产路由</strong><span>不会猜测 CA，也不会调用 Grok 或 GMGN。</span>';
+    };
+    document.querySelector('#resetBtn').onclick = () => { routes = structuredClone(seedRoutes); render(); flash('已恢复原型初始数据'); };
+    document.querySelector('#saveBtn').onclick = () => flash('原型模式：校验通过，正式版本将生成新 Revision');
+    document.querySelector('#importBtn').onclick = () => flash('批量导入将在正式版本支持 JSON/逐行粘贴');
+    document.querySelector('#switchPreview').onclick = () => location.href='p35-multi-keyword-master-detail-preview.html';
+    render();
+    if (window.lucide) lucide.createIcons();
+  </script>
+</body>
+</html>

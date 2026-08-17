@@ -15,15 +15,18 @@ async function persist(job, result, executor = db) {
        allowed_chain_ids, status, selected_family_id, selected_variant_id,
        resolution_confidence, resolution_reason_codes, failure_code, candidate_coverage,
        provider_snapshot, timing_json, started_at, completed_at, dynamic_job_id,
-       actor_policy_id, actor_policy_revision, processing_mode, policy_context_hash)
+       actor_policy_id, actor_policy_revision, processing_mode, policy_context_hash,
+       selected_preset_route_id, preset_route_snapshot)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-       $21,$22,$23,$24,$25,NOW(),$26,$27,$28,$29,$30)
+       $21,$22,$23,$24,$25,NOW(),$26,$27,$28,$29,$30,$31,$32)
      ON CONFLICT (dynamic_job_id) WHERE dynamic_job_id IS NOT NULL DO UPDATE SET
        status = EXCLUDED.status, selected_family_id = EXCLUDED.selected_family_id,
        selected_variant_id = EXCLUDED.selected_variant_id,
        resolution_confidence = EXCLUDED.resolution_confidence,
        resolution_reason_codes = EXCLUDED.resolution_reason_codes,
        failure_code = EXCLUDED.failure_code,
+       selected_preset_route_id = EXCLUDED.selected_preset_route_id,
+       preset_route_snapshot = EXCLUDED.preset_route_snapshot,
        candidate_coverage = EXCLUDED.candidate_coverage,
        provider_snapshot = EXCLUDED.provider_snapshot,
        timing_json = EXCLUDED.timing_json, completed_at = NOW(), updated_at = NOW()
@@ -40,7 +43,9 @@ async function persist(job, result, executor = db) {
       JSON.stringify(result.candidateCoverage || {}),
       JSON.stringify({ candidates: (result.candidates || []).length }),
       JSON.stringify(result.timing || {}), job.started_at || new Date(), job.id, job.actor_policy_id,
-      job.policy_revision, job.mode, job.context_hash]
+      job.policy_revision, job.mode, job.context_hash,
+      selected?.presetRouteId || null,
+      JSON.stringify(selected?.presetRouteSnapshot || {})]
   );
   const attempt = attemptResult.rows[0];
   await executor.query(
@@ -51,8 +56,9 @@ async function persist(job, result, executor = db) {
       `INSERT INTO dynamic_ca_resolution_candidates
         (resolution_attempt_id, variant_id, chain_id, contract_address, score,
          strong_anchor_codes, support_reason_codes, rejection_reason_codes,
-         provider_status, tradable_status, field_availability, provider_snapshot, selected)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+         provider_status, tradable_status, field_availability, provider_snapshot, selected,
+         preset_route_id, preset_route_snapshot)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [attempt.id, candidate.variantId || candidate.id || null, candidate.chainId,
         candidate.contractAddress, candidate.score ?? null, candidate.strongAnchorCodes || [],
         candidate.supportReasonCodes || [], candidate.rejectionReasonCodes || [],
@@ -60,7 +66,9 @@ async function persist(job, result, executor = db) {
         JSON.stringify(candidate.fieldAvailability || {}),
         JSON.stringify(candidate.providerSnapshot || {}),
         Boolean(selected && candidate.chainId === selected.chainId
-          && candidate.contractAddress === selected.contractAddress)]
+          && candidate.contractAddress === selected.contractAddress),
+        candidate.presetRouteId || null,
+        JSON.stringify(candidate.presetRouteSnapshot || {})]
     );
   }
   const jobResult = await executor.query(

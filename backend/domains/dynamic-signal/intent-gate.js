@@ -1,4 +1,4 @@
-const INTENT_RULE_REVISION = 'p20.1-intent-v2';
+const INTENT_RULE_REVISION = 'p35-asset-identity-v2';
 
 const PATTERNS = Object.freeze({
   security: [
@@ -36,6 +36,7 @@ function matchedCodes(text, patterns, code) {
 }
 
 function assetIdentity(term) {
+  if (term.assetKey) return term.assetKey;
   if (term.type === 'ca') return `ca:${term.normalized}`;
   if (['cashtag', 'hashtag'].includes(term.type)) return `symbol:${term.normalized}`;
   if (term.type === 'approved_name') {
@@ -106,7 +107,8 @@ function classifyIntent(extraction = {}) {
   if (isFullCaSolo(text, assets)) {
     return decision('full_ca_solo', ['SOLE_AUTHOR_CA'], extraction);
   }
-  if (assets.length === 1 && assets[0].type === 'approved_name') {
+  if (assets.length === 1 && (assets[0].type === 'approved_name'
+      || assets[0].localPresetRouteAlias === true)) {
     return decision('approved_term_direct', ['APPROVED_TERM_MATCH'], extraction);
   }
   if (assets.length === 1) {

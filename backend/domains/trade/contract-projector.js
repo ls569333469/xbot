@@ -115,6 +115,7 @@ function projectSignal(row, currentProjection = { status: 'unknown', blockers: [
         revision: policySnapshot.revision ?? null,
         context_hash: policySnapshot.context_hash ?? null
       },
+      asset_route_snapshot: row.authorization_snapshot?.asset_route_snapshot || null,
       execution_decision: decision,
       current_projection: {
         status: currentProjection.status || 'unknown',

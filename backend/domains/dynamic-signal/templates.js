@@ -1,11 +1,13 @@
 const db = require('../../lib/db');
 const policyService = require('./policy-service');
+const { templateRouteInputs } = require('./preset-route-schema');
 
 const TEMPLATE_FIELDS = [
   'allowed_chain_ids',
   'allowed_event_types',
   'allowed_term_types',
   'approved_aliases',
+  'preset_asset_routes',
   'chain_budgets',
   'daily_new_token_limit',
   'per_token_buy_limit',
@@ -15,7 +17,10 @@ const TEMPLATE_FIELDS = [
 ];
 
 function pickTemplateConfig(value) {
-  return Object.fromEntries(TEMPLATE_FIELDS.map((field) => [field, value[field]]));
+  return Object.fromEntries(TEMPLATE_FIELDS.map((field) => [
+    field,
+    field === 'preset_asset_routes' ? templateRouteInputs(value[field]) : value[field]
+  ]));
 }
 
 function normalizeTemplateConfig(value = {}) {

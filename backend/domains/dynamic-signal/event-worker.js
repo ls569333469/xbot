@@ -72,22 +72,23 @@ class DynamicSignalWorker {
         error.code = 'DYNAMIC_EVENT_NOT_ALLOWED';
         throw error;
       }
-      const candidateIndex = await candidateRepository.loadIndex({
-        allowedChains: context.allowed_chain_ids
-      }, this.db);
       let result = await resolveDynamicSignal({
         eventType: context.activity_type,
         actorText: context.tweet_text || '',
         quotedText: context.raw_json?.quotedText || context.raw_json?.quoted_text || '',
         replyText: context.raw_json?.replyText || context.raw_json?.reply_text || '',
-        approvedAliases: context.allowed_term_types.includes('approved_name')
+        legacyApprovedAliases: context.allowed_term_types.includes('approved_name')
           ? context.approved_aliases : [],
+        presetRoutes: context.allowed_term_types.includes('approved_name')
+          ? context.preset_asset_routes || [] : [],
         allowedChains: context.allowed_chain_ids,
         allowedTermTypes: context.allowed_term_types,
         executionMode: context.mode,
         ...(context.resolver_options || {})
       }, {
-        candidateIndex
+        loadCandidateIndex: ({ allowedChains }) => candidateRepository.loadIndex({
+          allowedChains
+        }, this.db)
       });
       if (result.status === 'resolved' && result.selectedCandidate) {
         let selectedRow = result.selectedCandidate;

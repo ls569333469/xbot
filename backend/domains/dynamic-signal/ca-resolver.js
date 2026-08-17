@@ -8,8 +8,13 @@ const {
 } = require('./candidate-index');
 const { RESOLUTION_CODES, applyResolutionPolicy } = require('./resolution-policy');
 const { resolveContractChain } = require('../../lib/contract-chain-resolver');
+const {
+  legacyAliasRecords,
+  resolvePresetRouteState,
+  routeAliasRecords
+} = require('./preset-route-resolver');
 
-const RESOLVER_REVISION = 'p25-deterministic-chain-v1';
+const RESOLVER_REVISION = 'p35-preset-asset-route-v2';
 const DEFAULT_MAX_CANDIDATES = 25;
 const DEFAULT_VERIFY_CONCURRENCY = 4;
 const DEFAULT_MARKET_DOMINANCE_MIN_RATIO = 2;
@@ -121,11 +126,50 @@ function providerFailureCode(error) {
   return RESOLUTION_CODES.PROVIDER_UNKNOWN;
 }
 
+function requiresCandidateIndex(extraction) {
+  return (extraction.authorOwnedTerms || []).some((term) => (
+    term.type === 'ca'
+      || ['cashtag', 'hashtag'].includes(term.type)
+      || term.type === 'approved_name'
+        && term.localPresetRoute !== true
+        && term.legacyUnbound !== true
+  ));
+}
+
+function emptyCoverage(extraction) {
+  const assetTermCount = (extraction.authorOwnedTerms || [])
+    .filter((term) => ['ca', 'cashtag', 'hashtag', 'approved_name'].includes(term.type)).length;
+  return {
+    indexed_term_count: 0,
+    asset_term_count: assetTermCount,
+    matched_asset_term_count: 0,
+    candidate_count: 0,
+    ratio: 0,
+    complete: false
+  };
+}
+
 async function resolveDynamicSignal(input = {}, dependencies = {}) {
   const startedAt = Date.now();
-  const extraction = dependencies.extractContent
-    ? dependencies.extractContent(input)
-    : extractContent(input);
+  const presetRuntime = Array.isArray(input.presetRoutes);
+  const extractionInput = presetRuntime ? {
+    ...input,
+    approvedAliases: [
+      ...routeAliasRecords(input.presetRoutes),
+      ...legacyAliasRecords(input.legacyApprovedAliases || [])
+    ]
+  } : input;
+  const extracted = dependencies.extractContent
+    ? dependencies.extractContent(extractionInput)
+    : extractContent(extractionInput);
+  const allowedTermTypes = input.allowedTermTypes ?? input.allowed_term_types;
+  const policyExtraction = presetRuntime
+    ? filterResolutionTerms(extracted, allowedTermTypes)
+    : extracted;
+  const presetState = presetRuntime
+    ? resolvePresetRouteState(policyExtraction, input.presetRoutes)
+    : { status: 'none', failureCode: null, extraction: policyExtraction, candidate: null };
+  const extraction = presetState.extraction;
   const intent = dependencies.classifyIntent
     ? dependencies.classifyIntent(extraction)
     : classifyIntent(extraction);
@@ -136,6 +180,18 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
     extraction,
     intent
   };
+  if (presetState.failureCode) {
+    return {
+      ...base,
+      status: presetState.status === 'ambiguous' ? 'ambiguous' : 'rejected',
+      failureCode: presetState.failureCode,
+      candidates: [],
+      selectedCandidate: null,
+      presetRouteState: presetState,
+      candidateCoverage: emptyCoverage(extraction),
+      timing: { total_ms: Date.now() - startedAt }
+    };
+  }
   if (!intent.canProceedToResolution) {
     return {
       ...base,
@@ -161,10 +217,43 @@ async function resolveDynamicSignal(input = {}, dependencies = {}) {
     && input.fullVerification !== true;
   const resolutionExtraction = filterResolutionTerms(
     extraction,
-    input.allowedTermTypes ?? input.allowed_term_types
+    allowedTermTypes
   );
-  const indexResult = dependencies.candidateIndex
-    ? dependencies.candidateIndex.lookupTerms(resolutionExtraction.authorOwnedTerms, { allowedChains })
+  if (presetState.candidate) {
+    const evaluated = applyResolutionPolicy([presetState.candidate], {
+      extraction: resolutionExtraction,
+      allowedChains,
+      allowDeterministicLocalCandidate: true
+    });
+    const policy = evaluated.status === 'resolved'
+      ? { ...evaluated, confidence: 'verified', reasonCodes: ['PRESET_ROUTE_ALIAS'] }
+      : evaluated;
+    return {
+      ...base,
+      mode: String(input.executionMode || input.mode || 'readonly').toLowerCase(),
+      canTrade: policy.status === 'resolved',
+      ...policy,
+      presetRouteState: presetState,
+      candidateCoverage: {
+        ...emptyCoverage(resolutionExtraction),
+        matched_asset_term_count: resolutionExtraction.authorOwnedTerms.filter(
+          (term) => term.assetKey === presetState.candidate.assetKey
+        ).length,
+        candidate_count: 1,
+        local_preset_route_count: 1,
+        complete: true,
+        ratio: 1
+      },
+      timing: { total_ms: Date.now() - startedAt }
+    };
+  }
+  let candidateIndex = dependencies.candidateIndex;
+  if (!candidateIndex && requiresCandidateIndex(resolutionExtraction)
+      && typeof dependencies.loadCandidateIndex === 'function') {
+    candidateIndex = await dependencies.loadCandidateIndex({ allowedChains });
+  }
+  const indexResult = candidateIndex
+    ? candidateIndex.lookupTerms(resolutionExtraction.authorOwnedTerms, { allowedChains })
     : { candidates: [], coverage: {} };
   const indexedCandidates = (indexResult.candidates || []).map((candidate) => ({
     ...candidate,
@@ -318,6 +407,7 @@ module.exports = {
   mapConcurrent,
   mergeCandidates,
   providerFailureCode,
+  requiresCandidateIndex,
   chainFailureCode,
   directEvmTerms,
   filterResolutionTerms,

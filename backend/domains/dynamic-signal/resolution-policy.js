@@ -55,7 +55,9 @@ function directCaTerms(extraction) {
 function termMatches(candidate, extraction) {
   const support = [];
   for (const term of extraction?.authorOwnedTerms || []) {
-    if (term.type === 'ca' && term.normalized === candidate.contractAddress) {
+    if (term.assetKey && candidate.assetKey && term.assetKey === candidate.assetKey) {
+      support.push(term.localPresetRoute ? 'PRESET_ROUTE_MATCH' : 'ASSET_IDENTITY_MATCH');
+    } else if (term.type === 'ca' && term.normalized === candidate.contractAddress) {
       support.push('AUTHOR_CA_MATCH');
     } else if (['cashtag', 'hashtag'].includes(term.type)
         && normalizeSymbol(term.normalized) === candidate.symbol) {
@@ -94,21 +96,25 @@ function evaluateCandidate(value, context) {
   }
   if (providerAddressMismatch(candidate)) rejectionReasonCodes.push('PROVIDER_ADDRESS_MISMATCH');
   const providerStatus = String(candidate.providerStatus || candidate.provider_status || 'unknown');
+  const trustedPreset = value.localPresetRoute === true
+    && Number(value.variantId || value.variant_id || value.id) > 0
+    && Number(value.presetRouteId || value.preset_route_id) > 0;
   const deterministicLocalCandidate = value.localEventCa === true
     || value.localIndexCandidate === true
     || value.chainResolutionSource === 'rpc_contract_code'
-    || candidate.chainId === 'sol' && directCaTerms(context.extraction).has(candidate.contractAddress);
-  if (!context.allowDeterministicLocalCandidate && providerStatus !== 'verified') {
+    || candidate.chainId === 'sol' && directCaTerms(context.extraction).has(candidate.contractAddress)
+    || trustedPreset;
+  if (!trustedPreset && !context.allowDeterministicLocalCandidate && providerStatus !== 'verified') {
     rejectionReasonCodes.push('PROVIDER_NOT_VERIFIED');
   }
   const tradableStatus = String(candidate.tradableStatus || candidate.tradable_status || 'unknown');
-  if (!context.allowDeterministicLocalCandidate && tradableStatus === 'untradable') {
+  if (!trustedPreset && !context.allowDeterministicLocalCandidate && tradableStatus === 'untradable') {
     rejectionReasonCodes.push('UNTRADABLE');
   }
-  if (!context.allowDeterministicLocalCandidate && tradableStatus === 'unknown') {
+  if (!trustedPreset && !context.allowDeterministicLocalCandidate && tradableStatus === 'unknown') {
     rejectionReasonCodes.push('TRADABILITY_UNKNOWN');
   }
-  if (context.allowDeterministicLocalCandidate && !deterministicLocalCandidate) {
+  if ((context.allowDeterministicLocalCandidate || trustedPreset) && !deterministicLocalCandidate) {
     rejectionReasonCodes.push('DETERMINISTIC_LOCAL_CANDIDATE_REQUIRED');
   }
   if (candidate.security?.isHoneypot === true || candidate.security?.is_honeypot === true) {
@@ -140,7 +146,8 @@ function evaluateCandidate(value, context) {
     + (strongAnchorCodes.includes('AUTHOR_URL_CA') ? 95 : 0)
     + (supportReasonCodes.includes('LAUNCHPAD_CONTEXT_MATCH') ? 40 : 0)
     + (supportReasonCodes.includes('SYMBOL_MATCH') ? 15 : 0)
-    + (supportReasonCodes.includes('APPROVED_NAME_MATCH') ? 15 : 0);
+    + (supportReasonCodes.includes('APPROVED_NAME_MATCH') ? 15 : 0)
+    + (supportReasonCodes.includes('PRESET_ROUTE_MATCH') ? 100 : 0);
 
   return {
     ...candidate,

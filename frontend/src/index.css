@@ -2845,6 +2845,64 @@ body {
 .p20-alias-field textarea { resize: vertical; }
 .p20-alias-field small { color: var(--color-text-tertiary); font-size: 11px; }
 .p20-alias-field small.error { color: var(--color-danger); }
+.p35-route-workspace { display: grid; gap: 12px; margin: 14px 0; }
+.p35-legacy-strip { display: grid; grid-template-columns: auto minmax(180px, .75fr) minmax(0, 1.25fr); align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid rgba(240, 182, 91, .35); border-radius: var(--radius-sm); color: var(--color-warning); background: rgba(240, 182, 91, .05); }
+.p35-legacy-strip > div { min-width: 0; }
+.p35-legacy-strip > div:nth-child(2) { display: grid; gap: 2px; }
+.p35-legacy-strip strong { color: var(--color-text-primary); font-size: 11px; }
+.p35-legacy-strip span { color: var(--color-text-secondary); font-size: 10px; }
+.p35-legacy-strip > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.p35-legacy-strip button { max-width: 180px; overflow: hidden; padding: 4px 7px; border: 1px solid rgba(240, 182, 91, .28); border-radius: 3px; color: var(--color-warning); background: transparent; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.p35-route-shell { min-height: 390px; display: grid; grid-template-columns: minmax(210px, .34fr) minmax(0, 1fr); border: 1px solid var(--border-base); border-radius: 6px; overflow: hidden; background: rgba(9, 11, 14, .32); }
+.p35-route-list { min-width: 0; border-right: 1px solid var(--border-base); background: rgba(255, 255, 255, .012); }
+.p35-route-list > header, .p35-route-editor > header { height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 0 12px; border-bottom: 1px solid var(--border-base); }
+.p35-route-list > header > div { display: flex; align-items: baseline; gap: 7px; }
+.p35-route-list > header strong, .p35-route-editor > header strong { font-size: 12px; }
+.p35-route-list > header span, .p35-route-editor > header span { color: var(--color-text-muted); font-size: 9px; }
+.p35-route-list > header button, .p35-route-editor > header button, .p35-alias-editor button { width: 29px; height: 29px; display: grid; flex: 0 0 29px; place-items: center; border: 1px solid var(--border-base); border-radius: 4px; color: var(--color-text-secondary); background: transparent; cursor: pointer; }
+.p35-route-list > header button:hover, .p35-route-editor > header button:hover, .p35-alias-editor button:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-accent-hover); }
+.p35-route-list > div { max-height: 438px; overflow: auto; }
+.p35-route-list > div > button { width: 100%; min-height: 59px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border: 0; border-bottom: 1px solid var(--border-base); color: var(--color-text-secondary); background: transparent; text-align: left; cursor: pointer; }
+.p35-route-list > div > button:hover, .p35-route-list > div > button.selected { color: var(--color-text-primary); background: rgba(108, 92, 231, .1); box-shadow: inset 2px 0 var(--color-accent); }
+.p35-route-list > div > button span { min-width: 0; display: grid; gap: 3px; }
+.p35-route-list > div > button strong, .p35-route-list > div > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p35-route-list > div > button strong { font-size: 11px; }
+.p35-route-list > div > button small { color: var(--color-text-muted); font-size: 9px; }
+.p35-route-list > div > button svg { flex: 0 0 auto; color: var(--color-success); }
+.p35-route-list > div > button i { width: 8px; height: 8px; flex: 0 0 8px; border: 1px solid var(--border-strong); border-radius: 50%; }
+.p35-route-empty, .p35-route-editor-empty { min-height: 120px; display: grid; place-items: center; align-content: center; gap: 6px; color: var(--color-text-muted); font-size: 10px; }
+.p35-route-editor { min-width: 0; }
+.p35-route-editor > header { justify-content: flex-start; }
+.p35-route-editor > header > div { min-width: 0; display: grid; flex: 1; gap: 2px; }
+.p35-route-editor > header > div strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p35-route-editor > header label { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-secondary); font-size: 10px; }
+.p35-route-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, .45fr); gap: 10px; padding: 13px 14px 0; }
+.p35-route-fields label { min-width: 0; display: grid; gap: 5px; color: var(--color-text-secondary); font-size: 10px; }
+.p35-route-fields label.wide { grid-column: 1 / -1; }
+.p35-route-fields input, .p35-route-fields select, .p35-alias-editor input, .p35-match-preview textarea { width: 100%; min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--color-text-primary); background: var(--color-input); padding: 8px 9px; font-size: 11px; }
+.p35-route-fields input, .p35-route-fields select, .p35-alias-editor input { height: 34px; }
+.p35-alias-editor { display: grid; gap: 6px; padding: 13px 14px; }
+.p35-alias-editor > div { display: flex; align-items: center; justify-content: space-between; color: var(--color-text-secondary); font-size: 10px; }
+.p35-alias-editor > div button { width: auto; display: inline-flex; padding: 0 8px; gap: 4px; }
+.p35-alias-editor label { display: grid; grid-template-columns: 24px minmax(0, 1fr) 29px; align-items: center; gap: 6px; }
+.p35-alias-editor label b { color: var(--color-text-muted); font-size: 9px; text-align: center; }
+.p35-alias-editor label.invalid input { border-color: var(--color-danger); }
+.p35-alias-editor button:disabled { opacity: .4; cursor: not-allowed; }
+.p35-verification-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 14px 14px; padding-top: 11px; border-top: 1px solid var(--border-base); }
+.p35-verification-row > div { min-width: 0; display: flex; align-items: flex-start; gap: 7px; color: var(--color-warning); }
+.p35-verification-row > div > span { display: grid; gap: 2px; }
+.p35-verification-row strong { color: var(--color-text-primary); font-size: 10px; }
+.p35-verification-row small { color: var(--color-text-muted); font-size: 9px; }
+.p35-match-preview { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border-base); }
+.p35-match-preview > div:first-child { display: flex; align-items: center; gap: 7px; color: var(--color-accent-hover); }
+.p35-match-preview > div:first-child span { display: grid; gap: 2px; }
+.p35-match-preview strong { color: var(--color-text-primary); font-size: 11px; }
+.p35-match-preview small { color: var(--color-text-muted); font-size: 9px; }
+.p35-match-preview > div:nth-child(2) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.p35-match-preview textarea { resize: vertical; }
+.p35-match-preview output { padding: 7px 9px; border-left: 2px solid var(--border-strong); color: var(--color-text-secondary); background: rgba(255, 255, 255, .018); font-size: 10px; }
+.p35-match-preview output.matched { border-color: var(--color-success); color: var(--color-success); }
+.p35-match-preview output.failed { border-color: var(--color-danger); color: var(--color-danger); }
 .p20-screen-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
 .p20-screen-input textarea { resize: vertical; }
 .p20-screen-results { display: grid; gap: 2px; max-height: 270px; margin-top: 10px; overflow: auto; }
@@ -2907,6 +2965,15 @@ body {
   .p20-acceptance-status { grid-template-columns: 1fr; }
   .p20-matrix-summary { align-items: flex-start; flex-direction: column; }
   .p20-matrix-summary span:last-child { white-space: normal; text-align: left; }
+  .p35-legacy-strip { grid-template-columns: auto minmax(0, 1fr); }
+  .p35-legacy-strip > div:last-child { grid-column: 1 / -1; justify-content: flex-start; }
+  .p35-route-shell { grid-template-columns: 1fr; }
+  .p35-route-list { border-right: 0; border-bottom: 1px solid var(--border-base); }
+  .p35-route-list > div { max-height: 180px; }
+  .p35-route-fields { grid-template-columns: 1fr; }
+  .p35-route-fields label.wide { grid-column: auto; }
+  .p35-verification-row { align-items: stretch; flex-direction: column; }
+  .p35-match-preview > div:nth-child(2) { grid-template-columns: 1fr; }
 }
 
 .route-loading { display: grid; min-height: 100vh; place-items: center; color: var(--color-text-secondary); background: var(--color-bg); font-size: 13px; }

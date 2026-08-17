@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xbot P35 - 主从资产路由工作区</title>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: hsl(240 10% 3.9%); --surface: #0f0f14; --surface-2: #13131a; --hover: #181820;
+      --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.14);
+      --text: #e7e7e7; --secondary: #aaa; --muted: #74747d;
+      --accent: hsl(250 84% 63%); --accent-hover: hsl(250 84% 68%);
+      --success: hsl(154 94% 51%); --warning: hsl(40 95% 50%); --danger: hsl(359 100% 65%);
+      --radius: 8px; --sans: Inter,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+      --mono: "Cascadia Mono","SFMono-Regular",Consolas,monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); letter-spacing: 0; }
+    button,input,select,textarea { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: flex; }
+    .sidebar { position: fixed; inset: 0 auto 0 0; width: 240px; padding: 18px 12px; border-right: 1px solid var(--border); background: #0b0b0e; display: flex; flex-direction: column; z-index: 10; }
+    .brand { height: 44px; padding: 0 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 760; }
+    .brand-mark { width: 28px; height: 28px; border-radius: 6px; background: var(--accent); color: white; display: grid; place-items: center; }
+    .brand svg,.nav-item svg { width: 18px; height: 18px; }
+    .nav { padding-top: 14px; display: grid; gap: 4px; }
+    .nav-item { height: 40px; padding: 0 11px; border: 0; border-left: 2px solid transparent; border-radius: 6px; background: transparent; color: var(--secondary); display: flex; align-items: center; gap: 10px; }
+    .nav-item.active { background: rgba(124,92,255,.12); border-left-color: var(--accent); color: var(--text); }
+    .sidebar-foot { margin-top: auto; padding: 14px 10px 2px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+    .sidebar-foot strong { color: var(--success); display: block; font-size: 13px; }
+    .main { width: calc(100% - 240px); margin-left: 240px; min-width: 0; }
+    .topbar { height: 64px; padding: 0 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; position: sticky; top: 0; z-index: 8; background: rgba(9,9,11,.9); backdrop-filter: blur(14px); }
+    .crumb { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+    .crumb strong { color: var(--text); }
+    .btn { min-height: 38px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-2); color: var(--text); display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 650; white-space: nowrap; }
+    .btn:hover { background: var(--hover); border-color: rgba(255,255,255,.25); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .btn.primary:hover { background: var(--accent-hover); }
+    .btn.icon { width: 36px; padding: 0; }
+    .btn.danger { color: var(--danger); }
+    .btn svg { width: 16px; height: 16px; }
+    .workspace { width: min(100%,1460px); padding: 24px 28px 104px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
+    .page-head h1 { font-size: 20px; line-height: 28px; }
+    .page-head p { color: var(--secondary); margin-top: 4px; }
+    .head-actions,.footer-actions,.inline-actions { display: flex; align-items: center; gap: 8px; }
+    .context { min-height: 68px; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .account { display: flex; align-items: center; gap: 11px; }
+    .avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: #ececf1; color: #0b0b0e; font-weight: 800; }
+    .account span,.context-meta span { display: block; color: var(--muted); font-size: 12px; }
+    .context-meta { display: flex; gap: 28px; }
+    .context-meta div { min-width: 92px; }
+    .step-line { display: grid; grid-template-columns: repeat(4,1fr); border-bottom: 1px solid var(--border); margin-bottom: 22px; }
+    .step { padding: 10px 8px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-weight: 650; }
+    .step.active { color: var(--text); border-bottom-color: var(--accent); }
+    .section-title { margin-bottom: 12px; display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; }
+    .section-title h2 { font-size: 16px; }
+    .section-title p { margin-top: 2px; color: var(--secondary); font-size: 13px; }
+    .editor { min-height: 610px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); display: grid; grid-template-columns: 330px minmax(0,1fr); overflow: hidden; }
+    .route-list { border-right: 1px solid var(--border); min-width: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+    .list-head { min-height: 58px; padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .list-head strong { display: block; }
+    .list-head span { color: var(--muted); font-size: 12px; }
+    .route-items { overflow: auto; padding: 7px; }
+    .route-item { width: 100%; min-height: 78px; padding: 11px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: inherit; display: grid; grid-template-columns: 34px minmax(0,1fr) 18px; gap: 10px; align-items: center; text-align: left; }
+    .route-item:hover { background: rgba(255,255,255,.025); }
+    .route-item.active { border-color: rgba(124,92,255,.48); background: rgba(124,92,255,.1); }
+    .route-item.invalid { box-shadow: inset 3px 0 0 var(--danger); }
+    .asset-mark { width: 34px; height: 34px; border-radius: 7px; background: #24242e; display: grid; place-items: center; font-weight: 800; color: var(--secondary); }
+    .route-item.active .asset-mark { background: var(--accent); color: white; }
+    .item-copy { min-width: 0; }
+    .item-copy strong,.item-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .item-copy span { color: var(--muted); font: 11px/1.5 var(--mono); }
+    .item-state { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+    .item-state.invalid { background: var(--danger); }
+    .list-foot { min-height: 58px; padding: 10px 12px; border-top: 1px solid var(--border); display: flex; align-items: center; }
+    .list-foot .btn { width: 100%; }
+    .detail { min-width: 0; display: grid; grid-template-rows: auto minmax(0,1fr); }
+    .detail-head { min-height: 68px; padding: 13px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .detail-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .detail-title h3 { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 7px; color: var(--secondary); font-size: 11px; white-space: nowrap; }
+    .badge.success { border-color: rgba(20,241,149,.25); color: var(--success); background: rgba(20,241,149,.05); }
+    .badge.danger { border-color: rgba(255,76,82,.32); color: var(--danger); background: rgba(255,76,82,.05); }
+    .badge svg { width: 13px; height: 13px; }
+    .detail-body { overflow: auto; padding: 20px 22px 28px; }
+    .form-section { padding: 18px 0; border-top: 1px solid var(--border); }
+    .form-section:first-child { padding-top: 0; border-top: 0; }
+    .form-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+    .form-head h4 { font-size: 14px; }
+    .form-head p { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .field { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: var(--secondary); font-size: 12px; }
+    .field.full { grid-column: 1 / -1; }
+    .input,select,textarea { width: 100%; border: 1px solid var(--border-strong); border-radius: 6px; background: #0b0b0f; color: var(--text); outline: none; }
+    .input,select { height: 40px; padding: 0 10px; }
+    textarea { min-height: 86px; padding: 9px 10px; resize: vertical; }
+    .input:focus,select:focus,textarea:focus { border-color: var(--accent); }
+    .mono { font-family: var(--mono); }
+    .alias-list { display: grid; gap: 8px; }
+    .alias-row { min-height: 42px; display: grid; grid-template-columns: minmax(0,1fr) minmax(150px,.55fr) 34px; gap: 8px; align-items: center; }
+    .normalized { color: var(--muted); font: 11px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .alias-row .btn { min-height: 34px; height: 34px; }
+    .empty-alias { color: var(--warning); padding: 10px 0; }
+    .verification { padding: 12px 14px; border-left: 2px solid var(--success); background: rgba(20,241,149,.04); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .verification.warning { border-left-color: var(--warning); background: rgba(245,166,35,.04); }
+    .verification strong,.verification span { display: block; }
+    .verification span { color: var(--secondary); font-size: 12px; margin-top: 2px; }
+    .test-box { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+    .test-output { margin-top: 10px; min-height: 56px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: #0c0c10; }
+    .test-output strong,.test-output span { display: block; }
+    .test-output span { color: var(--secondary); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+    .switch { position: relative; width: 38px; height: 22px; display: inline-block; }
+    .switch input { position: absolute; opacity: 0; }
+    .switch i { display: block; width: 38px; height: 22px; border-radius: 999px; background: #303039; }
+    .switch i::after { content:""; position:absolute; width:16px; height:16px; left:3px; top:3px; border-radius:50%; background:#888891; transition:.15s; }
+    .switch input:checked + i { background: var(--accent); }
+    .switch input:checked + i::after { left:19px; background:#fff; }
+    .footer { position: fixed; left: 240px; right: 0; bottom: 0; min-height: 66px; padding: 12px 28px; border-top: 1px solid var(--border); background: rgba(11,11,14,.96); backdrop-filter: blur(14px); display: flex; align-items: center; justify-content: space-between; gap: 16px; z-index: 9; }
+    .footer-status { color: var(--secondary); }
+    .footer-status strong { color: var(--success); }
+    .toast { position: fixed; right: 24px; bottom: 88px; max-width: 360px; padding: 11px 14px; border: 1px solid var(--border-strong); border-radius: 7px; background: #17171e; opacity: 0; transform: translateY(14px); transition: .2s; pointer-events: none; z-index: 20; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media(max-width:980px) {
+      .editor { grid-template-columns: 260px minmax(0,1fr); }
+      .grid { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .context-meta div:nth-child(2) { display: none; }
+    }
+    @media(max-width:760px) {
+      .sidebar { display:none; }
+      .main { width:100%; margin-left:0; }
+      .topbar { padding:0 14px; }
+      .topbar .btn span { display:none; }
+      .workspace { padding:18px 14px 106px; }
+      .page-head { display:block; }
+      .head-actions { margin-top:12px; }
+      .context { align-items:flex-start; padding:13px; }
+      .context-meta { gap:14px; }
+      .context-meta div:last-child { display:none; }
+      .step span { display:none; }
+      .editor { display:block; min-height:0; }
+      .route-list { border-right:0; border-bottom:1px solid var(--border); max-height:300px; }
+      .route-items { max-height:220px; }
+      .detail-body { padding:18px 14px 24px; }
+      .detail-head { padding:12px 14px; }
+      .alias-row { grid-template-columns:1fr 34px; }
+      .normalized { grid-column:1 / -1; grid-row:2; }
+      .test-box { grid-template-columns:1fr; }
+      .footer { left:0; padding:10px 14px; }
+      .footer-status { display:none; }
+      .footer-actions { width:100%; }
+      .footer-actions .btn { flex:1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark"><i data-lucide="trending-up"></i></span><span>xbot</span></div>
+      <nav class="nav">
+        <button class="nav-item"><i data-lucide="layout-dashboard"></i>总览</button>
+        <button class="nav-item"><i data-lucide="users"></i>KOL 账号</button>
+        <button class="nav-item active"><i data-lucide="route"></i>策略管理</button>
+        <button class="nav-item"><i data-lucide="radio"></i>信号</button>
+        <button class="nav-item"><i data-lucide="briefcase-business"></i>持仓</button>
+        <button class="nav-item"><i data-lucide="history"></i>交易记录</button>
+      </nav>
+      <div class="sidebar-foot"><strong>方案 B · 已采用</strong>P35 正式交互基线 · 不连接后端</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="crumb"><span>策略管理</span><i data-lucide="chevron-right"></i><strong>动态喊单策略</strong></div>
+        <button class="btn" id="switchPreview"><i data-lucide="table-properties"></i><span>查看已否决的表格原型</span></button>
+      </header>
+      <div class="workspace">
+        <div class="page-head">
+          <div><h1>编辑动态喊单策略</h1><p>逐条核对关键词、链和合约地址。</p></div>
+          <div class="head-actions"><button class="btn"><i data-lucide="library"></i>更换模板</button><button class="btn icon" title="恢复原型数据" id="resetBtn"><i data-lucide="rotate-ccw"></i></button></div>
+        </div>
+
+        <section class="context">
+          <div class="account"><div class="avatar">W</div><div><span>监听账号</span><strong>@wanshenme</strong></div></div>
+          <div class="context-meta"><div><span>运行阶段</span><strong>实盘</strong></div><div><span>Revision</span><strong>v18</strong></div><div><span>关键词</span><strong id="contextAliasCount">0 / 50</strong></div></div>
+        </section>
+        <nav class="step-line"><button class="step">账号与模板</button><button class="step active">词条与解析</button><button class="step">资金与离场</button><button class="step">确认并保存</button></nav>
+
+        <div class="section-title"><div><h2>资产路由白名单</h2><p>左侧选择资产，右侧编辑其关键词和确定 CA。</p></div><span class="badge success" id="globalStatus"><i data-lucide="badge-check"></i>全部可用</span></div>
+        <section class="editor">
+          <aside class="route-list">
+            <div class="list-head"><div><strong>资产路由</strong><span id="routeSummary">4 条启用</span></div><button class="btn icon" id="sortBtn" title="按名称排序"><i data-lucide="arrow-down-a-z"></i></button></div>
+            <div class="route-items" id="routeItems"></div>
+            <div class="list-foot"><button class="btn" id="addRoute"><i data-lucide="plus"></i>新增资产路由</button></div>
+          </aside>
+          <section class="detail">
+            <header class="detail-head">
+              <div class="detail-title"><h3 id="detailTitle">资产路由</h3><span class="badge success" id="routeStatus"><i data-lucide="badge-check"></i>链上已验证</span></div>
+              <div class="inline-actions"><label class="switch" title="启用当前路由"><input id="enabledInput" type="checkbox" checked><i></i></label><button class="btn icon danger" id="removeRoute" title="删除当前资产"><i data-lucide="trash-2"></i></button></div>
+            </header>
+            <div class="detail-body">
+              <div class="form-section">
+                <div class="form-head"><div><h4>资产身份</h4><p>名称只用于页面识别，实际授权由链和 CA 决定。</p></div></div>
+                <div class="grid">
+                  <label class="field">资产名称<input class="input" id="labelInput" maxlength="40"></label>
+                  <label class="field">所属链<select id="chainInput"><option value="bsc">BNB Chain</option><option value="sol">Solana</option><option value="base">Base</option><option value="eth">Ethereum</option><option value="robinhood">Robinhood</option></select></label>
+                  <label class="field full">合约地址<input class="input mono" id="caInput"></label>
+                </div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-head"><div><h4>关键词 / 别名</h4><p>归一化后相同的词不能绑定到不同 CA。</p></div><button class="btn" id="addAlias"><i data-lucide="plus"></i>新增关键词</button></div>
+                <div class="alias-list" id="aliasList"></div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-head"><div><h4>链上验证</h4><p>只在保存配置时通过所选链 RPC 验证，不调用 GMGN。</p></div></div>
+                <div class="verification" id="verification"><div><strong>合约已部署</strong><span>BNB Chain · 2026-08-16 14:21:06</span></div><button class="btn" id="verifyBtn"><i data-lucide="refresh-cw"></i>重新验证</button></div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-head"><div><h4>匹配预览</h4><p>测试当前文本最终会命中哪个资产，不产生信号。</p></div></div>
+                <div class="test-box"><textarea id="testText">何必东奔西走，币安全部都有。</textarea><button class="btn primary" id="testBtn"><i data-lucide="play"></i>运行匹配</button></div>
+                <div class="test-output" id="testOutput"><strong>唯一命中 · 币有</strong><span>BSC · <span class="mono">0xe9337d...8e7777</span></span></div>
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+
+      <footer class="footer"><div class="footer-status">校验状态：<strong id="footerState">可以保存</strong></div><div class="footer-actions"><button class="btn">上一步</button><button class="btn primary" id="saveBtn"><i data-lucide="save"></i>保存并进入下一步</button></div></footer>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const seedRoutes = [
+      {id:'biyou',label:'币有',aliases:['何必东奔西走，币安全部都有。','何必东奔西走 币安全部都有'],chain:'bsc',ca:'0xe9337dde3dd9e97f1f45a56412767ce5098e7777',enabled:true,verified:true},
+      {id:'utility',label:'Utility',aliases:['utility','utility token'],chain:'bsc',ca:'0xede00776439f9c49c592e43eee34777a51847777',enabled:true,verified:true},
+      {id:'bstocks',label:'bStocks Never Sleep',aliases:['bStocks Never Sleep'],chain:'bsc',ca:'0x244b112cf746e62a5df723cbde9906a6defd7777',enabled:true,verified:true},
+      {id:'gme',label:'GameStop',aliases:['GME','GMEB','GameStop'],chain:'bsc',ca:'0x2cee25fe4f13ec3d94558d41b3c7e0f4ee087777',enabled:true,verified:true}
+    ];
+    let routes=structuredClone(seedRoutes),selectedId='biyou';
+    const routeItems=document.querySelector('#routeItems'),aliasList=document.querySelector('#aliasList'),toast=document.querySelector('#toast');
+    function normalize(value){return String(value||'').normalize('NFKC').toLocaleLowerCase('en-US').replace(/[\p{P}\p{Z}\s]+/gu,'')}
+    function isAsciiWord(value){return /^[a-z0-9_]$/i.test(value||'')}
+    function matchesAlias(textValue,aliasValue){const text=normalize(textValue),alias=normalize(aliasValue);if(!alias)return false;let offset=0;while((offset=text.indexOf(alias,offset))!==-1){const before=offset>0?text[offset-1]:'',after=text[offset+alias.length]||'',validStart=!(isAsciiWord(alias[0])&&isAsciiWord(before)),validEnd=!(isAsciiWord(alias.at(-1))&&isAsciiWord(after));if(validStart&&validEnd)return true;offset+=Math.max(1,alias.length)}return false}
+    function shortCa(value){return value.length>18?`${value.slice(0,10)}...${value.slice(-6)}`:value||'未填写'}
+    function selected(){return routes.find(route=>route.id===selectedId)||routes[0]}
+    function conflictIds(){const seen=new Map(),bad=new Set();routes.filter(x=>x.enabled).forEach(route=>route.aliases.forEach(alias=>{const key=normalize(alias),owner=seen.get(key);if(owner&&owner!==route.id){bad.add(owner);bad.add(route.id)}else if(key)seen.set(key,route.id)}));return bad}
+    function flash(message){toast.textContent=message;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),1800)}
+    function refreshIcons(){if(window.lucide)lucide.createIcons()}
+    function renderList(){
+      const bad=conflictIds();
+      routeItems.innerHTML=routes.map(route=>`<button class="route-item ${route.id===selectedId?'active':''} ${bad.has(route.id)?'invalid':''}" data-id="${route.id}"><span class="asset-mark">${route.label.slice(0,1).toUpperCase()||'?'}</span><span class="item-copy"><strong>${route.label||'未命名资产'}</strong><span>${route.chain.toUpperCase()} · ${shortCa(route.ca)}</span></span><i class="item-state ${bad.has(route.id)?'invalid':''}"></i></button>`).join('');
+      const active=routes.filter(x=>x.enabled),aliasCount=active.reduce((sum,x)=>sum+x.aliases.length,0);
+      document.querySelector('#routeSummary').textContent=`${active.length} 条启用`;
+      document.querySelector('#contextAliasCount').textContent=`${aliasCount} / 50`;
+      const global=document.querySelector('#globalStatus'),footer=document.querySelector('#footerState');
+      global.className=`badge ${bad.size?'danger':'success'}`;global.innerHTML=`<i data-lucide="${bad.size?'circle-x':'badge-check'}"></i>${bad.size?`${bad.size} 条存在冲突`:'全部可用'}`;
+      footer.textContent=bad.size?'需要处理关键词冲突':'可以保存';footer.style.color=bad.size?'var(--danger)':'var(--success)';document.querySelector('#saveBtn').disabled=Boolean(bad.size);
+      refreshIcons();
+    }
+    function renderDetail(){
+      const route=selected();if(!route){document.querySelector('.detail').style.display='none';return}document.querySelector('.detail').style.display='grid';
+      const bad=conflictIds().has(route.id);document.querySelector('#detailTitle').textContent=route.label||'未命名资产';
+      const status=document.querySelector('#routeStatus');status.className=`badge ${bad?'danger':route.verified?'success':''}`;status.innerHTML=`<i data-lucide="${bad?'circle-x':route.verified?'badge-check':'clock-3'}"></i>${bad?'关键词冲突':route.verified?'链上已验证':'等待验证'}`;
+      document.querySelector('#labelInput').value=route.label;document.querySelector('#chainInput').value=route.chain;document.querySelector('#caInput').value=route.ca;document.querySelector('#enabledInput').checked=route.enabled;
+      aliasList.innerHTML=route.aliases.length?route.aliases.map((alias,index)=>`<div class="alias-row"><input class="input alias-value" data-index="${index}" value="${alias.replaceAll('&','&amp;').replaceAll('"','&quot;')}"><span class="normalized">${normalize(alias)}</span><button class="btn icon danger" data-remove-alias="${index}" title="删除关键词"><i data-lucide="trash-2"></i></button></div>`).join(''):'<div class="empty-alias">至少需要一个关键词</div>';
+      const verification=document.querySelector('#verification');verification.className=`verification ${route.verified?'':'warning'}`;verification.querySelector('strong').textContent=route.verified?'合约已部署':'配置变化，等待重新验证';verification.querySelector('span').textContent=route.verified?`${route.chain.toUpperCase()} · 2026-08-16 14:21:06`:'保存前需要使用所选链 RPC 验证';
+      refreshIcons();
+    }
+    function render(){renderList();renderDetail()}
+    routeItems.onclick=event=>{const item=event.target.closest('.route-item');if(!item)return;selectedId=item.dataset.id;render()};
+    document.querySelector('#labelInput').oninput=event=>{selected().label=event.target.value;renderList();document.querySelector('#detailTitle').textContent=event.target.value||'未命名资产'};
+    document.querySelector('#chainInput').onchange=event=>{selected().chain=event.target.value;selected().verified=false;render()};
+    document.querySelector('#caInput').oninput=event=>{selected().ca=event.target.value.trim();selected().verified=false;renderList();const verification=document.querySelector('#verification');verification.classList.add('warning');verification.querySelector('strong').textContent='配置变化，等待重新验证';verification.querySelector('span').textContent='保存前需要使用所选链 RPC 验证'};
+    document.querySelector('#enabledInput').onchange=event=>{selected().enabled=event.target.checked;render()};
+    aliasList.oninput=event=>{if(!event.target.matches('.alias-value'))return;selected().aliases[Number(event.target.dataset.index)]=event.target.value;renderList();event.target.nextElementSibling.textContent=normalize(event.target.value)};
+    aliasList.onclick=event=>{const button=event.target.closest('[data-remove-alias]');if(!button)return;selected().aliases.splice(Number(button.dataset.removeAlias),1);render()};
+    document.querySelector('#addAlias').onclick=()=>{selected().aliases.push('新关键词');render();setTimeout(()=>{const inputs=[...document.querySelectorAll('.alias-value')];inputs.at(-1)?.select()},0)};
+    document.querySelector('#addRoute').onclick=()=>{const id=`new-${Date.now()}`;routes.push({id,label:'新资产',aliases:['新关键词'],chain:'bsc',ca:'',enabled:true,verified:false});selectedId=id;render();flash('已新增资产路由')};
+    document.querySelector('#removeRoute').onclick=()=>{const index=routes.findIndex(x=>x.id===selectedId);if(index<0)return;routes.splice(index,1);selectedId=routes[Math.max(0,index-1)]?.id||'';render();flash('资产路由已从草稿删除')};
+    document.querySelector('#verifyBtn').onclick=()=>{const route=selected();if(!route.ca){flash('请先填写合约地址');return}route.verified=true;render();flash('原型模式：RPC 合约验证通过')};
+    document.querySelector('#testBtn').onclick=()=>{
+      const text=document.querySelector('#testText').value,hits=routes.filter(route=>route.enabled&&route.aliases.some(alias=>matchesAlias(text,alias))),assets=[...new Map(hits.map(route=>[`${route.chain}:${route.ca}`,route])).values()],output=document.querySelector('#testOutput');
+      if(assets.length===1)output.innerHTML=`<strong>唯一命中 · ${assets[0].label}</strong><span>${assets[0].chain.toUpperCase()} · <span class="mono">${shortCa(assets[0].ca)}</span></span>`;
+      else if(assets.length>1)output.innerHTML=`<strong style="color:var(--danger)">DYNAMIC_ROUTE_AMBIGUOUS</strong><span>同时命中 ${assets.map(x=>x.label).join('、')}，不会创建交易信号。</span>`;
+      else output.innerHTML='<strong style="color:var(--warning)">未命中资产路由</strong><span>不会猜测 CA，也不会调用 Grok 或 GMGN。</span>';
+    };
+    document.querySelector('#sortBtn').onclick=()=>{routes.sort((a,b)=>a.label.localeCompare(b.label,'zh-CN'));render();flash('已按资产名称排序')};
+    document.querySelector('#resetBtn').onclick=()=>{routes=structuredClone(seedRoutes);selectedId='biyou';render();flash('已恢复原型初始数据')};
+    document.querySelector('#saveBtn').onclick=()=>flash('原型模式：校验通过，正式版本将生成新 Revision');
+    document.querySelector('#switchPreview').onclick=()=>location.href='p35-multi-keyword-table-preview.html';
+    render();refreshIcons();
+  </script>
+</body>
+</html>

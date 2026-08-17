@@ -28,7 +28,8 @@ async function materialize(job, attempt, selected, executor = db) {
     budget_per_trade: chainBudget.budget_per_trade,
     daily_budget: chainBudget.daily_budget,
     slippage: Number(policy.slippage), exit_strategy: policy.exit_strategy,
-    policy_revision: Number(policy.revision), policy_context_hash: policy.context_hash
+    policy_revision: Number(policy.revision), policy_context_hash: policy.context_hash,
+    preset_route_snapshot: selected.presetRouteSnapshot || null
   };
   const legacy = legacyPercentages(policy.exit_strategy);
   const targetResult = await executor.query(
@@ -86,6 +87,7 @@ async function materialize(job, attempt, selected, executor = db) {
 async function createSignal(job, attempt, target, result, executor = db) {
   if (!target) return null;
   const status = job.mode === 'live' ? 'recorded' : job.mode === 'paper' ? 'recorded' : 'signal_only';
+  const presetRouteSnapshot = result.selectedCandidate?.presetRouteSnapshot || null;
   const snapshotInput = {
     execution_mode: job.mode,
     whitelist_id: target.whitelist_id,
@@ -96,7 +98,8 @@ async function createSignal(job, attempt, target, result, executor = db) {
     contract_address: target.contract_address,
     symbol: target.whitelist?.symbol,
     project_name: target.whitelist?.project_name,
-    project_x_handles: target.whitelist?.project_x_handles
+    project_x_handles: target.whitelist?.project_x_handles,
+    asset_route_snapshot: presetRouteSnapshot
   };
   const signalResult = await executor.query(
     `INSERT INTO trade_signals
@@ -115,7 +118,11 @@ async function createSignal(job, attempt, target, result, executor = db) {
       `dynamic:${attempt.id}`, attempt.id, target.id, job.actor_policy_id,
       job.policy_revision, job.context_hash, result.intent?.intentClass || 'unknown',
       result.intent?.reasonCodes || [], result.intent?.ruleRevision || 'unknown',
-      { resolver_revision: result.resolverRevision, resolution_confidence: result.confidence },
+      {
+        resolver_revision: result.resolverRevision,
+        resolution_confidence: result.confidence,
+        preset_route_snapshot: presetRouteSnapshot
+      },
       null, assetSnapshot(snapshotInput, 'dynamic_candidate'),
       authorizationSnapshot(snapshotInput, 'dynamic_policy')]
   );

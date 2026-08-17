@@ -404,7 +404,7 @@ test('dynamic worker preserves the original failure message for retry diagnostic
             policy_enabled: true, policy_revision: 1, current_policy_revision: 1,
             configured_mode: 'record', mode: 'record', allowed_event_types: ['tweet'],
             activity_type: 'tweet', allowed_chain_ids: ['bsc'], allowed_term_types: ['cashtag'],
-            approved_aliases: [], resolver_options: {}
+            tweet_text: 'buy $TEST', approved_aliases: [], resolver_options: {}
           }] };
         }
         if (sql.includes('FROM dynamic_asset_variants')) throw new Error('candidate index unavailable');

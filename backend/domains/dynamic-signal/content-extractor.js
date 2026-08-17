@@ -46,9 +46,11 @@ function isAsciiWordCharacter(value) {
   return /^[A-Za-z0-9_]$/.test(value || '');
 }
 
-function approvedNameBoundaryMatches(text, matchKey, start) {
-  const before = start > 0 ? text[start - 1] : '';
-  const after = text[start + matchKey.length] || '';
+function approvedNameBoundaryMatches(text, matchKey, start, sourceText = text, spans = []) {
+  const rawStart = spans[start]?.start ?? start;
+  const rawEnd = spans[start + matchKey.length - 1]?.end ?? start + matchKey.length;
+  const before = rawStart > 0 ? sourceText[rawStart - 1] : '';
+  const after = sourceText[rawEnd] || '';
   return !(isAsciiWordCharacter(matchKey[0]) && isAsciiWordCharacter(before))
     && !(isAsciiWordCharacter(matchKey.at(-1)) && isAsciiWordCharacter(after));
 }
@@ -94,6 +96,7 @@ function insideUrl(term, urls) {
 }
 
 function termIdentityValue(term) {
+  if (term.assetKey) return term.assetKey;
   return term.type === 'approved_name'
     ? term.matchKey || normalizeApprovedNameMatchKey(term.normalized)
     : term.normalized;
@@ -106,7 +109,15 @@ function approvedAliasRecords(aliases) {
       value: String(alias?.value || alias?.name || '').normalize('NFKC').trim(),
       normalized: normalizeName(alias?.normalized || alias?.value || alias?.name),
       matchKey: normalizeApprovedNameMatchKey(alias?.normalized || alias?.value || alias?.name),
-      assetFamilyId: alias?.assetFamilyId ?? alias?.asset_family_id ?? null
+      assetFamilyId: alias?.assetFamilyId ?? alias?.asset_family_id ?? null,
+      assetKey: alias?.assetKey ?? alias?.asset_key ?? null,
+      presetRouteId: alias?.presetRouteId ?? alias?.preset_route_id ?? null,
+      routeLabel: alias?.routeLabel ?? alias?.route_label ?? null,
+      variantId: alias?.variantId ?? alias?.variant_id ?? null,
+      chainId: alias?.chainId ?? alias?.chain_id ?? null,
+      contractAddress: alias?.contractAddress ?? alias?.contract_address ?? null,
+      localPresetRoute: alias?.localPresetRoute === true || alias?.local_preset_route === true,
+      legacyUnbound: alias?.legacyUnbound === true || alias?.legacy_unbound === true
     }))
     .filter((alias) => alias.value && alias.normalized && alias.matchKey);
 }
@@ -158,7 +169,9 @@ function extractTextTerms(textValue, source, aliases = []) {
   for (const alias of approvedAliasRecords(aliases)) {
     let offset = 0;
     while ((offset = approvedText.normalized.indexOf(alias.matchKey, offset)) !== -1) {
-      if (!approvedNameBoundaryMatches(approvedText.normalized, alias.matchKey, offset)) {
+      if (!approvedNameBoundaryMatches(
+        approvedText.normalized, alias.matchKey, offset, text, approvedText.spans
+      )) {
         offset += Math.max(1, alias.matchKey.length);
         continue;
       }
@@ -170,6 +183,14 @@ function extractTextTerms(textValue, source, aliases = []) {
         normalized: alias.normalized,
         matchKey: alias.matchKey,
         assetFamilyId: alias.assetFamilyId,
+        assetKey: alias.assetKey,
+        presetRouteId: alias.presetRouteId,
+        routeLabel: alias.routeLabel,
+        variantId: alias.variantId,
+        chainId: alias.chainId,
+        contractAddress: alias.contractAddress,
+        localPresetRoute: alias.localPresetRoute,
+        legacyUnbound: alias.legacyUnbound,
         start,
         end,
         via: 'approved_alias'

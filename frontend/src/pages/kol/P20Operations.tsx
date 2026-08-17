@@ -8,12 +8,14 @@ import { useToast } from '../../components/ui/ToastContext';
 import { api } from '../../lib/api';
 import type {
   ChainId, DynamicPolicy,
-  DynamicPolicyTemplate, DynamicPolicyTemplateConfig, DynamicResolution,
+  DynamicPolicyTemplate, DynamicPolicyTemplateConfig, DynamicPresetAssetRouteInput,
+  DynamicResolution,
   DynamicSignalStatus, ExitStrategy, KolAccount,
 } from '../../lib/types';
 import DynamicTradeConfigMatrix from '../strategy/DynamicTradeConfigMatrix';
 import StrategyEditor from '../whitelist/StrategyEditor';
 import { cloneStrategy, STRATEGY_PRESETS, strategySummary } from '../whitelist/strategy-presets';
+import { DynamicAssetRouteWorkspace } from './DynamicAssetRouteWorkspace';
 
 const CHAINS: ChainId[] = ['sol', 'bsc', 'base', 'eth', 'robinhood'];
 const CHAIN_META: Record<ChainId, { label: string; unit: string }> = {
@@ -38,7 +40,9 @@ const STEP_ITEMS = [
 
 type Draft = Pick<DynamicPolicy, 'mode' | 'enabled' | 'allowed_chain_ids' |
   'allowed_event_types' | 'allowed_term_types' | 'approved_aliases' | 'chain_budgets' |
-  'daily_new_token_limit' | 'per_token_buy_limit' | 'slippage' | 'exit_strategy' | 'resolver_options'>;
+  'daily_new_token_limit' | 'per_token_buy_limit' | 'slippage' | 'exit_strategy' | 'resolver_options'> & {
+  preset_asset_routes: DynamicPresetAssetRouteInput[];
+};
 
 type ConfigSource = {
   kind: 'template' | 'current' | 'blank';
@@ -79,6 +83,7 @@ function freshDraft(): Draft {
     allowed_event_types: ['tweet'],
     allowed_term_types: ['ca', 'cashtag', 'hashtag'],
     approved_aliases: [],
+    preset_asset_routes: [],
     chain_budgets: emptyChainBudgets(),
     daily_new_token_limit: 0,
     per_token_buy_limit: 1,
@@ -96,6 +101,7 @@ function draftFromPolicy(policy: DynamicPolicy): Draft {
     allowed_event_types: [...policy.allowed_event_types],
     allowed_term_types: [...policy.allowed_term_types],
     approved_aliases: structuredClone(policy.approved_aliases || []),
+    preset_asset_routes: structuredClone(policy.preset_asset_routes || []),
     chain_budgets: normalizeChainBudgets(policy.chain_budgets),
     daily_new_token_limit: Number(policy.daily_new_token_limit),
     per_token_buy_limit: Number(policy.per_token_buy_limit),
@@ -105,12 +111,27 @@ function draftFromPolicy(policy: DynamicPolicy): Draft {
   };
 }
 
+function editableRoutes(
+  routes: DynamicPresetAssetRouteInput[] = [],
+  includeRouteId = false,
+): DynamicPresetAssetRouteInput[] {
+  return routes.map((route) => ({
+    ...(includeRouteId && route.route_id ? { route_id: route.route_id } : {}),
+    label: route.label,
+    aliases: [...route.aliases],
+    chain_id: route.chain_id,
+    contract_address: route.contract_address,
+    enabled: route.enabled !== false,
+  }));
+}
+
 function configFromDraft(draft: Draft): DynamicPolicyTemplateConfig {
   return {
     allowed_chain_ids: [...draft.allowed_chain_ids],
     allowed_event_types: [...draft.allowed_event_types],
     allowed_term_types: [...draft.allowed_term_types],
     approved_aliases: structuredClone(draft.approved_aliases),
+    preset_asset_routes: editableRoutes(draft.preset_asset_routes),
     chain_budgets: normalizeChainBudgets(draft.chain_budgets),
     daily_new_token_limit: draft.daily_new_token_limit,
     per_token_buy_limit: draft.per_token_buy_limit,
@@ -146,6 +167,7 @@ function configDiffLabels(draft: Draft, baseline?: DynamicPolicyTemplateConfig |
   if (!sameValue(current.allowed_event_types, baseline.allowed_event_types)) labels.push('内容类型');
   if (!sameValue(current.allowed_term_types, baseline.allowed_term_types)
       || !sameValue(current.approved_aliases, baseline.approved_aliases)
+      || !sameValue(current.preset_asset_routes, baseline.preset_asset_routes)
       || !sameValue(current.resolver_options, baseline.resolver_options)) labels.push('词条与解析');
   if (!sameValue(current.allowed_chain_ids, baseline.allowed_chain_ids)
       || !sameValue(current.chain_budgets, normalizeChainBudgets(baseline.chain_budgets))) labels.push('链上资金');
@@ -164,26 +186,8 @@ function aliasesText(values: DynamicPolicy['approved_aliases']) {
   return (values || []).map((item) => typeof item === 'string' ? item : item.name).join('\n');
 }
 
-function parseAliases(value: string) {
-  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-}
-
 function aliasMatchKey(value: string) {
   return value.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[\p{P}\p{Z}\s]+/gu, '');
-}
-
-function findAliasDuplicate(value: string) {
-  const seen = new Map<string, number>();
-  const lines = value.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const name = lines[index].trim();
-    if (!name) continue;
-    const key = aliasMatchKey(name);
-    const firstLine = seen.get(key);
-    if (firstLine !== undefined) return { firstLine, duplicateLine: index + 1 };
-    seen.set(key, index + 1);
-  }
-  return null;
 }
 
 function aliasCount(values: DynamicPolicy['approved_aliases']) {
@@ -205,7 +209,33 @@ function termSummary(config: DynamicPolicyTemplateConfig) {
   const terms = TERM_TYPES.filter(([value]) => config.allowed_term_types.includes(value))
     .map(([, label]) => label);
   const count = aliasCount(config.approved_aliases);
-  return `${terms.join('、') || '未配置词条'}${count ? ` · ${count} 个批准名称` : ''}`;
+  const routes = config.preset_asset_routes?.length || 0;
+  return `${terms.join('、') || '未配置词条'}${routes ? ` · ${routes} 条资产路由` : ''}${count ? ` · ${count} 个待绑定词` : ''}`;
+}
+
+function routeValidation(routes: DynamicPresetAssetRouteInput[]) {
+  const seen = new Set<string>();
+  const assetKeys = new Set<string>();
+  let totalAliases = 0;
+  for (const [routeIndex, route] of routes.entries()) {
+    if (!route.label.trim() || !route.contract_address.trim()) return `请补全第 ${routeIndex + 1} 条资产路由`;
+    if (route.aliases.length < 1 || route.aliases.length > 10 || route.aliases.some((alias) => !alias.trim())) {
+      return `第 ${routeIndex + 1} 条资产路由需要 1 至 10 个有效关键词`;
+    }
+    totalAliases += route.aliases.length;
+    const contract = route.chain_id === 'sol'
+      ? route.contract_address.trim() : route.contract_address.trim().toLowerCase();
+    const assetKey = `${route.chain_id}:${contract}`;
+    if (assetKeys.has(assetKey)) return `第 ${routeIndex + 1} 条资产路由与另一条路由绑定了相同 CA`;
+    assetKeys.add(assetKey);
+    for (const alias of route.aliases) {
+      const key = aliasMatchKey(alias);
+      if (seen.has(key)) return `关键词“${alias}”归一化后与另一条路由重复`;
+      seen.add(key);
+    }
+  }
+  if (totalAliases > 50) return '每个账号最多配置 50 个路由关键词';
+  return null;
 }
 
 function moneySummary(config: DynamicPolicyTemplateConfig) {
@@ -228,7 +258,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
   const [templateDetailsOpen, setTemplateDetailsOpen] = useState(true);
   const [accountTemplateId, setAccountTemplateId] = useState('');
   const [accountTemplateName, setAccountTemplateName] = useState('');
-  const [aliasInput, setAliasInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [templateBusy, setTemplateBusy] = useState(false);
   const [resolutions, setResolutions] = useState<DynamicResolution[]>([]);
@@ -253,7 +282,7 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     () => policies.find((item) => String(item.kol_id) === kolId),
     [kolId, policies],
   );
-  const selectedKey = selected ? `${selected.id}:${selected.revision}` : '';
+  const selectedKey = selected ? `${selected.id}:${selected.revision}:${selected.updated_at || ''}` : '';
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
@@ -269,7 +298,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     const currentPolicy = selectedRef.current;
     const next = currentPolicy ? draftFromPolicy(currentPolicy) : freshDraft();
     setDraft(next);
-    setAliasInput(aliasesText(next.approved_aliases));
     setConfigSource(currentPolicy
       ? { kind: 'current', name: '当前账号策略', baseline: configFromDraft(next) }
       : { kind: 'blank', name: '空白配置', baseline: null });
@@ -282,7 +310,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
   const selectedTemplate = templates.find((item) => item.id === accountTemplateId);
   const chooserTemplate = templates.find((item) => item.id === chooserTemplateId);
   const currentConfig = useMemo(() => configFromDraft(draft), [draft]);
-  const aliasDuplicate = useMemo(() => findAliasDuplicate(aliasInput), [aliasInput]);
   const policyChanged = useMemo(() => {
     if (!selected) return true;
     return draft.mode !== selected.mode || draft.enabled !== selected.enabled
@@ -301,15 +328,9 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     });
   };
 
-  const updateAliases = (value: string) => {
-    setAliasInput(value);
-    setDraft((current) => ({ ...current, approved_aliases: parseAliases(value) }));
-  };
-
   const resetDraft = () => {
     const next = selected ? draftFromPolicy(selected) : freshDraft();
     setDraft(next);
-    setAliasInput(aliasesText(next.approved_aliases));
     setConfigSource(selected
       ? { kind: 'current', name: '当前账号策略', baseline: configFromDraft(next) }
       : { kind: 'blank', name: '空白配置', baseline: null });
@@ -327,7 +348,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     if (!chooserTemplate) return toast('请先选择动态策略模板', 'error');
     const baseline = cloneConfig(chooserTemplate.config);
     setDraft((current) => applyConfig(current, baseline));
-    setAliasInput(aliasesText(baseline.approved_aliases));
     setConfigSource({
       kind: 'template', id: chooserTemplate.id, name: chooserTemplate.name,
       version: chooserTemplate.version, baseline,
@@ -340,7 +360,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
 
   const applyBlank = () => {
     setDraft((current) => ({ ...freshDraft(), mode: current.mode, enabled: current.enabled }));
-    setAliasInput('');
     setConfigSource({ kind: 'blank', name: '空白配置', baseline: null });
     setAccountTemplateId('');
     setChooserTemplateId('');
@@ -351,7 +370,6 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
   const restoreSource = () => {
     if (!configSource.baseline) return;
     setDraft((current) => applyConfig(current, configSource.baseline!));
-    setAliasInput(aliasesText(configSource.baseline.approved_aliases));
     toast(`已恢复“${configSource.name}”完整配置`, 'success');
   };
 
@@ -412,11 +430,21 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     if (target > 2) {
       if (!draft.allowed_event_types.length) return '请至少选择一种内容类型';
       if (!draft.allowed_term_types.length) return '请至少选择一种词条类型';
-      if (draft.allowed_term_types.includes('approved_name') && !draft.approved_aliases.length) {
-        return '启用项目名称时必须填写至少一个批准名称';
+      if (!draft.allowed_term_types.includes('approved_name')
+          && draft.preset_asset_routes.some((route) => route.enabled !== false)) {
+        return '资产路由需要启用“项目名称”词条类型';
       }
-      if (draft.allowed_term_types.includes('approved_name') && aliasDuplicate) {
-        return `第 ${aliasDuplicate.duplicateLine} 行与第 ${aliasDuplicate.firstLine} 行等价；标点和空格差异无需重复填写`;
+      if (draft.allowed_term_types.includes('approved_name')
+          && !draft.approved_aliases.length && !draft.preset_asset_routes.length) {
+        return '启用项目名称时必须配置至少一条资产路由';
+      }
+      const invalidRoute = routeValidation(draft.preset_asset_routes);
+      if (invalidRoute) return invalidRoute;
+      if (['paper', 'live'].includes(draft.mode) && draft.approved_aliases.length) {
+        return '模拟或实盘前必须将所有旧关键词绑定到资产路由，或删除旧关键词';
+      }
+      if (draft.preset_asset_routes.some((route) => !draft.allowed_chain_ids.includes(route.chain_id))) {
+        return '资产路由使用的链必须同时在资金步骤中启用';
       }
     }
     if (target > 3) {
@@ -446,7 +474,10 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
     setSaving(true);
     try {
       const previousRevision = selected?.revision;
-      const response = await api.dynamicSignal.savePolicy(kolId, draft);
+      const response = await api.dynamicSignal.savePolicy(kolId, {
+        ...draft,
+        preset_asset_routes: editableRoutes(draft.preset_asset_routes, true),
+      });
       if (!response.ok || !response.data) return toast(response.error || '策略保存失败', 'error');
       const nextRevision = Number(response.data.revision);
       if (previousRevision === undefined) {
@@ -527,7 +558,7 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
 
               <section className={`p164-template-strip ${configSource.kind === 'blank' ? 'empty' : ''}`}>
                 <div className="p164-template-strip-main"><i><Layers3 size={17} /></i><div className="p164-template-name"><strong>{configSource.name}{configSource.version ? ` · v${configSource.version}` : ''}</strong><span>{sourceStatus}</span></div><div className="p164-template-summary"><span>{eventSummary(sourceConfig)}</span><span>{termSummary(sourceConfig)}</span><span>{moneySummary(sourceConfig)}</span><span>{strategySummary(sourceConfig.exit_strategy)}</span></div><div className="p164-template-actions"><button type="button" onClick={() => setTemplateDetailsOpen((value) => !value)}>{templateDetailsOpen ? '收起' : '查看'}</button><button type="button" onClick={openTemplateChooser}>更换</button></div></div>
-                {templateDetailsOpen && <div className="p20-template-details"><div><span>内容与词条</span><strong>{eventSummary(sourceConfig)}<br />{termSummary(sourceConfig)}</strong></div><div><span>批准项目名</span><strong>{aliasesText(sourceConfig.approved_aliases) || '未配置'}</strong></div><div><span>多链资金</span><strong>{moneySummary(sourceConfig)}</strong></div><div><span>限额与滑点</span><strong>每日 {sourceConfig.daily_new_token_limit || '不限制'} 个新币 · 单币累计 {sourceConfig.per_token_buy_limit} 次 · 滑点 {sourceConfig.slippage}%</strong></div><div><span>离场策略</span><strong>{strategySummary(sourceConfig.exit_strategy)}</strong></div><div><span>模板不保存</span><strong>X 账号、运行阶段、启用状态、Revision 和 Watch</strong></div></div>}
+                {templateDetailsOpen && <div className="p20-template-details"><div><span>内容与词条</span><strong>{eventSummary(sourceConfig)}<br />{termSummary(sourceConfig)}</strong></div><div><span>资产路由</span><strong>{sourceConfig.preset_asset_routes?.map((route) => `${route.label} · ${route.aliases.length} 词`).join('；') || aliasesText(sourceConfig.approved_aliases) || '未配置'}</strong></div><div><span>多链资金</span><strong>{moneySummary(sourceConfig)}</strong></div><div><span>限额与滑点</span><strong>每日 {sourceConfig.daily_new_token_limit || '不限制'} 个新币 · 单币累计 {sourceConfig.per_token_buy_limit} 次 · 滑点 {sourceConfig.slippage}%</strong></div><div><span>离场策略</span><strong>{strategySummary(sourceConfig.exit_strategy)}</strong></div><div><span>模板不保存</span><strong>X 账号、运行阶段、启用状态、路由验证证据、Revision 和 Watch</strong></div></div>}
               </section>
 
               <div className="p20-template-save-row"><input value={accountTemplateName} onChange={(event) => setAccountTemplateName(event.target.value)} placeholder="模板名称，例如：多链喊单标准" aria-label="动态策略模板名称" /><button type="button" className="btn btn-secondary" disabled={templateBusy} onClick={() => void saveAccountTemplate()}><Save size={15} />保存为新模板</button>{selectedTemplate && <button type="button" className="btn btn-secondary" disabled={templateBusy} onClick={() => void updateAccountTemplate()}><Save size={15} />更新所选模板</button>}{selectedTemplate && <button type="button" className="p16-icon-button" title="删除所选模板" aria-label="删除所选模板" disabled={templateBusy} onClick={() => void deleteAccountTemplate()}><Trash2 size={15} /></button>}</div>
@@ -541,8 +572,14 @@ export function P20Operations({ kols, initialKolId }: { kols: KolAccount[]; init
               <div className="p16-step-title"><div><span>步骤 2 / 4</span><h3>配置词条与 CA 解析规则</h3></div><em>{draft.allowed_term_types.length} 类词条</em></div>
               {configSource.kind === 'template' && <div className="p164-template-origin"><Layers3 size={15} /><span>词条与解析已从 {configSource.name} 预填，当前步骤可以继续修改。</span></div>}
               <div className="p20-choice-row"><span>允许词条</span>{TERM_TYPES.map(([value, label]) => <label key={value}><input type="checkbox" checked={draft.allowed_term_types.includes(value)} onChange={() => toggle('allowed_term_types', value)} />{label}</label>)}</div>
-              {draft.allowed_term_types.includes('approved_name') && <label className="p20-alias-field"><span>批准项目名 / 别名</span><textarea rows={5} value={aliasInput} onChange={(event) => updateAliases(event.target.value)} placeholder="每行一个完整项目名；显示保留原始标点，匹配时进行标点归一" /><small className={aliasDuplicate ? 'error' : ''}>{aliasDuplicate ? `第 ${aliasDuplicate.duplicateLine} 行与第 ${aliasDuplicate.firstLine} 行匹配效果相同，请保留一条` : `已填写 ${draft.approved_aliases.length} 条项目名称`}</small></label>}
-              <div className="p20-resolver-note"><strong>解析顺序</strong><span>完整 CA 最高优先级；Cashtag、Hashtag 和项目名称进入候选解析。无法唯一确认链与 CA 时只记录，不自动交易。</span></div>
+              {draft.allowed_term_types.includes('approved_name') && <DynamicAssetRouteWorkspace
+                routes={draft.preset_asset_routes}
+                legacyAliases={draft.approved_aliases}
+                allowedChains={draft.allowed_chain_ids}
+                onChange={(preset_asset_routes) => setDraft((current) => ({ ...current, preset_asset_routes }))}
+                onLegacyAliasesChange={(approved_aliases) => setDraft((current) => ({ ...current, approved_aliases }))}
+              />}
+              <div className="p20-resolver-note"><strong>解析顺序</strong><span>完整 CA 与资产路由均为确定映射；同一路由多个关键词只触发一次，不同路由或冲突 CA 会拒绝交易。</span></div>
             </>}
 
             {step === 3 && <>

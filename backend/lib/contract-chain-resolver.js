@@ -1,7 +1,15 @@
 const { isAddress } = require('ethers');
+const { Connection, PublicKey } = require('@solana/web3.js');
 const { getChain } = require('./chain-config');
 
 const SOL_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SOLANA_MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+const SOLANA_TOKEN_PROGRAMS = new Set([
+  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+]);
+const SOLANA_MINT_BASE_SIZE = 82;
+const SOLANA_MINT_INITIALIZED_OFFSET = 45;
 
 function normalizeAllowedChains(values) {
   return [...new Set((Array.isArray(values) ? values : [])
@@ -78,6 +86,84 @@ async function probeEvmContract(chainId, contractAddress, options = {}) {
   }
 }
 
+async function withTimeout(promise, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error('Solana RPC request timed out');
+          error.code = 'CHAIN_RPC_TIMEOUT';
+          reject(error);
+        }, Math.max(500, Number(timeoutMs || 3500)));
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function probeSolanaMint(contractAddress, options = {}) {
+  const chain = getChain('sol');
+  const env = options.env || process.env;
+  const rpcUrl = String(env[chain?.rpcEnvKey] || '').trim();
+  let publicKey;
+  try {
+    publicKey = new PublicKey(String(contractAddress || '').trim());
+  } catch {
+    return { chainId: 'sol', ok: false, mintFound: false, error: 'SOL_MINT_ADDRESS_INVALID' };
+  }
+  if (!chain || !options.connection && !rpcUrl) {
+    return { chainId: 'sol', ok: false, mintFound: false, error: 'CHAIN_RPC_MISSING' };
+  }
+  try {
+    const connection = options.connection || new Connection(rpcUrl, 'confirmed');
+    const [genesisHash, account] = await withTimeout(Promise.all([
+      connection.getGenesisHash(),
+      connection.getAccountInfo(publicKey, 'confirmed')
+    ]), options.timeoutMs);
+    if (genesisHash !== SOLANA_MAINNET_GENESIS_HASH) {
+      return {
+        chainId: 'sol', ok: false, mintFound: false,
+        identity: genesisHash, error: 'RPC_CHAIN_MISMATCH'
+      };
+    }
+    if (!account) {
+      return {
+        chainId: 'sol', ok: true, mintFound: false,
+        identity: genesisHash, error: 'SOL_MINT_NOT_FOUND'
+      };
+    }
+    const owner = account.owner?.toBase58?.() || String(account.owner || '');
+    const data = Buffer.from(account.data || []);
+    if (!SOLANA_TOKEN_PROGRAMS.has(owner)) {
+      return {
+        chainId: 'sol', ok: true, mintFound: false, identity: genesisHash,
+        owner, dataLength: data.length, error: 'SOL_MINT_OWNER_INVALID'
+      };
+    }
+    if (account.executable || data.length < SOLANA_MINT_BASE_SIZE
+        || data[SOLANA_MINT_INITIALIZED_OFFSET] !== 1) {
+      return {
+        chainId: 'sol', ok: true, mintFound: false, identity: genesisHash,
+        owner, dataLength: data.length, executable: Boolean(account.executable),
+        error: 'SOL_MINT_DATA_INVALID'
+      };
+    }
+    return {
+      chainId: 'sol', ok: true, mintFound: true, identity: genesisHash,
+      owner, dataLength: data.length, executable: false
+    };
+  } catch (error) {
+    return {
+      chainId: 'sol', ok: false, mintFound: false,
+      error: error.code || 'CHAIN_RPC_UNAVAILABLE'
+    };
+  }
+}
+
 async function resolveContractChain(contractAddress, allowedChains, options = {}) {
   const allowed = normalizeAllowedChains(allowedChains);
   const rawAddress = String(contractAddress || '').trim();
@@ -118,10 +204,14 @@ async function resolveContractChain(contractAddress, allowedChains, options = {}
 }
 
 module.exports = {
+  SOLANA_MAINNET_GENESIS_HASH,
+  SOLANA_MINT_BASE_SIZE,
+  SOLANA_TOKEN_PROGRAMS,
   hasContractCode,
   jsonRpc,
   normalizeAllowedChains,
   numericChainId,
   probeEvmContract,
+  probeSolanaMint,
   resolveContractChain
 };

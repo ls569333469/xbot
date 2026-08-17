@@ -42,6 +42,18 @@
             "context_hash": { "type": ["string", "null"] }
           }
         },
+        "asset_route_snapshot": {
+          "type": ["object", "null"],
+          "properties": {
+            "route_id": { "$ref": "#/$defs/nullableEntityId" },
+            "label": { "type": ["string", "null"] },
+            "matched_aliases": { "type": "array", "items": { "type": "string" } },
+            "chain_id": { "type": "string" },
+            "contract_address": { "type": "string" },
+            "variant_id": { "$ref": "#/$defs/nullableEntityId" }
+          },
+          "additionalProperties": true
+        },
         "execution_decision": { "$ref": "#/$defs/executionDecision" },
         "current_projection": { "$ref": "#/$defs/currentProjection" }
       }

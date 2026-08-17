@@ -2,6 +2,13 @@ const crypto = require('crypto');
 const db = require('../../lib/db');
 const { normalizeXHandle } = require('../../lib/x-handles');
 const { normalizeApprovedNameMatchKey } = require('./content-extractor');
+const presetRouteRepository = require('./preset-route-repository');
+const {
+  normalizePresetRoutes,
+  routeError,
+  routeExecutionSnapshot
+} = require('./preset-route-schema');
+const { prepareVerifiedRoutes } = require('./preset-route-verification');
 const {
   clonePreset,
   normalizeExitStrategy
@@ -130,7 +137,7 @@ function normalizeApprovedAliases(value) {
   return aliases;
 }
 
-function normalizePolicyInput(input = {}, current = {}) {
+function normalizePolicyInput(input = {}, current = {}, options = {}) {
   const mode = String(input.mode ?? current.mode ?? 'record').toLowerCase();
   if (!MODES.has(mode)) {
     const error = new Error('Dynamic policy mode is invalid');
@@ -174,6 +181,13 @@ function normalizePolicyInput(input = {}, current = {}) {
     exit_strategy: normalizeDynamicExitStrategy(input.exit_strategy ?? current.exit_strategy),
     resolver_options: input.resolver_options ?? current.resolver_options ?? {}
   };
+  const preset_asset_routes = normalizePresetRoutes(
+    input.preset_asset_routes ?? current.preset_asset_routes ?? [],
+    {
+      legacyAliases: config.approved_aliases,
+      allowTrustedFields: options.allowTrustedRouteFields === true
+    }
+  );
   if (![config.budget_per_trade, config.daily_budget, config.slippage].every(Number.isFinite)
       || config.budget_per_trade < 0 || config.daily_budget < 0
       || config.slippage < 0 || config.slippage > 100
@@ -201,7 +215,28 @@ function normalizePolicyInput(input = {}, current = {}) {
     error.code = 'DYNAMIC_POLICY_BUDGET_ORDER_INVALID';
     throw error;
   }
-  return { ...config, context_hash: contextHash(config) };
+  if (preset_asset_routes.some((route) => !config.allowed_chain_ids.includes(route.chain_id))) {
+    throw routeError('DYNAMIC_ROUTE_CHAIN_NOT_ALLOWED', 'Every asset route chain must be enabled by the policy');
+  }
+  if (preset_asset_routes.some((route) => route.enabled)
+      && !config.allowed_term_types.includes('approved_name')) {
+    throw routeError('DYNAMIC_ROUTE_TERM_TYPE_REQUIRED', 'Enabled asset routes require the project-name term type');
+  }
+  if (['paper', 'live'].includes(config.mode) && config.approved_aliases.length > 0) {
+    throw routeError(
+      'DYNAMIC_ROUTE_BINDING_REQUIRED',
+      'Paper and live policies require every approved keyword to be bound to an asset route'
+    );
+  }
+  const executionConfig = {
+    ...config,
+    preset_asset_routes: routeExecutionSnapshot(preset_asset_routes)
+  };
+  return {
+    ...config,
+    preset_asset_routes,
+    context_hash: contextHash(executionConfig)
+  };
 }
 
 async function list(filters = {}, executor = db) {
@@ -225,7 +260,7 @@ async function list(filters = {}, executor = db) {
      ORDER BY policy.updated_at DESC`,
     params
   );
-  return result.rows;
+  return presetRouteRepository.attachRoutes(result.rows, executor);
 }
 
 async function getById(id, executor = db, options = {}) {
@@ -236,16 +271,38 @@ async function getById(id, executor = db, options = {}) {
      WHERE policy.id = $1 ${options.forUpdate ? 'FOR UPDATE OF policy' : ''}`,
     [Number(id)]
   );
-  return result.rows[0] || null;
+  const policy = result.rows[0] || null;
+  if (!policy) return null;
+  return (await presetRouteRepository.attachRoutes([policy], executor))[0];
 }
 
-async function upsert(kolId, input = {}, executor = db) {
-  await executor.query('SELECT pg_advisory_xact_lock(20, $1::int)', [Number(kolId)]);
-  const existingResult = await executor.query(
-    'SELECT * FROM x_actor_dynamic_policies WHERE kol_id = $1 FOR UPDATE', [Number(kolId)]
+async function getByKolId(kolId, executor = db, options = {}) {
+  const result = await executor.query(
+    `SELECT policy.*, kol.x_handle, kol.display_name, kol.enabled AS kol_enabled
+     FROM x_actor_dynamic_policies AS policy
+     JOIN x_kol_accounts AS kol ON kol.id = policy.kol_id
+     WHERE policy.kol_id = $1 ${options.forUpdate ? 'FOR UPDATE OF policy' : ''}`,
+    [Number(kolId)]
   );
-  const current = existingResult.rows[0] || {};
-  const config = normalizePolicyInput(input, current);
+  const policy = result.rows[0] || null;
+  if (!policy) return null;
+  return (await presetRouteRepository.attachRoutes([policy], executor))[0];
+}
+
+function routeStateHash(routes = []) {
+  return contextHash(routes.map((route) => ({
+    route_id: route.route_id ?? null,
+    label: route.label,
+    aliases: route.aliases,
+    chain_id: route.chain_id,
+    contract_address: route.contract_address,
+    enabled: route.enabled !== false,
+    variant_id: route.variant_id ?? null,
+    verified_at: route.verification?.verified_at ?? null
+  })));
+}
+
+async function persistNormalizedPolicy(kolId, config, current, executor = db) {
   if (config.mode === 'live' && config.daily_new_token_limit <= 0) {
     const error = new Error('Live dynamic policy requires explicit positive trade and daily limits');
     error.code = 'DYNAMIC_POLICY_LIVE_LIMITS_REQUIRED';
@@ -325,6 +382,94 @@ async function upsert(kolId, input = {}, executor = db) {
   return result.rows[0];
 }
 
+async function upsert(kolId, input = {}, executor = db) {
+  if (Object.prototype.hasOwnProperty.call(input, 'preset_asset_routes')) {
+    throw routeError(
+      'DYNAMIC_ROUTE_PREFLIGHT_REQUIRED',
+      'Asset routes must be saved through the verified policy upsert flow'
+    );
+  }
+  await executor.query('SELECT pg_advisory_xact_lock(20, $1::int)', [Number(kolId)]);
+  const existingResult = await executor.query(
+    'SELECT * FROM x_actor_dynamic_policies WHERE kol_id = $1 FOR UPDATE', [Number(kolId)]
+  );
+  const current = existingResult.rows[0] || {};
+  if (current.id) {
+    current.preset_asset_routes = await presetRouteRepository.listForPolicy(current.id, executor);
+  }
+  const config = normalizePolicyInput(input, current, { allowTrustedRouteFields: true });
+  const saved = await persistNormalizedPolicy(kolId, config, current, executor);
+  return { ...saved, preset_asset_routes: current.preset_asset_routes || [] };
+}
+
+async function preparePolicyUpsert(kolId, input = {}, executor = db, dependencies = {}) {
+  const current = await getByKolId(kolId, executor);
+  if (!current) {
+    const kolResult = await executor.query(
+      'SELECT id FROM x_kol_accounts WHERE id = $1', [Number(kolId)]
+    );
+    if (!kolResult.rows[0]) {
+      throw routeError('DYNAMIC_POLICY_KOL_NOT_FOUND', 'KOL account was not found');
+    }
+  }
+  const config = normalizePolicyInput(input, current || {});
+  const routes = await prepareVerifiedRoutes(
+    config.preset_asset_routes,
+    current?.preset_asset_routes || [],
+    dependencies
+  );
+  return {
+    kol_id: Number(kolId),
+    baseline: current ? {
+      policy_id: Number(current.id),
+      revision: Number(current.revision),
+      context_hash: current.context_hash,
+      route_state_hash: routeStateHash(current.preset_asset_routes)
+    } : null,
+    config: { ...config, preset_asset_routes: routes }
+  };
+}
+
+async function commitPreparedPolicyUpsert(prepared, executor = db) {
+  const kolId = Number(prepared?.kol_id);
+  if (!Number.isInteger(kolId) || kolId <= 0 || !prepared?.config) {
+    throw routeError('DYNAMIC_ROUTE_PREFLIGHT_REQUIRED', 'Verified policy input is missing');
+  }
+  await executor.query('SELECT pg_advisory_xact_lock(20, $1::int)', [kolId]);
+  const existingResult = await executor.query(
+    'SELECT * FROM x_actor_dynamic_policies WHERE kol_id = $1 FOR UPDATE', [kolId]
+  );
+  const current = existingResult.rows[0] || {};
+  const currentRoutes = current.id
+    ? await presetRouteRepository.listForPolicy(current.id, executor)
+    : [];
+  const baseline = prepared.baseline;
+  const concurrent = baseline
+    ? !current.id
+      || Number(current.id) !== baseline.policy_id
+      || Number(current.revision) !== baseline.revision
+      || current.context_hash !== baseline.context_hash
+      || routeStateHash(currentRoutes) !== baseline.route_state_hash
+    : Boolean(current.id);
+  if (concurrent) {
+    throw routeError(
+      'DYNAMIC_POLICY_CONCURRENT_UPDATE',
+      'Dynamic policy changed while asset routes were being verified'
+    );
+  }
+  const config = normalizePolicyInput(
+    prepared.config,
+    { ...current, preset_asset_routes: currentRoutes },
+    { allowTrustedRouteFields: true }
+  );
+  if (config.context_hash !== prepared.config.context_hash) {
+    throw routeError('DYNAMIC_ROUTE_PREFLIGHT_REQUIRED', 'Verified route payload no longer matches the policy input');
+  }
+  const saved = await persistNormalizedPolicy(kolId, config, current, executor);
+  const routes = await presetRouteRepository.sync(saved.id, config.preset_asset_routes, executor);
+  return { ...saved, preset_asset_routes: routes };
+}
+
 async function remove(id, executor = db) {
   const current = await getById(id, executor, { forUpdate: true });
   if (!current) return false;
@@ -368,6 +513,8 @@ async function remove(id, executor = db) {
 }
 
 module.exports = {
-  CHAINS, EVENTS, MODES, TERMS, chainBudgetFor, contextHash, getById, list,
-  normalizeApprovedAliases, normalizePolicyInput, remove, sortedObject, upsert, normalizeXHandle
+  CHAINS, EVENTS, MODES, TERMS, chainBudgetFor, commitPreparedPolicyUpsert, contextHash,
+  getById, getByKolId, list, normalizeApprovedAliases, normalizePolicyInput,
+  normalizeXHandle, persistNormalizedPolicy, preparePolicyUpsert, remove, routeStateHash,
+  sortedObject, upsert
 };

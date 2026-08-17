@@ -76,13 +76,42 @@ async function loadContext(jobId, executor = db) {
             policy.mode AS configured_mode, policy.enabled AS policy_enabled,
             policy.allowed_chain_ids, policy.allowed_event_types, policy.allowed_term_types,
             policy.approved_aliases, policy.resolver_options, policy.context_hash,
-            policy.revision AS current_policy_revision
+            policy.revision AS current_policy_revision,
+            COALESCE((
+              SELECT jsonb_agg(jsonb_build_object(
+                'route_id', route.id,
+                'label', route.label,
+                'aliases', COALESCE((
+                  SELECT jsonb_agg(alias.alias_text ORDER BY alias.sort_order, alias.id)
+                  FROM dynamic_policy_asset_aliases alias
+                  WHERE alias.route_id = route.id AND alias.archived_at IS NULL
+                ), '[]'::jsonb),
+                'chain_id', variant.chain_id,
+                'contract_address', variant.contract_address,
+                'variant_id', variant.id,
+                'asset_family_id', variant.asset_family_id,
+                'enabled', route.enabled,
+                'verification', jsonb_build_object(
+                  'status', 'verified',
+                  'source', route.verification_source,
+                  'verified_at', route.verified_at,
+                  'error_code', NULL,
+                  'snapshot', route.verification_snapshot
+                )
+              ) ORDER BY route.id)
+              FROM dynamic_policy_asset_routes route
+              JOIN dynamic_asset_variants variant ON variant.id = route.variant_id
+              WHERE route.actor_policy_id = policy.id
+                AND route.enabled = true AND route.archived_at IS NULL
+            ), '[]'::jsonb) AS preset_asset_routes
      FROM dynamic_signal_jobs job
      JOIN x_activities activity ON activity.id = job.x_activity_id
      JOIN x_actor_dynamic_policies policy ON policy.id = job.actor_policy_id
      WHERE job.id = $1`, [Number(jobId)]
   );
-  return result.rows[0] || null;
+  const context = result.rows[0] || null;
+  if (context && !Array.isArray(context.preset_asset_routes)) context.preset_asset_routes = [];
+  return context;
 }
 
 async function renew(jobId, workerId, executor = db, leaseSeconds = 60) {
