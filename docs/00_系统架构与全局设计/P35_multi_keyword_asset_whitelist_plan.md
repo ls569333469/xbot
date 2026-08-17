@@ -1,6 +1,6 @@
 # P35 动态喊单多关键词资产路由方案
 
-> 文档状态：`IMPLEMENTED LOCALLY / REAL BUY AND SELL VERIFIED / NOT DEPLOYED`
+> 文档状态：`IMPLEMENTED / LOCAL REAL BUY AND SELL VERIFIED / DEPLOYED TO XIEXIU / PRODUCTION LIVE ACCEPTANCE PENDING`
 >
 > 设计日期：2026-08-16
 >
@@ -8,7 +8,7 @@
 >
 > 已确认前端：**方案 B，主从资产路由工作区**
 >
-> 实施边界：正式 React、Migration、动态 Worker 与授权快照已按本方案更新；既有 GMGN Swap、Order Query、Position、平仓以及固定 CA、关注策略执行逻辑未增加 P35 分支。本地已完成长文本关键词触发、GMGN 真实买入、保护持仓和手动平仓闭环；尚未部署 xiexiu，尚未执行生产 Migration 或服务器真实交易验收。
+> 实施边界：正式 React、Migration、动态 Worker 与授权快照已按本方案更新；既有 GMGN Swap、Order Query、Position、平仓以及固定 CA、关注策略执行逻辑未增加 P35 分支。本地已完成长文本关键词触发、GMGN 真实买入、保护持仓和手动平仓闭环；同一 release 已完成 GitHub 发布、xiexiu 技术部署、Migration `052` 和五条生产路由同步。服务器 Engine 保持 stopped/disarmed，尚未执行新版本生产真实资金验收。
 
 ## 1. 最终结论
 
@@ -760,12 +760,32 @@ P35 不会因为关键词数量增加而增加 GMGN 解析请求：
 3. 修复不停止 Engine、不重放已拒绝 Signal、不新增 GMGN 调用。定向回归覆盖 Revision `8 -> 9` 热更新和跨范围拒绝，全量测试通过。
 4. P25 快速交易链路有意不在买入前调用 GMGN Security / Pool / Quote。此前前端把这些“未查询字段”显示为风险观察，容易被误解为真实风险。最终规则改为：只有错误真正阻止买入时显示安全失败或执行阻断；已成功交易的缺失字段只保留在审计快照，不在信号卡片提醒。
 
-### 18.6 尚未完成的生产验收
+### 18.6 xiexiu 技术部署与数据同步证据
 
-以下项目不得因自动测试通过而标记为完成：
+2026-08-17 已按 P29 的 B 类完整发布流程完成技术部署，部署过程未启动 Engine、未调用 GMGN Swap，也未产生真实交易：
 
-1. xiexiu 部署、Migration 052、schema audit、Supervisor 角色与 Watch/Readiness 复核。
-2. 将服务器动态策略数据显式同步为五条资产路由，不能假设代码部署会复制本地数据库策略数据。
-3. xiexiu 部署后完成三策略与 P35 多路由的最终人工验收。
+| 项目 | 生产证据 |
+|---|---|
+| GitHub 代码分支 | `codex/p35-multi-keyword-asset-routing` |
+| Release SHA | `55d27703836cbd85e91a14f089bd5ba360ca4c06` |
+| 不可变 production tag | `p35-production-20260817`，解引用到同一 Release SHA |
+| 生产发布指针 | `/opt/xbot-releases/CURRENT` 记录同一 SHA/tag，部署时间 `2026-08-17T21:01:19+08:00` |
+| 数据库备份 | `/var/backups/xbot/xbot-before-p35-55d2770-20260817-204226.dump` |
+| 备份 SHA-256 | `e76691bc9350fe913da102428ad85f4671876ed7c5d4563287e5400a5c2ed826`，`postgres:postgres 0600`，隔离恢复验证通过 |
+| 应用回滚目录 | `/opt/xbot-rollback-fc15297-20260817-p35` |
+| Migration | `052_p35_dynamic_preset_asset_routes.sql` 已应用；二次执行 `applied=[]` |
+| Schema | production readonly audit 返回 `SCHEMA_AUDIT_OK` |
+| P35 生产数据 | 动态策略 `2`，Revision `2`，`5` 条有效路由、`8` 个有效关键词，全部为 `local_rpc / verified` |
+| Supervisor | `xbot.service` active/running，Supervisor、ingestion、execution 各 1 个，`NRestarts=0` |
+| Health | `/api/health.release_sha` 与 Release SHA 一致；`/xbot/api/health`、`/xbot/`、`/tg/` 均为 HTTP `200` |
+| Engine | `status=stopped`、`desired_running=false`、`armed=false` |
+| 交易队列 | 未决 Attempt / Intent / Order 为 `0 / 0 / 0` |
+| GMGN | 部署窗口请求与 429 均为零增量 |
 
-P35 当前已完成自动回归、四条路由的本地真实买入证据，以及 Ignore Coins 的真实买入和手动平仓闭环；尚未部署到 xiexiu，因此不能写成“生产部署完成”。
+生产数据库中保留了部署前既有的 Position `567 / INDEX / Robinhood / open_unprotected`。它会产生 `UNPROTECTED_LIVE_POSITIONS` advisory，但不是 blocker，且本次部署没有修改该仓位。
+
+### 18.7 尚未完成的生产实盘验收
+
+P35 已完成代码、自动回归、本地真实买入/平仓、GitHub 发布、xiexiu 技术部署和生产路由同步。当前唯一未完成项是：在用户单独批准启动 Engine 后，使用 xiexiu 新版本完成固定 CA、动态喊单、关注策略以及 P35 多路由的人工小额真实买入/平仓验收。
+
+因此当前可以标记为“生产技术部署完成”，不能标记为“生产真实资金验收完成”。Engine 必须继续保持 stopped/disarmed，部署证据提交和文档推送不得隐式启动实盘。
