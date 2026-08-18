@@ -40,6 +40,18 @@ test('P36.1 fixed strategy filters enabled candidates without changing selection
   assert.match(workspace, /onRelationActorHandlesChange=\{\(relation_actor_handles\) => setForm/);
 });
 
+test('P36.1 account pickers keep selected handles visible after the popover closes', () => {
+  const rules = read('frontend/src/pages/whitelist/AccountRulesStep.tsx');
+  const css = read('frontend/src/index.css');
+
+  assert.match(rules, /function SelectedAccountStrip/);
+  assert.equal((rules.match(/<SelectedAccountStrip/g) || []).length, 2);
+  assert.match(rules, /handles=\{selectedHandles\}[\s\S]{0,160}onRemove=\{toggleHandle\}/);
+  assert.equal((rules.match(/const finishSelection = \(\) => \{\s*onChange\(''\);\s*onClose\(\);/g) || []).length, 2);
+  assert.match(css, /\.p162-account-selected/);
+  assert.match(css, /\.p162-account-selected-chip/);
+});
+
 test('P36.1 category UI remains a read-only frontend selector boundary', () => {
   const component = read('frontend/src/pages/kol/KolCategoryBar.tsx');
   const model = read('frontend/src/pages/kol/kol-category.ts');

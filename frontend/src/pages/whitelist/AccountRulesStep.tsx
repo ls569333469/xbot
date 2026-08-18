@@ -66,6 +66,37 @@ function accountTagText(account: KolAccount) {
     : '未分类';
 }
 
+interface SelectedAccountStripProps {
+  handles: string[];
+  label: string;
+  disabled?: boolean;
+  onRemove: (handle: string) => void;
+}
+
+function SelectedAccountStrip({
+  handles,
+  label,
+  disabled = false,
+  onRemove,
+}: SelectedAccountStripProps) {
+  if (handles.length === 0) return null;
+  return <div className="p162-account-selected" aria-live="polite">
+    <span>已选 {handles.length} 个{label}</span>
+    <div>
+      {handles.map((handle) => <span className="p162-account-selected-chip" key={handle}>
+        <strong>@{handle}</strong>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={`移除 @${handle}`}
+          title={`移除 @${handle}`}
+          onClick={() => onRemove(handle)}
+        ><X size={12} /></button>
+      </span>)}
+    </div>
+  </div>;
+}
+
 function usePopoverPosition(
   open: boolean,
   anchorRef: React.RefObject<HTMLDivElement | null>,
@@ -191,6 +222,10 @@ function AccountPicker({
       ...selectableMatches,
     ])]);
   };
+  const finishSelection = () => {
+    onChange('');
+    onClose();
+  };
 
   useEffect(() => {
     const labelId = customCategoryId(activeCategoryKey);
@@ -218,8 +253,14 @@ function AccountPicker({
           onClose();
           event.currentTarget.blur();
         }}
-        placeholder={placeholder}
+        placeholder={selectedHandles.length > 0 ? `继续搜索，已选 ${selectedHandles.length} 个账号` : placeholder}
         aria-expanded={open && !disabled}
+      />
+      <SelectedAccountStrip
+        handles={selectedHandles}
+        label="账号"
+        disabled={disabled}
+        onRemove={toggleHandle}
       />
       {open && createPortal(
         <div className="p16-account-suggestions" style={position}>
@@ -273,7 +314,7 @@ function AccountPicker({
             <span>{selectedHandles.length > 0 ? `已选择 ${selectedHandles.length} 个账号` : '尚未选择账号'}</span>
             <div>
               <button type="button" disabled={selectedHandles.length === 0} onClick={() => onSelectedHandlesChange([])}>清空</button>
-              <button type="button" className="primary" onClick={onClose}>完成</button>
+              <button type="button" className="primary" onClick={finishSelection}>完成</button>
             </div>
           </div>
         </div>,
@@ -344,6 +385,10 @@ function ProjectTargetPicker({
       ...visibleHandles,
     ])]);
   };
+  const finishSelection = () => {
+    onChange('');
+    onClose();
+  };
 
   return (
     <div className="p16-account-picker" ref={anchorRef}>
@@ -359,8 +404,15 @@ function ProjectTargetPicker({
           onClose();
           event.currentTarget.blur();
         }}
-        placeholder={accounts.length ? '搜索项目账号' : '请先保留项目身份'}
+        placeholder={accounts.length
+          ? selectedHandles.length > 0 ? `继续搜索，已选 ${selectedHandles.length} 个项目账号` : '搜索项目账号'
+          : '请先保留项目身份'}
         aria-expanded={open && accounts.length > 0}
+      />
+      <SelectedAccountStrip
+        handles={selectedHandles}
+        label="项目账号"
+        onRemove={toggleHandle}
       />
       {open && accounts.length > 0 && createPortal(
         <div className="p16-account-suggestions" style={position}>
@@ -411,7 +463,7 @@ function ProjectTargetPicker({
             <span>{selectedHandles.length > 0 ? `已选择 ${selectedHandles.length} 个项目账号` : '尚未选择项目账号'}</span>
             <div>
               <button type="button" disabled={selectedHandles.length === 0} onClick={() => onSelectedHandlesChange([])}>清空</button>
-              <button type="button" className="primary" onClick={onClose}>完成</button>
+              <button type="button" className="primary" onClick={finishSelection}>完成</button>
             </div>
           </div>
         </div>,
