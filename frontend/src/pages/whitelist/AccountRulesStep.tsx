@@ -11,6 +11,15 @@ import type {
   WhitelistProjectAccount,
 } from '../../lib/types';
 import { eventTypeLabel, researchRoleLabel } from '../../lib/display-labels';
+import KolCategoryBar from '../kol/KolCategoryBar';
+import {
+  KOL_ECOSYSTEM_CATEGORIES,
+  accountMatchesCategory,
+  customCategoryId,
+  customCategoryKey,
+  ecosystemCategoryKey,
+  type KolCategoryKey,
+} from '../kol/kol-category';
 
 const DIRECT_EVENTS: Array<Exclude<ActivityType, 'follow' | 'unfollow'>> = ['tweet', 'retweet', 'quote', 'reply'];
 const RELATION_EVENTS: Array<Exclude<ActivityType, 'tweet' | 'unfollow'>> = ['retweet', 'quote', 'reply', 'follow'];
@@ -24,7 +33,6 @@ const ECOSYSTEM_LABELS: Record<string, string> = {
 };
 
 type PickerKind = 'ecosystem' | 'actor' | 'target';
-type AccountFilter = 'current' | 'cross_chain' | 'all' | 'unclassified';
 
 function normalizeHandle(value: string) {
   return value.trim()
@@ -125,30 +133,38 @@ function AccountPicker({
   onClose,
 }: AccountPickerProps) {
   const anchorRef = useRef<HTMLDivElement>(null);
-  const [filter, setFilter] = useState<AccountFilter>('all');
+  const [activeCategoryKey, setActiveCategoryKey] = useState<KolCategoryKey>('all');
   const position = usePopoverPosition(open, anchorRef);
   const enabledAccounts = useMemo(
     () => sortAccounts(accounts.filter((item) => item.enabled !== false), chainId),
     [accounts, chainId],
   );
+  const categoryLabels = useMemo(() => {
+    const labels = new Map<string, { id: string; name: string; account_count: number }>();
+    enabledAccounts.forEach((account) => (account.custom_labels || []).forEach((label) => {
+      const current = labels.get(label.id);
+      labels.set(label.id, { id: label.id, name: label.name, account_count: (current?.account_count || 0) + 1 });
+    }));
+    return [...labels.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+  }, [enabledAccounts]);
+  const categoryCounts = useMemo(() => {
+    const counts: Partial<Record<KolCategoryKey, number>> = { all: enabledAccounts.length };
+    KOL_ECOSYSTEM_CATEGORIES.forEach((category) => {
+      const key = ecosystemCategoryKey(category.value);
+      counts[key] = enabledAccounts.filter((account) => accountMatchesCategory(account, key)).length;
+    });
+    categoryLabels.forEach((label) => { counts[customCategoryKey(label.id)] = label.account_count; });
+    return counts;
+  }, [categoryLabels, enabledAccounts]);
   const needle = normalizeHandle(value);
-  const counts = useMemo(() => ({
-    current: enabledAccounts.filter((item) => item.chain_ids?.includes(chainId)).length,
-    cross_chain: enabledAccounts.filter((item) => item.chain_ids?.includes('cross_chain')).length,
-    all: enabledAccounts.length,
-    unclassified: enabledAccounts.filter((item) => !item.chain_ids?.length).length,
-  }), [chainId, enabledAccounts]);
   const matches = enabledAccounts.filter((item) => {
     const matchesSearch = !needle || [
       normalizeHandle(item.x_handle),
       String(item.display_name || '').toLowerCase(),
       ...(item.chain_ids || []),
+      ...(item.custom_labels || []).map((label) => label.name.toLowerCase()),
     ].some((part) => part.includes(needle));
-    const matchesFilter = filter === 'all'
-      || (filter === 'current' && item.chain_ids?.includes(chainId))
-      || (filter === 'cross_chain' && item.chain_ids?.includes('cross_chain'))
-      || (filter === 'unclassified' && !item.chain_ids?.length);
-    return matchesSearch && matchesFilter;
+    return matchesSearch && accountMatchesCategory(item, activeCategoryKey);
   });
   const selectedSet = new Set(selectedHandles.map(normalizeHandle));
   const selectableMatches = matches.map((item) => normalizeHandle(item.x_handle));
@@ -176,12 +192,17 @@ function AccountPicker({
     ])]);
   };
 
-  const filterOptions: Array<{ value: AccountFilter; label: string }> = [
-    { value: 'current', label: `当前链 ${chainId.toUpperCase()} ${counts.current}` },
-    { value: 'cross_chain', label: `跨链 ${counts.cross_chain}` },
-    { value: 'all', label: `全部 ${counts.all}` },
-    { value: 'unclassified', label: `未分类 ${counts.unclassified}` },
-  ];
+  useEffect(() => {
+    const labelId = customCategoryId(activeCategoryKey);
+    if (labelId && !categoryLabels.some((label) => label.id === labelId)) setActiveCategoryKey('all');
+  }, [activeCategoryKey, categoryLabels]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [onClose, open]);
 
   return (
     <div className="p16-account-picker" ref={anchorRef}>
@@ -203,7 +224,7 @@ function AccountPicker({
       {open && createPortal(
         <div className="p16-account-suggestions" style={position}>
           <div className="p16-account-suggestions-head">
-            <span><strong>生态账号库</strong> · {matches.length} 个结果 · 已选 {selectedHandles.length}</span>
+            <span><strong>KOL 账号库</strong> · {matches.length} 个结果 · 已选 {selectedHandles.length}</span>
             <button
               type="button"
               className="p16-icon-button"
@@ -213,17 +234,7 @@ function AccountPicker({
               onClick={onClose}
             ><X size={14} /></button>
           </div>
-          <div className="p162-account-filters" role="tablist" aria-label="生态账号分类">
-            {filterOptions.map((item) => (
-              <button
-                type="button"
-                key={item.value}
-                className={filter === item.value ? 'active' : ''}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => setFilter(item.value)}
-              >{item.label}</button>
-            ))}
-          </div>
+          <KolCategoryBar value={activeCategoryKey} labels={categoryLabels} counts={categoryCounts} onChange={setActiveCategoryKey} variant="picker" preserveFocus />
           <div className="p162-account-selection-bar">
             <button
               type="button"
@@ -256,7 +267,7 @@ function AccountPicker({
                 </button>
               );
             })}
-            {matches.length === 0 && <span className="p162-account-empty">{filter === 'current' ? `${chainId.toUpperCase()} 暂无已分类账号` : '没有匹配账号'}</span>}
+            {matches.length === 0 && <span className="p162-account-empty">当前分类没有匹配账号</span>}
           </div>
           <div className="p162-account-foot">
             <span>{selectedHandles.length > 0 ? `已选择 ${selectedHandles.length} 个账号` : '尚未选择账号'}</span>

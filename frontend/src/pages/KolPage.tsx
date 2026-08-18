@@ -1,5 +1,5 @@
 import { Pencil, Plus, RefreshCw, Search, Tags, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { DataTable } from '../components/ui/DataTable';
 import { Modal } from '../components/ui/Modal';
@@ -9,16 +9,17 @@ import type { EcosystemTag, KolAccount, KolLabel } from '../lib/types';
 import AccountResearchPanel from './kol/AccountResearchPanel';
 import KolLabelManager from './kol/KolLabelManager';
 import KolLabelPicker from './kol/KolLabelPicker';
+import KolCategoryBar from './kol/KolCategoryBar';
+import {
+  KOL_ECOSYSTEM_CATEGORIES,
+  categoryQuery,
+  customCategoryId,
+  type KolCategoryKey,
+} from './kol/kol-category';
 
 const TAG_OPTIONS: Array<{ value: EcosystemTag | 'all' | 'unclassified'; label: string }> = [
   { value: 'all', label: '全部' },
-  { value: 'sol', label: 'SOL' },
-  { value: 'bsc', label: 'BSC' },
-  { value: 'base', label: 'BASE' },
-  { value: 'eth', label: 'ETH' },
-  { value: 'robinhood', label: 'ROBINHOOD' },
-  { value: 'cross_chain', label: '跨链' },
-  { value: 'unclassified', label: '未分类' },
+  ...KOL_ECOSYSTEM_CATEGORIES,
 ];
 
 const TAG_LABELS = Object.fromEntries(TAG_OPTIONS.map((item) => [item.value, item.label]));
@@ -74,9 +75,9 @@ export default function KolPage() {
   const [saving, setSaving] = useState(false);
   const [retryingProfileId, setRetryingProfileId] = useState<string | null>(null);
   const [listError, setListError] = useState('');
-  const [tag, setTag] = useState<EcosystemTag | 'all' | 'unclassified'>('all');
-  const [labelId, setLabelId] = useState('all');
+  const [activeCategoryKey, setActiveCategoryKey] = useState<KolCategoryKey>('all');
   const [search, setSearch] = useState('');
+  const listRequestSequence = useRef(0);
   const { toast } = useToast();
 
   const [form, setForm] = useState({
@@ -90,23 +91,23 @@ export default function KolPage() {
   }, []);
 
   const fetchData = useCallback(async (showLoading = true) => {
+    const requestId = ++listRequestSequence.current;
     if (showLoading) setLoading(true);
     setListError('');
-    const params: Record<string, string> = {};
-    if (tag !== 'all') params.tag = tag;
-    if (labelId !== 'all') params.label_id = labelId;
+    const params = categoryQuery(activeCategoryKey);
     if (search.trim()) params.search = search.trim();
     try {
       const response = await api.kol.list(params);
+      if (requestId !== listRequestSequence.current) return;
       if (response.ok && response.data) {
         setData(response.data);
       } else {
         setListError(response.error || 'KOL 列表加载失败');
       }
     } finally {
-      if (showLoading) setLoading(false);
+      if (requestId === listRequestSequence.current) setLoading(false);
     }
-  }, [labelId, search, tag]);
+  }, [activeCategoryKey, search]);
 
   useEffect(() => {
     const timer = window.setTimeout(fetchData, 200);
@@ -116,10 +117,11 @@ export default function KolPage() {
   useEffect(() => { void fetchLabels(); }, [fetchLabels]);
 
   useEffect(() => {
-    if (labelId !== 'all' && !labels.some((label) => label.id === labelId)) {
-      setLabelId('all');
+    const labelId = customCategoryId(activeCategoryKey);
+    if (labelId && !labels.some((label) => label.id === labelId)) {
+      setActiveCategoryKey('all');
     }
-  }, [labelId, labels]);
+  }, [activeCategoryKey, labels]);
 
   useEffect(() => {
     if (!data.some((item) => item.profile_status === 'pending')) return undefined;
@@ -234,10 +236,9 @@ export default function KolPage() {
       {tab === 'research' ? <AccountResearchPanel /> : <>
       <div className="kol-toolbar">
         <div className="p16-search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 Handle、名称或标签" /></div>
-        <div className="kol-tag-filter">{TAG_OPTIONS.map((item) => <button type="button" key={item.value} className={tag === item.value ? 'active' : ''} onClick={() => setTag(item.value)}>{item.label}</button>)}</div>
-        <select className="input kol-custom-label-filter" aria-label="按自定义标签筛选" value={labelId} onChange={(event) => setLabelId(event.target.value)}><option value="all">全部自定义标签</option>{labels.map((label) => <option value={label.id} key={label.id}>{label.name} ({label.account_count})</option>)}</select>
         <button type="button" className="p16-icon-button kol-label-manager-button" title="管理自定义标签" aria-label="管理自定义标签" onClick={() => setLabelManagerOpen(true)}><Tags size={16} /></button>
         <button className="btn btn-primary" onClick={openAdd}><Plus size={16} />添加 KOL</button>
+        <KolCategoryBar value={activeCategoryKey} labels={labels} onChange={setActiveCategoryKey} />
       </div>
 
       <div className="kol-list-meta">{loading ? '加载中' : `${data.length} 个账号`}<span>权重仅用于重要性标记和排序</span></div>

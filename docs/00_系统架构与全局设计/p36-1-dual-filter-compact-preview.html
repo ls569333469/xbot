@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xbot P36.1 - 双筛选紧凑方案</title>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#09090b; --surface:#0f0f14; --surface-2:#13131a; --hover:#181820;
+      --border:rgba(255,255,255,.08); --border-strong:rgba(255,255,255,.15);
+      --text:#e7e7e7; --secondary:#aaa; --muted:#74747d;
+      --accent:#7c5cff; --success:#14f195; --warning:#f3ba2f; --cyan:#55c8e8;
+      --danger:#ff6166; --radius:8px;
+      --sans:Inter,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);letter-spacing:0}
+    button,input{font:inherit;letter-spacing:0} button{cursor:pointer}
+    .app{min-height:100vh;display:flex}.sidebar{position:fixed;inset:0 auto 0 0;width:220px;padding:18px 12px;border-right:1px solid var(--border);background:#0b0b0e;display:flex;flex-direction:column;z-index:10}
+    .brand{height:44px;padding:0 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;font-size:16px;font-weight:760}
+    .brand-mark{width:28px;height:28px;border-radius:6px;background:var(--accent);display:grid;place-items:center}.brand svg,.nav button svg{width:18px;height:18px}
+    .nav{padding-top:14px;display:grid;gap:4px}.nav button{height:40px;border:0;border-left:2px solid transparent;border-radius:6px;padding:0 11px;background:transparent;color:var(--secondary);display:flex;align-items:center;gap:10px;text-align:left}
+    .nav button.active{background:rgba(124,92,255,.12);border-left-color:var(--accent);color:var(--text)}
+    .side-note{margin-top:auto;padding:14px 10px 2px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}.side-note strong{display:block;color:var(--cyan);font-size:13px}
+    .main{width:calc(100% - 220px);margin-left:220px;min-width:0}.topbar{height:64px;padding:0 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px;position:sticky;top:0;z-index:8;background:rgba(9,9,11,.94)}
+    .crumb{display:flex;align-items:center;gap:8px;color:var(--muted)}.crumb strong{color:var(--text)}.crumb svg{width:16px}
+    .switch-link{height:36px;padding:0 11px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface-2);color:var(--text);display:flex;align-items:center;gap:7px;text-decoration:none;font-weight:650}.switch-link svg{width:16px}
+    .workspace{width:min(100%,1480px);padding:24px 28px 72px}.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.page-head h1{font-size:20px;line-height:28px}.page-head p{margin-top:3px;color:var(--secondary)}
+    .mode-tabs{display:inline-flex;border:1px solid var(--border);border-radius:7px;padding:3px;background:#0c0c10}.mode-tabs button{height:34px;padding:0 12px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-weight:650}.mode-tabs button.active{background:var(--surface-2);color:var(--text);box-shadow:inset 0 0 0 1px var(--border-strong)}
+    .filter-band{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:14px 0;display:grid;gap:12px}.filter-row{display:grid;grid-template-columns:92px minmax(0,1fr);gap:12px;align-items:center}.filter-title{color:var(--muted);font-size:12px;font-weight:700;display:flex;align-items:center;gap:7px}.filter-title svg{width:15px;height:15px}
+    .segments{display:flex;gap:6px;flex-wrap:wrap}.segments button{height:34px;padding:0 11px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--secondary)}.segments button:hover{border-color:var(--border-strong);background:var(--hover)}.segments button.active{border-color:rgba(85,200,232,.55);background:rgba(85,200,232,.08);color:#8edcf0}.segments button.custom{border-style:dashed}.segments button.custom.active{border-style:solid;border-color:rgba(124,92,255,.58);background:rgba(124,92,255,.1);color:#d2c8ff}
+    .label-line{display:flex;align-items:center;gap:8px;min-width:0}.label-combo{position:relative;width:min(360px,100%)}.combo-trigger{width:100%;height:38px;padding:0 10px;border:1px solid var(--border-strong);border-radius:6px;background:#0b0b0f;color:var(--text);display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left}.combo-trigger span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.combo-trigger svg{width:16px;flex:none;color:var(--muted)}
+    .combo-menu{position:absolute;left:0;right:0;top:44px;z-index:20;border:1px solid var(--border-strong);border-radius:7px;background:#121218;box-shadow:0 18px 48px rgba(0,0,0,.55);display:none;overflow:hidden}.combo-menu.open{display:block}.combo-search{height:44px;padding:7px;border-bottom:1px solid var(--border);position:relative}.combo-search svg{position:absolute;left:17px;top:14px;width:15px;color:var(--muted)}.combo-search input{width:100%;height:30px;padding:0 9px 0 32px;border:1px solid var(--border);border-radius:5px;background:#0b0b0f;color:var(--text);outline:none}.combo-options{max-height:260px;overflow:auto;padding:5px}.combo-options button{width:100%;min-height:38px;padding:7px 9px;border:0;border-radius:5px;background:transparent;color:var(--secondary);display:flex;align-items:center;justify-content:space-between;text-align:left}.combo-options button:hover,.combo-options button.active{background:var(--hover);color:var(--text)}.combo-options button.active{box-shadow:inset 2px 0 0 var(--accent)}.combo-options small{color:var(--muted)}
+    .filter-clear{width:36px;height:36px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--muted);display:grid;place-items:center}.filter-clear:hover{color:var(--text);background:var(--hover)}.filter-clear svg{width:16px}
+    .active-summary{min-height:42px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0}.query-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.query-chips>span:first-child{color:var(--muted);font-size:12px;margin-right:2px}.query-chip{min-height:28px;padding:3px 8px;border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);display:inline-flex;align-items:center;gap:6px;font-size:12px}.query-chip.eco{color:#8edcf0}.query-chip.label{color:#d2c8ff}.query-chip b{color:var(--muted);font-weight:500}.result-count{color:var(--secondary);white-space:nowrap}.result-count strong{color:var(--text);font-size:16px;margin-right:4px}
+    .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0}.search{width:min(410px,100%);position:relative}.search svg{position:absolute;left:11px;top:11px;width:16px;color:var(--muted)}.search input{width:100%;height:39px;padding:0 12px 0 36px;border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--text);outline:none}.search input:focus{border-color:var(--accent)}
+    .selection-actions{display:none;align-items:center;gap:8px}.fixed-mode .selection-actions{display:flex}.btn{height:38px;padding:0 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface-2);color:var(--text);display:inline-flex;align-items:center;gap:7px;font-weight:650}.btn:hover{background:var(--hover)}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn svg{width:16px}
+    .selected-strip{display:none;min-height:54px;margin-bottom:12px;padding:9px 0;border-bottom:1px solid var(--border);align-items:flex-start;gap:10px}.fixed-mode .selected-strip{display:flex}.selected-title{width:92px;padding-top:5px;color:var(--muted);font-size:12px}.selected-chips{display:flex;gap:6px;flex-wrap:wrap;flex:1}.selected-chip{min-height:31px;padding:4px 6px 4px 9px;border:1px solid rgba(20,241,149,.28);border-radius:6px;background:rgba(20,241,149,.05);display:inline-flex;align-items:center;gap:7px}.selected-chip button{width:20px;height:20px;border:0;background:transparent;color:var(--muted);display:grid;place-items:center}.selected-chip button:hover{color:var(--danger)}.selected-chip svg{width:13px}
+    .account-table{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface)}.table-head,.account-row{display:grid;grid-template-columns:42px minmax(230px,1.3fr) minmax(150px,.7fr) minmax(250px,1fr) 100px 100px;align-items:center}.table-head{min-height:42px;background:#0c0c10;color:var(--muted);font-size:11px;font-weight:700}.table-head>div,.account-row>div{padding:10px 12px;min-width:0}.account-row{min-height:82px;border-top:1px solid var(--border)}.account-row:hover{background:rgba(255,255,255,.015)}.account-row.selected{box-shadow:inset 3px 0 0 var(--success);background:rgba(20,241,149,.025)}
+    .check{width:22px;height:22px;border:1px solid var(--border-strong);border-radius:5px;background:transparent;color:transparent;display:none;place-items:center}.fixed-mode .check{display:grid}.check.active{border-color:rgba(20,241,149,.6);background:rgba(20,241,149,.12);color:var(--success)}.check svg{width:14px}
+    .account-cell{display:flex;align-items:center;gap:11px}.avatar{width:38px;height:38px;border-radius:50%;background:#252630;color:#d9d9df;display:grid;place-items:center;font-weight:800;flex:none}.account-copy{min-width:0}.account-copy strong,.account-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-copy strong{font-size:14px}.account-copy span{color:var(--muted);font-size:12px;margin-top:2px}.tags{display:flex;gap:5px;flex-wrap:wrap}.tag{min-height:25px;padding:3px 7px;border:1px solid var(--border-strong);border-radius:5px;color:var(--secondary);font-size:11px}.tag.eco{color:#8edcf0;border-color:rgba(85,200,232,.25)}.tag.custom{color:#d2c8ff;border-color:rgba(124,92,255,.3);background:rgba(124,92,255,.05)}.weight{font-weight:750}.bar{width:44px;height:4px;background:#292932;margin-left:7px;display:inline-block;vertical-align:middle}.bar i{display:block;height:100%;background:var(--cyan)}.state{display:flex;align-items:center;gap:6px;color:var(--success);font-size:12px}.state i{width:7px;height:7px;border-radius:50%;background:var(--success)}
+    .empty{padding:44px;text-align:center;color:var(--secondary)}.foot-note{margin-top:12px;color:var(--muted);font-size:12px}.toast{position:fixed;right:24px;bottom:24px;padding:10px 13px;border:1px solid var(--border-strong);border-radius:7px;background:#17171e;transform:translateY(16px);opacity:0;transition:.18s;pointer-events:none;z-index:30}.toast.show{opacity:1;transform:translateY(0)}
+    @media(max-width:980px){.table-head,.account-row{grid-template-columns:42px 1.2fr .7fr 1fr}.table-head>div:nth-child(5),.table-head>div:nth-child(6),.account-row>div:nth-child(5),.account-row>div:nth-child(6){display:none}}
+    @media(max-width:760px){.sidebar{display:none}.main{width:100%;margin-left:0}.topbar{padding:0 14px}.switch-link span{display:none}.workspace{padding:18px 14px 60px}.page-head{display:block}.mode-tabs{margin-top:12px;width:100%}.mode-tabs button{flex:1}.filter-row{grid-template-columns:1fr}.filter-title{margin-top:3px}.active-summary{align-items:flex-start}.result-count{padding-top:4px}.toolbar{align-items:stretch;flex-direction:column}.search{width:100%}.selection-actions{justify-content:flex-end}.table-head{display:none}.account-row{grid-template-columns:34px minmax(0,1fr);padding:9px 5px}.account-row>div{grid-column:2;padding:4px 8px}.account-row>div:first-child{grid-column:1;grid-row:1/5}.selected-strip{display:none!important}.account-table{border-radius:7px}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark"><i data-lucide="trending-up"></i></span>xbot</div>
+      <nav class="nav"><button><i data-lucide="layout-dashboard"></i>总览</button><button class="active"><i data-lucide="users"></i>KOL 账号</button><button><i data-lucide="route"></i>策略管理</button><button><i data-lucide="radio"></i>信号</button><button><i data-lucide="briefcase-business"></i>持仓</button></nav>
+      <div class="side-note"><strong>P36.1 · 横向统一分类</strong>最终选择方案，不连接后端</div>
+    </aside>
+    <main class="main" id="main">
+      <header class="topbar"><div class="crumb"><span>账号资产库</span><i data-lucide="chevron-right"></i><strong id="crumbMode">KOL 账号</strong></div><a class="switch-link" href="p36-1-fixed-strategy-inline-picker-preview.html"><i data-lucide="route"></i><span>查看固定 CA 策略</span></a></header>
+      <div class="workspace">
+        <div class="page-head"><div><h1 id="pageTitle">KOL 账号</h1><p id="pageSubtitle">生态与自定义标签统一为一条分类栏，一次选择一个分类。</p></div><div class="mode-tabs"><button class="active" data-mode="kol">KOL 列表</button><button data-mode="fixed">账号选择状态</button></div></div>
+
+        <section class="filter-band"><div class="filter-row"><div class="filter-title"><i data-lucide="tags"></i>KOL 分类</div><div class="label-line"><div class="segments" id="categories"></div><button class="filter-clear" id="clearFilters" title="恢复全部账号"><i data-lucide="rotate-ccw"></i></button></div></div></section>
+
+        <div class="active-summary"><div class="query-chips" id="queryChips"></div><div class="result-count"><strong id="resultCount">0</strong>个账号</div></div>
+        <div class="toolbar"><div class="search"><i data-lucide="search"></i><input id="accountSearch" placeholder="搜索 Handle、名称或标签"></div><div class="selection-actions"><button class="btn" id="selectVisible"><i data-lucide="list-checks"></i>全选当前结果</button><button class="btn primary" id="confirmSelection"><i data-lucide="check"></i>确认选择（0）</button></div></div>
+        <div class="selected-strip"><div class="selected-title">已选账号</div><div class="selected-chips" id="selectedChips"></div></div>
+
+        <section class="account-table">
+          <div class="table-head"><div></div><div>账号</div><div>所属生态</div><div>自定义标签</div><div>权重</div><div>状态</div></div>
+          <div id="accountRows"></div>
+        </section>
+        <p class="foot-note" id="footNote">账号可以属于多个分类；分类栏一次只用于查看一个集合。</p>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    const accounts = [
+      {handle:'haydenzadams',name:'Uniswap CEO',ecos:['cross_chain'],labels:['Uniswap','DEX'],weight:10},
+      {handle:'uniswap',name:'Uniswap 官方',ecos:['cross_chain'],labels:['Uniswap','项目官方'],weight:10},
+      {handle:'tradepools',name:'Pools',ecos:['cross_chain'],labels:['Uniswap','流动性'],weight:7},
+      {handle:'ocandocrypto',name:'Uniswap 开发者关系',ecos:[],labels:['Uniswap','开发者关系'],weight:5},
+      {handle:'zacklabadie',name:'Uniswap 产品',ecos:[],labels:['Uniswap','产品'],weight:5},
+      {handle:'cz_binance',name:'CZ',ecos:['cross_chain'],labels:['币安','交易所'],weight:10},
+      {handle:'heyibinance',name:'Yi He',ecos:['cross_chain'],labels:['币安','交易所'],weight:9},
+      {handle:'TrustWallet',name:'Trust Wallet',ecos:['bsc'],labels:['币安','钱包'],weight:8},
+      {handle:'BNBCHAIN',name:'BNB Chain',ecos:['bsc'],labels:['币安','项目官方'],weight:8},
+      {handle:'PancakeSwap',name:'PancakeSwap',ecos:['bsc'],labels:['DEX','项目官方'],weight:7},
+      {handle:'ArtificiallyInu',name:'Artificially Inu',ecos:['robinhood'],labels:['AI','Meme'],weight:6},
+      {handle:'thinkingcatRH',name:'Thinking Cat',ecos:['robinhood'],labels:['AI','项目官方'],weight:7},
+      {handle:'xueqiu88',name:'雪球',ecos:['cross_chain'],labels:['测试账号','KOL'],weight:8},
+      {handle:'wanshenme',name:'今天玩什么',ecos:['cross_chain'],labels:['测试账号','KOL'],weight:8}
+    ];
+    const ecosystemOptions=[['sol','SOL'],['bsc','BSC'],['base','BASE'],['eth','ETH'],['robinhood','ROBINHOOD'],['cross_chain','跨链'],['unclassified','未分类']];
+    const ecosystemNames=Object.fromEntries(ecosystemOptions); let activeCategory='all', query='', mode='kol'; const selected=new Set(['uniswap','haydenzadams']);
+    const allLabels=()=>[...new Set(accounts.flatMap(a=>a.labels))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
+    const labelCount=name=>accounts.filter(a=>a.labels.includes(name)).length;
+    const ecoCount=id=>accounts.filter(a=>id==='all'||(id==='unclassified'?!a.ecos.length:a.ecos.includes(id))).length;
+    const categoryOptions=()=>[
+      {key:'all',name:'全部',kind:'all',count:accounts.length},
+      ...ecosystemOptions.map(([id,name])=>({key:`ecosystem:${id}`,name,kind:'ecosystem',count:ecoCount(id)})),
+      ...allLabels().map(name=>({key:`custom:${name}`,name,kind:'custom',count:labelCount(name)})),
+    ];
+    const filtered=()=>accounts.filter(a=>{const [kind,...rest]=activeCategory.split(':');const value=rest.join(':');const categoryOk=kind==='all'||(kind==='ecosystem'?(value==='unclassified'?!a.ecos.length:a.ecos.includes(value)):a.labels.includes(value));const needle=query.trim().toLowerCase();return categoryOk&&(!needle||[a.handle,a.name,...a.ecos,...a.labels].some(v=>v.toLowerCase().includes(needle)))});
+    function renderCategories(){document.getElementById('categories').innerHTML=categoryOptions().map(item=>`<button class="${item.kind==='custom'?'custom ':''}${activeCategory===item.key?'active':''}" data-category="${item.key}" title="${item.kind==='custom'?'自定义标签':item.kind==='ecosystem'?'所属生态':'全部账号'}">${item.name} ${item.count}</button>`).join('');document.querySelectorAll('[data-category]').forEach(button=>button.onclick=()=>{activeCategory=button.dataset.category;render()})}
+    function renderChips(){const item=categoryOptions().find(option=>option.key===activeCategory);document.getElementById('queryChips').innerHTML=`<span>当前分类</span>${item&&item.kind!=='all'?`<span class="query-chip ${item.kind==='custom'?'label':'eco'}"><b>${item.kind==='custom'?'自定义':'生态'}</b>${item.name}</span>`:'<span class="query-chip"><b>全部</b>全部账号</span>'}`}
+    function renderSelected(){document.getElementById('selectedChips').innerHTML=selected.size?[...selected].map(h=>`<span class="selected-chip">@${h}<button data-remove="${h}" title="移除"><i data-lucide="x"></i></button></span>`).join(''):'<span style="color:var(--muted);padding-top:5px">尚未选择账号</span>';document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{selected.delete(b.dataset.remove);render()});document.getElementById('confirmSelection').innerHTML=`<i data-lucide="check"></i>确认选择（${selected.size}）`}
+    function renderRows(){const rows=filtered();document.getElementById('resultCount').textContent=rows.length;document.getElementById('accountRows').innerHTML=rows.length?rows.map(a=>{const checked=selected.has(a.handle.toLowerCase());const ecos=a.ecos.length?a.ecos.map(x=>ecosystemNames[x]).join(' · '):'未分类';return `<div class="account-row ${checked&&mode==='fixed'?'selected':''}"><div><button class="check ${checked?'active':''}" data-check="${a.handle.toLowerCase()}"><i data-lucide="check"></i></button></div><div class="account-cell"><span class="avatar">${a.handle[0].toUpperCase()}</span><span class="account-copy"><strong>@${a.handle}</strong><span>${a.name}</span></span></div><div><span class="tag eco">${ecos}</span></div><div class="tags">${a.labels.map(x=>`<span class="tag custom">${x}</span>`).join('')}</div><div><span class="weight">${a.weight}</span><span class="bar"><i style="width:${a.weight*10}%"></i></span></div><div class="state"><i></i>活跃</div></div>`}).join(''):'<div class="empty">当前分类没有账号</div>';document.querySelectorAll('[data-check]').forEach(b=>b.onclick=()=>{const h=b.dataset.check;selected.has(h)?selected.delete(h):selected.add(h);render()})}
+    function renderMode(){const fixed=mode==='fixed';document.getElementById('main').classList.toggle('fixed-mode',fixed);document.getElementById('crumbMode').textContent=fixed?'固定 CA 账号选择':'KOL 账号';document.getElementById('pageTitle').textContent=fixed?'固定 CA 已选账号状态':'KOL 账号';document.getElementById('pageSubtitle').textContent=fixed?'切换分类不会清除已选账号，保存策略时写入明确名单。':'生态与自定义标签统一为一条分类栏，一次选择一个分类。';document.getElementById('footNote').textContent=fixed?'确认选择只更新当前策略草稿；最终保存后才同步 Watch 和关系。':'账号可以属于多个分类；分类栏一次只用于查看一个集合。';document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode))}
+    function render(){renderMode();renderCategories();renderChips();renderSelected();renderRows();lucide.createIcons()}
+    document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{mode=b.dataset.mode;render()});
+    document.getElementById('accountSearch').oninput=e=>{query=e.target.value;renderRows();lucide.createIcons()};
+    document.getElementById('clearFilters').onclick=()=>{activeCategory='all';query='';document.getElementById('accountSearch').value='';render()};document.getElementById('selectVisible').onclick=()=>{filtered().forEach(a=>selected.add(a.handle.toLowerCase()));render()};
+    document.getElementById('confirmSelection').onclick=()=>{const t=document.getElementById('toast');t.textContent=`已确认 ${selected.size} 个生态账号，搜索框不会吞掉选择结果`;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)};
+    render();
+  </script>
+</body>
+</html>
