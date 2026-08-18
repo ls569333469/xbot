@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../../lib/api';
 import type { X6551Status } from '../../lib/types';
 import WhitelistPage from '../WhitelistPage';
@@ -33,6 +34,7 @@ function watchStatus(status: X6551Status | null) {
 }
 
 export default function FixedStrategyWorkspacePage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [summary, setSummary] = useState<FixedSummary>(EMPTY_SUMMARY);
   const [watch, setWatch] = useState<X6551Status | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -57,6 +59,14 @@ export default function FixedStrategyWorkspacePage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const clearSelectedProject = useCallback(() => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('whitelistId');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const summaryItems: WorkspaceSummaryItem[] = [
     { label: '固定目标', value: summary.fixedCount ?? '--', detail: '已知 CA 与生态关系' },
     { label: '未发币监控', value: summary.launchCount ?? '--', detail: '项目身份与发 CA 监控' },
@@ -75,7 +85,11 @@ export default function FixedStrategyWorkspacePage() {
       onRefresh={async () => { await refresh(); setRefreshKey((value) => value + 1); }}
       refreshing={refreshing}
     >
-      <WhitelistPage key={refreshKey} />
+      <WhitelistPage
+        key={refreshKey}
+        initialWhitelistId={searchParams.get('whitelistId')}
+        onInitialWorkspaceClose={clearSelectedProject}
+      />
     </StrategyWorkspaceLayout>
   );
 }

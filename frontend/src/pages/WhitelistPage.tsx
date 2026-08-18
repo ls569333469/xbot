@@ -1,5 +1,5 @@
 import { Copy, FilePlus2, Pause, Pencil, Play, RefreshCw, Search, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { DataTable } from '../components/ui/DataTable';
 import { ProgressBar } from '../components/ui/ProgressBar';
@@ -70,7 +70,12 @@ function launchStatusLabel(status: LaunchMonitor['status']) {
   return { active: '监控中', paused: '已暂停', triggered: '已发现', expired: '已过期' }[status];
 }
 
-export default function WhitelistPage() {
+interface WhitelistPageProps {
+  initialWhitelistId?: string | null;
+  onInitialWorkspaceClose?: () => void;
+}
+
+export default function WhitelistPage({ initialWhitelistId, onInitialWorkspaceClose }: WhitelistPageProps = {}) {
   const [data, setData] = useState<WhitelistEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -90,6 +95,7 @@ export default function WhitelistPage() {
   const [workspaceVersion, setWorkspaceVersion] = useState(0);
   const [activationRetryId, setActivationRetryId] = useState<string | null>(null);
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
+  const handledInitialId = useRef<string | null>(null);
   const { toast } = useToast();
 
   const fetchData = useCallback(async () => {
@@ -148,22 +154,45 @@ export default function WhitelistPage() {
     setView('workspace');
   };
 
-  const openEdit = async (item: WhitelistEntry) => {
-    setEditLoadingId(item.id);
+  const openEditById = useCallback(async (id: string) => {
+    setEditLoadingId(id);
     const [response, dependenciesReady] = await Promise.all([
-      api.whitelist.get(item.id),
+      api.whitelist.get(id),
       ensureWorkspaceDependencies(),
     ]);
     setEditLoadingId(null);
     if (!dependenciesReady || !response.ok || !response.data) {
       toast(response.error || '白名单详情加载失败', 'error');
-      return;
+      return false;
     }
     setEditing(response.data);
     setDraftSeed(response.data);
     setWorkspaceVersion((value) => value + 1);
     setView('workspace');
+    return true;
+  }, [ensureWorkspaceDependencies, toast]);
+
+  const openEdit = async (item: WhitelistEntry) => {
+    await openEditById(item.id);
   };
+
+  useEffect(() => {
+    const id = String(initialWhitelistId || '').trim();
+    if (!id) {
+      handledInitialId.current = null;
+      return;
+    }
+    if (handledInitialId.current === id) return;
+    handledInitialId.current = id;
+    if (!/^[1-9]\d*$/.test(id)) {
+      toast('固定项目链接无效，已返回项目列表', 'error');
+      onInitialWorkspaceClose?.();
+      return;
+    }
+    void openEditById(id).then((opened) => {
+      if (!opened) onInitialWorkspaceClose?.();
+    });
+  }, [initialWhitelistId, onInitialWorkspaceClose, openEditById, toast]);
 
   const openResearch = (draft: WhitelistDraftPayload = {}) => {
     setDraftSeed(draft);
@@ -240,8 +269,9 @@ export default function WhitelistPage() {
   }
 
   if (view === 'workspace') {
-    return <WhitelistWorkspace key={workspaceVersion} seed={draftSeed} editing={editing} whitelists={data} templates={templates} kolAccounts={kolAccounts} onCancel={() => setView('list')} onOpenResearch={openResearch} onSaved={() => {
+    return <WhitelistWorkspace key={workspaceVersion} seed={draftSeed} editing={editing} whitelists={data} templates={templates} kolAccounts={kolAccounts} onCancel={() => { setView('list'); onInitialWorkspaceClose?.(); }} onOpenResearch={openResearch} onSaved={() => {
       setView('list');
+      onInitialWorkspaceClose?.();
       void fetchData();
     }} onTemplatesChanged={fetchTemplates} />;
   }
