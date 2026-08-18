@@ -292,12 +292,22 @@ export type WhitelistDraftPayload = Partial<WhitelistEntry> & {
   relation_target_policy?: 'all_selected_project_identities' | 'manual';
 };
 
+export interface KolLabel {
+  id: string;
+  name: string;
+  account_count: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface KolAccount {
   id: string;
   x_user_id: string;
   x_handle: string;
   display_name: string;
   chain_ids: EcosystemTag[];
+  custom_labels: Array<Pick<KolLabel, 'id' | 'name'>>;
+  custom_label_ids?: string[];
   weight: number;
   enabled: boolean;
   profile_status?: 'verified' | 'pending';

@@ -1595,7 +1595,7 @@ body {
 .p21-template-summary > div:last-child { border-bottom: 0; }
 .p21-template-summary span { color: var(--color-text-secondary); font-size: 11px; }
 .p21-follow-events { margin-top: 14px; }
-.kol-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, auto) auto; align-items: center; gap: 10px; }
+.kol-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, auto) minmax(160px, 200px) 34px auto; align-items: center; gap: 10px; }
 .kol-tag-filter,
 .kol-tag-editor { display: flex; flex-wrap: wrap; gap: 5px; }
 .kol-tag-filter button,
@@ -1616,6 +1616,32 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 .kol-tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .kol-tag-list span { padding: 3px 6px; border: 1px solid var(--border-base); border-radius: 3px; color: var(--color-text-secondary); font-size: 9px; }
+.kol-tag-list.custom span { border-color: rgba(115, 213, 237, .24); color: var(--color-text-primary); }
+.kol-custom-label-filter { min-height: 34px; padding: 0 9px; font-size: 10px; }
+.kol-label-manager-button { width: 34px; height: 34px; }
+.kol-label-picker { position: relative; display: grid; gap: 7px; min-width: 0; }
+.kol-label-selection { display: flex; flex-wrap: wrap; gap: 5px; min-height: 27px; }
+.kol-label-selection > span { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 5px 4px 7px; border: 1px solid rgba(115, 213, 237, .32); border-radius: 4px; color: var(--color-text-primary); background: rgba(115, 213, 237, .06); font-size: 10px; overflow-wrap: anywhere; }
+.kol-label-selection > span button { display: inline-grid; place-items: center; width: 18px; height: 18px; flex: 0 0 18px; padding: 0; border: 0; color: var(--color-text-secondary); background: transparent; cursor: pointer; }
+.kol-label-selection > small, .kol-label-limit, .kol-label-empty { color: var(--color-text-muted); font-size: 10px; }
+.kol-label-search { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; min-height: 34px; border: 1px solid var(--border-base); border-radius: 4px; background: var(--color-input); }
+.kol-label-search svg { justify-self: end; color: var(--color-text-muted); }
+.kol-label-search input { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 0; outline: 0; color: var(--color-text-primary); background: transparent; font-size: 11px; }
+.kol-label-options { max-height: 180px; overflow-y: auto; border: 1px solid var(--border-base); border-radius: 4px; background: var(--color-popover); }
+.kol-label-options > button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 34px; padding: 6px 9px; border: 0; border-bottom: 1px solid var(--border-base); color: var(--color-text-primary); background: transparent; text-align: left; cursor: pointer; }
+.kol-label-options > button:last-of-type { border-bottom: 0; }
+.kol-label-options > button:hover { background: var(--color-surface-hover); }
+.kol-label-options > button small { color: var(--color-text-muted); font-size: 9px; white-space: nowrap; }
+.kol-label-options > button.create { justify-content: flex-start; color: var(--color-accent); }
+.kol-label-empty { display: block; padding: 9px; }
+.kol-label-limit { justify-self: end; }
+.kol-label-manager { display: grid; max-height: min(520px, 64vh); overflow-y: auto; border: 1px solid var(--border-base); border-radius: 4px; }
+.kol-label-manager > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 11px; border-bottom: 1px solid var(--border-base); }
+.kol-label-manager > div:last-child { border-bottom: 0; }
+.kol-label-manager > div > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.kol-label-manager strong { overflow-wrap: anywhere; color: var(--color-text-primary); font-size: 11px; }
+.kol-label-manager small { color: var(--color-text-muted); font-size: 9px; }
+.kol-label-manager-edit { width: 100%; display: grid !important; grid-template-columns: minmax(0, 1fr) 30px 30px; align-items: center; gap: 6px !important; }
 .kol-weight { display: flex; align-items: center; gap: 8px; }
 .kol-weight strong { width: 14px; font-size: 11px; }
 .kol-weight i { width: 52px; height: 3px; overflow: hidden; background: #2a2e36; }
@@ -2285,7 +2311,7 @@ body {
 .p164-template-modal-body p { margin: 3px 0 0; color: var(--color-text-muted); font-size: 9px; line-height: 1.6; }
 
 @media (max-width: 1180px) {
-  .kol-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .kol-toolbar { grid-template-columns: minmax(0, 1fr) minmax(160px, 190px) 34px auto; }
   .kol-tag-filter { grid-column: 1 / -1; grid-row: 2; }
   .p16-workspace-grid { grid-template-columns: 184px minmax(0, 1fr); }
   .p16-draft-aside {
@@ -2335,7 +2361,12 @@ body {
 }
 
 @media (max-width: 680px) {
-  .kol-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .kol-toolbar { grid-template-columns: minmax(0, 1fr) 36px 36px; }
+  .kol-toolbar > .p16-search-field { grid-column: 1; grid-row: 1; }
+  .kol-toolbar > .kol-label-manager-button { grid-column: 2; grid-row: 1; }
+  .kol-toolbar > .btn { grid-column: 3; grid-row: 1; }
+  .kol-custom-label-filter { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+  .kol-tag-filter { grid-column: 1 / -1; grid-row: 3; overflow-x: auto; flex-wrap: nowrap; }
   .kol-toolbar > .btn { width: 36px; overflow: hidden; padding: 0; font-size: 0; }
   .kol-list-meta span { display: none; }
   .p16-workspace-head { align-items: flex-start; }

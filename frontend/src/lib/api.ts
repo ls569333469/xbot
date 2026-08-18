@@ -1,5 +1,5 @@
 import {
-  WhitelistEntry, KolAccount, TradeSignal, ApiResponse,
+  WhitelistEntry, KolAccount, KolLabel, TradeSignal, ApiResponse,
   PaginatedResponse, XActivity, Position, X6551Status, X6551WatchPlan,
   ChainId, ChainConfig, TradeAttempt, TradeAttemptDetails, TradeRuntimePolicy,
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
@@ -59,6 +59,11 @@ function validatePayloadSchema(endpoint: string, payload: any) {
       if ('tokenAddress' in item || 'projectName' in item) {
         console.warn(`%c[Schema Drift Warning] Obsolete camelCase fields (tokenAddress/projectName) detected in Whitelist response!`, 'color: #ffa502;');
       }
+    });
+  } else if (/^\/api\/kol\/labels(?:[/?]|$)/.test(endpoint)) {
+    items.forEach(item => {
+      if (typeof item.deleted === 'boolean') return;
+      checkKeys(item, ['id', 'name', 'account_count'], 'KolLabel');
     });
   } else if (/^\/api\/kol(?:[/?]|$)/.test(endpoint)) {
     items.forEach(item => {
@@ -221,6 +226,12 @@ export const api = {
     retryProfile: (id: string) => fetchApi<ApiResponse<KolAccount>>(`/api/kol/${id}/profile/retry`, { method: 'POST' }),
     remove: (id: string) => fetchApi<ApiResponse<boolean>>(`/api/kol/${id}`, { method: 'DELETE' }),
     getActivities: (id: string) => fetchApi<PaginatedResponse<XActivity>>(`/api/kol/${id}/activities`),
+    labels: {
+      list: (params?: Record<string, string>) => fetchApi<ApiResponse<KolLabel[]>>(`/api/kol/labels${params ? `?${new URLSearchParams(params).toString()}` : ''}`),
+      create: (name: string) => fetchApi<ApiResponse<KolLabel>>('/api/kol/labels', { method: 'POST', body: JSON.stringify({ name }) }),
+      update: (id: string, name: string) => fetchApi<ApiResponse<KolLabel>>(`/api/kol/labels/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+      remove: (id: string) => fetchApi<ApiResponse<{ deleted: boolean; id: string }>>(`/api/kol/labels/${id}`, { method: 'DELETE' }),
+    },
   },
 
   dynamicSignal: {

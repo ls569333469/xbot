@@ -1,28 +1,58 @@
 const db = require('../../lib/db');
 
-async function getAll(filters = {}) {
+const CUSTOM_LABELS_PROJECTION = `COALESCE((
+  SELECT json_agg(
+    json_build_object('id', label.id::text, 'name', label.name)
+    ORDER BY lower(label.name), label.id
+  )
+  FROM x_kol_account_labels AS account_label
+  JOIN x_kol_labels AS label ON label.id = account_label.label_id
+  WHERE account_label.kol_id = kol.id
+), '[]'::json) AS custom_labels`;
+
+async function getAll(filters = {}, executor = db) {
   const tag = String(filters.tag || filters.chain_id || '').trim().toLowerCase();
   const search = String(filters.search || '').trim();
-  const res = await db.query(
-    `SELECT * FROM x_kol_accounts
-     WHERE ($1 = '' OR x_handle ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%')
+  const labelId = String(filters.label_id || '').trim();
+  const res = await executor.query(
+    `SELECT kol.*, ${CUSTOM_LABELS_PROJECTION}
+     FROM x_kol_accounts AS kol
+     WHERE ($1 = ''
+       OR kol.x_handle ILIKE '%' || $1 || '%'
+       OR kol.display_name ILIKE '%' || $1 || '%'
+       OR EXISTS (
+         SELECT 1
+         FROM x_kol_account_labels AS searched_account_label
+         JOIN x_kol_labels AS searched_label ON searched_label.id = searched_account_label.label_id
+         WHERE searched_account_label.kol_id = kol.id
+           AND searched_label.name ILIKE '%' || $1 || '%'
+       ))
        AND ($2 = ''
-         OR ($2 = 'unclassified' AND cardinality(COALESCE(chain_ids, '{}')) = 0)
-         OR $2 = ANY(COALESCE(chain_ids, '{}')))
-     ORDER BY weight DESC, lower(x_handle)`,
-    [search, tag]
+         OR ($2 = 'unclassified' AND cardinality(COALESCE(kol.chain_ids, '{}')) = 0)
+         OR $2 = ANY(COALESCE(kol.chain_ids, '{}')))
+       AND ($3 = '' OR EXISTS (
+         SELECT 1 FROM x_kol_account_labels AS filtered_account_label
+         WHERE filtered_account_label.kol_id = kol.id
+           AND filtered_account_label.label_id::text = $3
+       ))
+     ORDER BY kol.weight DESC, lower(kol.x_handle)`,
+    [search, tag, labelId]
   );
   return res.rows;
 }
 
 async function getById(id, executor = db, options = {}) {
   const lock = options.forUpdate ? ' FOR UPDATE' : '';
-  const res = await executor.query(`SELECT * FROM x_kol_accounts WHERE id = $1${lock}`, [id]);
+  const res = await executor.query(
+    `SELECT kol.*, ${CUSTOM_LABELS_PROJECTION}
+     FROM x_kol_accounts AS kol WHERE kol.id = $1${lock}`,
+    [id]
+  );
   return res.rows[0];
 }
 
-async function create(data) {
-  const existing = await db.query(
+async function create(data, executor = db) {
+  const existing = await executor.query(
     `SELECT * FROM x_kol_accounts
      WHERE lower(regexp_replace(x_handle, '^@+', '')) = lower(regexp_replace($1, '^@+', ''))
         OR (NULLIF($2, '') IS NOT NULL AND x_user_id = $2)
@@ -38,7 +68,7 @@ async function create(data) {
     const sameHandle = String(current.x_handle || '').replace(/^@+/, '').toLowerCase()
       === String(data.x_handle || '').replace(/^@+/, '').toLowerCase();
     const preserveVerifiedIdentity = sameHandle && current.profile_status === 'verified';
-    const updated = await db.query(
+    const updated = await executor.query(
       `UPDATE x_kol_accounts
        SET x_user_id = $1, x_handle = $2, display_name = $3,
            chain_ids = $4, weight = $5, enabled = $6,
@@ -67,7 +97,7 @@ async function create(data) {
     return updated.rows[0];
   }
 
-  const res = await db.query(
+  const res = await executor.query(
     `INSERT INTO x_kol_accounts
        (x_user_id, x_handle, display_name, chain_ids, weight, enabled,
         profile_status, profile_attempt_count, profile_next_retry_at, profile_last_error_code)

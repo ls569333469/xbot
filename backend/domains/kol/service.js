@@ -5,6 +5,7 @@ const { normalizeXHandle } = require('../../lib/x-handles');
 const logger = require('../../lib/logger');
 const { enqueueWatchSyncForHandles } = require('../x-monitor/6551/watch-sync-outbox');
 const { enqueueWhitelistActivation } = require('../whitelist/activation-outbox');
+const labelService = require('./label-service');
 
 const KOL_TAGS = new Set(['sol', 'bsc', 'base', 'eth', 'robinhood', 'cross_chain']);
 const X_HANDLE_PATTERN = /^[a-z0-9_]{1,15}$/;
@@ -26,6 +27,9 @@ function normalizeKolFields(data, options = {}) {
     if (!Number.isSafeInteger(result.weight) || result.weight < 1 || result.weight > 10) {
       throw new Error('weight must be an integer between 1 and 10');
     }
+  }
+  if (data.custom_label_ids !== undefined) {
+    result.custom_label_ids = labelService.normalizeLabelIds(data.custom_label_ids);
   }
   return result;
 }
@@ -86,14 +90,37 @@ async function addKol(data, options = {}) {
 
   const normalized = normalizeKolFields(data, { requireHandle: true });
   const repository = options.queries || queries;
-  const saved = await repository.create({
+  const payload = {
     ...normalized,
     x_user_id: normalized.x_handle,
     display_name: data.display_name || normalized.x_handle,
     profile_status: 'pending',
     profile_attempt_count: 0,
     profile_next_retry_at: new Date()
-  });
+  };
+  let saved;
+  if (options.queries) {
+    saved = await repository.create(payload);
+    if (normalized.custom_label_ids !== undefined && options.labelService) {
+      await options.labelService.replaceAccountLabels(saved.id, normalized.custom_label_ids);
+    }
+  } else {
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const created = await queries.create(payload, client);
+      if (normalized.custom_label_ids !== undefined) {
+        await labelService.replaceAccountLabels(created.id, normalized.custom_label_ids, client);
+      }
+      saved = await queries.getById(created.id, client);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
   return {
     ...saved,
     profile_warning: saved.profile_status === 'pending'
@@ -120,15 +147,19 @@ async function updateKol(id, data, options = {}) {
         { ...normalized, identity_reset: identityReset },
         client
       );
+      if (normalized.custom_label_ids !== undefined) {
+        await labelService.replaceAccountLabels(id, normalized.custom_label_ids, client);
+      }
       if (identityReset) {
         await enqueueWatchSyncForHandles([existing.x_handle, saved.x_handle], client);
         for (const whitelistId of impact.whitelist_ids || []) {
           await enqueueWhitelistActivation(whitelistId, client);
         }
       }
+      const complete = await queries.getById(id, client);
       await client.query('COMMIT');
       return {
-        ...saved,
+        ...complete,
         ...(identityReset ? { profile_status: 'pending' } : {}),
         ...(identityReset ? { profile_warning: '账号已更新，后台将在约 5 秒内重新核验 6551 Profile' } : {})
       };
@@ -147,6 +178,9 @@ async function updateKol(id, data, options = {}) {
     if (identityReset) normalized.x_user_id = normalized.x_handle;
   }
   const saved = await repository.update(id, { ...normalized, identity_reset: identityReset });
+  if (normalized.custom_label_ids !== undefined && options.labelService) {
+    await options.labelService.replaceAccountLabels(id, normalized.custom_label_ids);
+  }
   return {
     ...saved,
     ...(identityReset ? { profile_status: 'pending' } : {}),
@@ -158,8 +192,9 @@ async function retryKolProfile(id, options = {}) {
   const repository = options.queries || queries;
   const saved = await repository.scheduleProfileRetry(id);
   if (!saved) throw new Error('KOL account not found');
+  const complete = options.queries ? saved : await queries.getById(id);
   return {
-    ...saved,
+    ...complete,
     profile_warning: '已安排立即核验，页面会自动更新结果'
   };
 }
@@ -178,8 +213,9 @@ async function toggleKol(id) {
         await enqueueWhitelistActivation(whitelistId, client);
       }
     }
+    const complete = await queries.getById(id, client);
     await client.query('COMMIT');
-    return saved;
+    return complete;
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

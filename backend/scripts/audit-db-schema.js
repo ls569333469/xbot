@@ -72,7 +72,8 @@ async function main() {
       '049_p27_metadata_enqueue_missing_only.sql',
       '050_p33_kol_performance_analysis.sql',
       '051_p34_kol_research_result_convergence.sql',
-      '052_p35_dynamic_preset_asset_routes.sql']]
+      '052_p35_dynamic_preset_asset_routes.sql',
+      '053_p36_kol_custom_labels.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -101,6 +102,7 @@ async function main() {
   if (!migrations.has('050_p33_kol_performance_analysis.sql')) throw new Error('Migration 050 is not applied');
   if (!migrations.has('051_p34_kol_research_result_convergence.sql')) throw new Error('Migration 051 is not applied');
   if (!migrations.has('052_p35_dynamic_preset_asset_routes.sql')) throw new Error('Migration 052 is not applied');
+  if (!migrations.has('053_p36_kol_custom_labels.sql')) throw new Error('Migration 053 is not applied');
 
   await requireColumns('schema_migrations', [
     'checksum_sha256', 'migration_manifest_id', 'release_sha'
@@ -138,6 +140,12 @@ async function main() {
   ]);
   await requireColumns('notification_outbox', [
     'channel', 'dedupe_key', 'locked_at', 'locked_by'
+  ]);
+  await requireColumns('x_kol_labels', [
+    'id', 'name', 'normalized_name', 'created_by', 'created_at', 'updated_at'
+  ]);
+  await requireColumns('x_kol_account_labels', [
+    'kol_id', 'label_id', 'created_at'
   ]);
 
   await requireColumns('ca_whitelist', [
@@ -246,6 +254,9 @@ async function main() {
     'uq_dynamic_policy_asset_aliases_active_key',
     'idx_dynamic_policy_asset_routes_policy',
     'idx_dynamic_policy_asset_aliases_route',
+    'x_kol_labels_normalized_name_key',
+    'x_kol_account_labels_pkey',
+    'idx_x_kol_account_labels_label',
     'uq_whitelist_dynamic_actor_ca_chain_active',
     'uq_trade_signal_dynamic_resolution',
     'uq_follow_discovery_policy_kol_current',
