@@ -2,6 +2,17 @@ const db = require('../../lib/db');
 
 const MAX_LABELS_PER_KOL = 12;
 const MAX_LABEL_LENGTH = 24;
+const RESERVED_LABEL_NAMES = new Set([
+  '全部',
+  'sol',
+  'bsc',
+  'base',
+  'eth',
+  'robinhood',
+  'cross_chain',
+  '跨链',
+  '未分类'
+]);
 
 function kolLabelError(code, message, status = 400) {
   const error = new Error(message);
@@ -18,7 +29,11 @@ function normalizeLabelName(value) {
   if (Array.from(name).length > MAX_LABEL_LENGTH) {
     throw kolLabelError('KOL_LABEL_INVALID', `标签名称不能超过 ${MAX_LABEL_LENGTH} 个字符`);
   }
-  return { name, normalizedName: name.toLocaleLowerCase('und') };
+  const normalizedName = name.toLocaleLowerCase('und');
+  if (RESERVED_LABEL_NAMES.has(normalizedName)) {
+    throw kolLabelError('KOL_LABEL_RESERVED_NAME', '自定义标签不能与所属生态分类同名');
+  }
+  return { name, normalizedName };
 }
 
 function normalizeLabelIds(values) {
@@ -155,6 +170,7 @@ async function replaceAccountLabels(kolId, values, executor = db) {
 
 module.exports = {
   MAX_LABELS_PER_KOL,
+  RESERVED_LABEL_NAMES,
   createLabel,
   deleteLabel,
   kolLabelError,

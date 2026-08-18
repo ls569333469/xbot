@@ -5,8 +5,10 @@ const test = require('node:test');
 
 const {
   MAX_LABELS_PER_KOL,
+  createLabel,
   normalizeLabelIds,
-  normalizeLabelName
+  normalizeLabelName,
+  renameLabel
 } = require('../domains/kol/label-service');
 const { normalizeKolFields, updateKol } = require('../domains/kol/service');
 
@@ -18,6 +20,24 @@ test('P36 label normalization converges unicode, whitespace and case keys', () =
   assert.throws(() => normalizeLabelName(''), { code: 'KOL_LABEL_INVALID' });
   assert.throws(() => normalizeLabelName('bad\u0000label'), { code: 'KOL_LABEL_INVALID' });
   assert.throws(() => normalizeLabelName('一'.repeat(25)), { code: 'KOL_LABEL_INVALID' });
+});
+
+test('P36.1 rejects ecosystem reserved names before label persistence', async () => {
+  for (const name of ['BSC', ' bsc ', 'ＢＳＣ', 'BASE', 'cross_chain', '跨链', '未分类', '全部']) {
+    assert.throws(() => normalizeLabelName(name), { code: 'KOL_LABEL_RESERVED_NAME' });
+  }
+
+  let queryCount = 0;
+  const executor = { query: async () => { queryCount += 1; return { rows: [] }; } };
+  await assert.rejects(
+    createLabel(' SOL ', { executor }),
+    { code: 'KOL_LABEL_RESERVED_NAME', status: 400 }
+  );
+  await assert.rejects(
+    renameLabel('7', 'RobinHood', { executor }),
+    { code: 'KOL_LABEL_RESERVED_NAME', status: 400 }
+  );
+  assert.equal(queryCount, 0);
 });
 
 test('P36 label IDs deduplicate and enforce the per-account limit', () => {
