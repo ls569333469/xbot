@@ -2912,7 +2912,11 @@ body {
 .p35-legacy-strip strong { color: var(--color-text-primary); font-size: 11px; }
 .p35-legacy-strip span { color: var(--color-text-secondary); font-size: 10px; }
 .p35-legacy-strip > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.p35-legacy-item { min-width: 0; display: inline-flex; align-items: center; }
 .p35-legacy-strip button { max-width: 180px; overflow: hidden; padding: 4px 7px; border: 1px solid rgba(240, 182, 91, .28); border-radius: 3px; color: var(--color-warning); background: transparent; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.p35-legacy-item > button:first-child { border-radius: 3px 0 0 3px; }
+.p35-legacy-item .p35-legacy-remove { width: 25px; height: 24px; display: grid; flex: 0 0 25px; place-items: center; padding: 0; border-left: 0; border-radius: 0 3px 3px 0; }
+.p35-legacy-item .p35-legacy-remove:hover { border-color: rgba(240, 182, 91, .55); color: var(--color-danger); }
 .p35-route-shell { min-height: 390px; display: grid; grid-template-columns: minmax(210px, .34fr) minmax(0, 1fr); border: 1px solid var(--border-base); border-radius: 6px; overflow: hidden; background: rgba(9, 11, 14, .32); }
 .p35-route-list { min-width: 0; border-right: 1px solid var(--border-base); background: rgba(255, 255, 255, .012); }
 .p35-route-list > header, .p35-route-editor > header { height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 0 12px; border-bottom: 1px solid var(--border-base); }

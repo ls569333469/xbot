@@ -141,6 +141,12 @@ export function DynamicAssetRouteWorkspace({
     onLegacyAliasesChange(legacyAliases.filter((_, index) => index !== legacyIndex));
   };
 
+  const removeLegacyAlias = (legacyIndex: number) => {
+    onLegacyAliasesChange(legacyAliases.filter((_, index) => index !== legacyIndex));
+    setPreview(null);
+    setError('');
+  };
+
   const verify = async () => {
     if (!selected) return;
     setBusy(true);
@@ -171,7 +177,13 @@ export function DynamicAssetRouteWorkspace({
     {legacyAliases.length > 0 && <div className="p35-legacy-strip">
       <AlertTriangle size={16} />
       <div><strong>{legacyAliases.length} 个旧关键词尚未绑定 CA</strong><span>记录模式可保留；模拟和实盘必须绑定或删除。</span></div>
-      <div>{legacyAliases.map((item, index) => <button type="button" key={`${typeof item === 'string' ? item : item.name}-${index}`} onClick={() => bindLegacyAlias(index)}>{typeof item === 'string' ? item : item.name}</button>)}</div>
+      <div>{legacyAliases.map((item, index) => {
+        const value = typeof item === 'string' ? item : item.name;
+        return <span className="p35-legacy-item" key={`${value}-${index}`}>
+          <button type="button" title="绑定到当前资产路由" onClick={() => bindLegacyAlias(index)}>{value}</button>
+          <button type="button" className="p35-legacy-remove" title="删除未绑定关键词" aria-label={`删除未绑定关键词 ${value}`} onClick={() => removeLegacyAlias(index)}><Trash2 size={13} /></button>
+        </span>;
+      })}</div>
     </div>}
 
     <div className="p35-route-shell">
