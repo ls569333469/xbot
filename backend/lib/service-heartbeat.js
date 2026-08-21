@@ -76,12 +76,19 @@ async function latestHeartbeat(roles, executor = db) {
     .filter(Boolean);
   if (normalizedRoles.length === 0) return null;
   const result = await executor.query(
-    `SELECT role, instance_id, process_id, status_json, started_at, heartbeat_at,
-            GREATEST(0, ROUND(EXTRACT(EPOCH FROM (NOW() - heartbeat_at)) * 1000)::int) AS age_ms
-     FROM service_heartbeats
-     WHERE role = ANY($1::text[])
-     ORDER BY heartbeat_at DESC
-     LIMIT 1`,
+    `SELECT latest.role, latest.instance_id, latest.process_id, latest.status_json,
+            latest.started_at, latest.heartbeat_at,
+            GREATEST(
+              0::bigint,
+              ROUND(EXTRACT(EPOCH FROM (NOW() - latest.heartbeat_at)) * 1000)::bigint
+            ) AS age_ms
+     FROM (
+       SELECT role, instance_id, process_id, status_json, started_at, heartbeat_at
+       FROM service_heartbeats
+       WHERE role = ANY($1::text[])
+       ORDER BY heartbeat_at DESC
+       LIMIT 1
+     ) AS latest`,
     [normalizedRoles]
   );
   if (result.rows.length === 0) return null;
