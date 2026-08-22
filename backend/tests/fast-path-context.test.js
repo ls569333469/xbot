@@ -41,7 +41,34 @@ test('P24 fast path reads the persisted local execution profile without GMGN', a
   assert.equal(context.token.symbol, 'LOCAL');
   assert.equal(context.nativeToken.symbol, 'ETH');
   assert.equal(context.cacheMeta.wallet.source, 'chain_live_readiness');
+  assert.equal(context.cacheMeta.wallet.fresh, true);
+  assert.equal(context.cacheMeta.wallet.usable_for_balance, true);
   assert.deepEqual(requiredCacheKeys(), []);
+});
+
+test('P39 marks an August 1 persisted balance as stale in the fast path context', async () => {
+  const context = await loadCachedContext({
+    chain_id: 'base',
+    contract_address: TOKEN
+  }, {
+    executor: {
+      async query() {
+        return { rows: [{
+          chain: 'base',
+          wallet_address: WALLET,
+          balances_json: [],
+          native_balance: '0.019944',
+          last_checked_at: '2026-08-01T00:00:00.000Z'
+        }] };
+      }
+    },
+    verificationSnapshot: { info: { address: TOKEN, decimals: 18, symbol: 'BASE' } }
+  });
+
+  assert.equal(context.cacheMeta.wallet.fresh, false);
+  assert.equal(context.cacheMeta.wallet.usable_for_balance, false);
+  assert.equal(context.cacheMeta.wallet.source, 'stale_chain_live_readiness');
+  assert.ok(context.cacheMeta.wallet.age_ms > 0);
 });
 
 test('P24 execution reuses a local verification snapshot without token, security, pool, or gas reads', async () => {

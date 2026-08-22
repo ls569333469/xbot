@@ -41,3 +41,25 @@ test('latest heartbeat marks a recent shared status as fresh', async () => {
   assert.equal(result.fresh, true);
   assert.equal(result.status.wss.status, 'subscribed');
 });
+
+test('latest heartbeat accepts stale ages beyond PostgreSQL int range', async () => {
+  let sql = '';
+  const result = await latestHeartbeat(['ingestion', 'all'], {
+    query: async (query) => {
+      sql = query;
+      return { rows: [{
+        role: 'ingestion',
+        instance_id: 'instance-test',
+        process_id: 42,
+        status_json: { wss: { status: 'subscribed' } },
+        started_at: new Date('2026-07-22T00:00:00.000Z'),
+        heartbeat_at: new Date('2026-07-22T00:00:05.000Z'),
+        age_ms: 2_165_318_034
+      }] };
+    }
+  });
+  assert.match(sql, /::bigint/);
+  assert.match(sql, /ORDER BY heartbeat_at DESC/);
+  assert.equal(result.fresh, false);
+  assert.equal(result.ageMs, 2_165_318_034);
+});

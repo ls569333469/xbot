@@ -117,7 +117,9 @@ test('execution uses the GMGN wallet balance without an RPC request when availab
     }
   });
 
-  assert.deepEqual(result, { value: 0.15, source: 'gmgn', rpc: null });
+  assert.equal(result.value, 0.15);
+  assert.equal(result.source, 'gmgn');
+  assert.equal(result.rpc, null);
   assert.equal(rpcCalls, 0);
 });
 
@@ -139,11 +141,9 @@ test('execution falls back to the same-wallet RPC balance when GMGN omits it', a
     }
   });
 
-  assert.deepEqual(result, {
-    value: 0.15,
-    source: 'rpc',
-    rpc: { identity: '46614', block_ref: '12345' }
-  });
+  assert.equal(result.value, 0.15);
+  assert.equal(result.source, 'rpc');
+  assert.deepEqual(result.rpc, { identity: '46614', block_ref: '12345' });
 });
 
 test('execution reports an unknown balance only when GMGN and RPC are unavailable', async () => {
@@ -157,11 +157,71 @@ test('execution reports an unknown balance only when GMGN and RPC are unavailabl
     probeRpc: async () => ({ ok: false, error: 'CHAIN_RPC_UNAVAILABLE' })
   });
 
-  assert.deepEqual(result, {
-    value: null,
-    source: 'unavailable',
-    rpc: { error: 'CHAIN_RPC_UNAVAILABLE' }
+  assert.equal(result.value, null);
+  assert.equal(result.source, 'unavailable');
+  assert.deepEqual(result.rpc, { error: 'CHAIN_RPC_UNAVAILABLE' });
+});
+
+test('execution does not trust an expired persisted wallet balance when RPC fails', async () => {
+  const result = await resolveWalletNativeBalance({
+    chain: { id: 'base', nativeSymbol: 'ETH' },
+    wallet: {
+      address: '0x4444444444444444444444444444444444444444',
+      balances: [{ symbol: 'ETH', balance: '0.019944' }]
+    },
+    cacheMeta: {
+      wallet: {
+        fresh: false,
+        age_ms: 1_800_000_000,
+        checked_at: '2026-08-01T00:00:00.000Z',
+        source: 'stale_chain_live_readiness'
+      }
+    }
+  }, {
+    probeRpc: async () => ({ ok: false, error: 'CHAIN_RPC_UNAVAILABLE' })
   });
+
+  assert.equal(result.value, null);
+  assert.equal(result.source, 'stale_cache_untrusted');
+  assert.equal(result.advisory, 'WALLET_BALANCE_CACHE_STALE');
+  assert.equal(result.cache.usable_for_balance, false);
+});
+
+test('RPC exceptions are recorded as advisory and never escape wallet balance resolution', async () => {
+  const result = await resolveWalletNativeBalance({
+    chain: { id: 'base', nativeSymbol: 'ETH' },
+    wallet: { address: '0x5555555555555555555555555555555555555555', balances: [] }
+  }, {
+    probeRpc: async () => {
+      const error = new Error('RPC timeout');
+      error.code = 'CHAIN_RPC_TIMEOUT';
+      throw error;
+    }
+  });
+
+  assert.equal(result.value, null);
+  assert.equal(result.source, 'unavailable');
+  assert.deepEqual(result.rpc, { error: 'CHAIN_RPC_TIMEOUT' });
+});
+
+test('a hanging RPC probe expires quickly without holding the GMGN path', async () => {
+  const previous = process.env.CHAIN_RPC_ADVISORY_TIMEOUT_MS;
+  process.env.CHAIN_RPC_ADVISORY_TIMEOUT_MS = '5';
+  try {
+    const result = await resolveWalletNativeBalance({
+      chain: { id: 'base', nativeSymbol: 'ETH' },
+      wallet: { address: '0x6666666666666666666666666666666666666666', balances: [] }
+    }, {
+      probeRpc: async () => new Promise(() => {})
+    });
+
+    assert.equal(result.value, null);
+    assert.equal(result.source, 'unavailable');
+    assert.deepEqual(result.rpc, { error: 'CHAIN_RPC_ADVISORY_TIMEOUT' });
+  } finally {
+    if (previous === undefined) delete process.env.CHAIN_RPC_ADVISORY_TIMEOUT_MS;
+    else process.env.CHAIN_RPC_ADVISORY_TIMEOUT_MS = previous;
+  }
 });
 
 test('execution merges token decimals from GMGN only after the local context lacks them', () => {
@@ -235,6 +295,27 @@ test('execution risk records token security warnings without overriding whitelis
   assert.equal(sol.passed, true);
   assert.ok(sol.warnings.includes('MINT_AUTHORITY_ACTIVE'));
   assert.ok(sol.warnings.includes('FREEZE_AUTHORITY_ACTIVE'));
+});
+
+test('wallet balance observations never reject a GMGN terminal risk evaluation', () => {
+  const context = riskContext('base', {
+    isHoneypot: false,
+    buyTax: 0,
+    sellTax: 0,
+    rugRatio: 0.1,
+    renouncedMint: null,
+    renouncedFreeze: null
+  });
+  context.walletNativeBalance = 0.01;
+  context.requiredNativeBalance = 0.5;
+  context.walletNativeBalanceSource = 'stale_cache_untrusted';
+  const result = evaluateRisk(context, {});
+
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.reasons, []);
+  assert.ok(result.warnings.includes('WALLET_BALANCE_CACHE_STALE'));
+  assert.ok(result.warnings.includes('INSUFFICIENT_NATIVE_BALANCE'));
+  assert.equal(result.checks.wallet_native_balance_source, 'stale_cache_untrusted');
 });
 
 test('missing native USD price is observable but does not block the terminal swap', () => {

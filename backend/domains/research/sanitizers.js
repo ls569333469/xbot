@@ -79,6 +79,7 @@ function sanitizeTokenMetadata(chain, address, raw) {
     decimals: Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? decimals : null,
     logo_url: safeUrl(firstValue(raw, ['logo', 'logo_url', 'image', 'icon'])),
     official_x_handle: twitterHandle,
+    social_source_status: twitterHandle ? 'found' : (twitter ? 'invalid' : 'missing'),
     website_url: safeUrl(firstValue({ raw, links }, [
       'raw.website', 'raw.website_url', 'links.website', 'links.homepage'
     ])),

@@ -1,7 +1,7 @@
 const FORBIDDEN_RELEASE_PATH = /(^|\/)(?:\.env(?:\.|$)|[^/]+\.(?:pem|key|p12|pfx|log|dump|sqlite|sqlite3|db|bak)$|dist(?:\/|$))/i;
 const SECRET_PATTERNS = Object.freeze([
   { code: 'GMGN_API_KEY', pattern: /gmgn_[a-f0-9]{32}/i },
-  { code: 'XAI_API_KEY', pattern: /xai-[a-z0-9_-]{20,}/i },
+  { code: 'XAI_API_KEY', pattern: /xai-[a-z0-9]{32,}(?![a-z0-9])/i },
   { code: 'GENERIC_API_KEY', pattern: /sk-[a-z0-9_-]{20,}/i },
   {
     code: 'PRIVATE_KEY_PEM',

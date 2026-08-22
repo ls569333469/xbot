@@ -25,6 +25,22 @@ const STAGE_LABELS: Record<ResearchJobItem['status'], string> = {
   cancelled: '已取消',
 };
 
+function socialResolutionLabel(status?: NonNullable<NonNullable<ResearchJobItem['report']>['social_resolution']>['status']) {
+  if (!status) return '等待身份补全';
+  return {
+    pending: '等待身份补全',
+    searching: '首次搜索中',
+    format_repair: '正在整理首次结果',
+    targeted_followup: '正在针对性补查',
+    result_ready: '结果待核验',
+    gmgn_confirmed: 'GMGN 官方账号已确认',
+    grok_verified: 'Grok 官方账号已核验',
+    grok_candidate: 'Grok 官方账号候选',
+    insufficient: '未找到可靠证据',
+    provider_failed: '身份补全失败',
+  }[status];
+}
+
 function jobStatusLabel(status: ResearchJob['status']) {
   return {
     pending: '等待启动',
@@ -79,6 +95,16 @@ function researchFailure(item: ResearchJobItem | null) {
   const code = item.error_code || 'RESEARCH_ITEM_FAILED';
   const known: Record<string, { stage: string; summary: string }> = {
     XAI_SCHEMA_INVALID: { stage: 'Grok 分析', summary: 'Grok 返回格式不完整，无法生成可靠的结构化结果' },
+    XAI_SEARCH_NO_TOOL_USE: { stage: 'Grok 搜索', summary: 'Grok 未执行要求的公开搜索' },
+    XAI_SEARCH_TIMEOUT: { stage: 'Grok 搜索', summary: 'Grok 搜索超时' },
+    XAI_SEARCH_INCOMPLETE: { stage: 'Grok 搜索', summary: 'Grok 搜索结果不完整' },
+    XAI_SEARCH_TOOL_BUDGET_EXCEEDED: { stage: 'Grok 搜索', summary: 'Grok 搜索超过本次允许的工具预算' },
+    XAI_STRUCTURE_OUTPUT_EMPTY: { stage: 'Grok 结构化', summary: 'Grok 没有返回可整理的内容' },
+    XAI_STRUCTURE_JSON_INVALID: { stage: 'Grok 结构化', summary: 'Grok 返回的 JSON 格式无效' },
+    XAI_STRUCTURE_SCHEMA_INVALID: { stage: 'Grok 结构化', summary: 'Grok 返回字段不符合投研契约' },
+    XAI_STRUCTURE_REPAIR_FAILED: { stage: 'Grok 结构化', summary: '首次证据的格式修复失败' },
+    XAI_GROK_REQUEST_BUDGET_EXHAUSTED: { stage: 'Grok 分析', summary: '本次 CA 的两次 Grok 请求预算已用完' },
+    XAI_GROK_REQUEST_IN_PROGRESS: { stage: 'Grok 分析', summary: '同一 CA 已有 Grok 请求正在执行' },
     XAI_RESPONSE_INCOMPLETE: { stage: 'Grok 分析', summary: 'Grok 响应中断，结果未生成完整' },
     XAI_OUTPUT_EMPTY: { stage: 'Grok 分析', summary: 'Grok 未返回可用的分析内容' },
     XAI_RATE_LIMITED: { stage: 'Grok 分析', summary: 'Grok 请求达到频率限制' },
@@ -169,6 +195,9 @@ export default function ResearchWorkspace({ draft, onBack, onUseDraft }: Props) 
     return counts;
   }, [job]);
   const running = Boolean(job && !TERMINAL_JOB_STATES.has(job.status));
+  const retryableFailed = Boolean(job?.items.some((item) => (
+    item.status === 'failed' && (item.report?.social_resolution?.retry_allowed ?? true)
+  )));
   const jobId = job?.id;
   const jobStatus = job?.status;
 
@@ -278,7 +307,7 @@ export default function ResearchWorkspace({ draft, onBack, onUseDraft }: Props) 
         <select className="input" value={chain} disabled={running} onChange={(event) => setChain(event.target.value as ChainId)}>{CHAINS.map((item) => <option value={item} key={item}>{item.toUpperCase()}</option>)}</select>
         {mode === 'single' ? <input className="input font-mono" value={input} disabled={running} onChange={(event) => setInput(event.target.value)} placeholder="输入合约地址" /> : <textarea className="input font-mono" value={input} disabled={running} onChange={(event) => setInput(event.target.value)} placeholder="每行一个 CA，最多 30 个" />}
         <button type="button" className="btn btn-primary" disabled={submitting || running} onClick={runResearch}><Search size={16} />{submitting ? '创建中' : `开始投研${requestedAddresses.length ? ` (${requestedAddresses.length})` : ''}`}</button>
-        <span className="p16-research-cost">{mode === 'batch' ? `已识别 ${requestedAddresses.length} 个唯一 CA${inputStats.duplicateCount ? `，已去重 ${inputStats.duplicateCount} 个重复输入` : ''}；` : ''}最多调用 Grok {requestedAddresses.length || 0} 次；TTL 内结果自动复用。</span>
+        <span className="p16-research-cost">{mode === 'batch' ? `已识别 ${requestedAddresses.length} 个唯一 CA${inputStats.duplicateCount ? `，已去重 ${inputStats.duplicateCount} 个重复输入` : ''}；` : ''}每个 CA 首次成功即停止，必要时最多补查 1 次；TTL 内结果自动复用。</span>
       </div>
 
       {!job ? <div className="p16-research-empty"><Search size={24} /><strong>输入 CA 开始查询</strong><span>每个 CA 独立执行 GMGN、Grok 和 6551；批量任务默认并发 3。</span></div> : <>
@@ -286,8 +315,9 @@ export default function ResearchWorkspace({ draft, onBack, onUseDraft }: Props) 
           <div><span>任务状态</span><strong>{jobStatusLabel(job.status)}</strong></div>
           <div><span>完成</span><strong>{job.completed_count} / {job.total_count}</strong></div>
           <div><span>失败</span><strong>{job.failed_count}</strong></div>
-          <div><span>Grok 调用</span><strong>最多 {job.total_count} 次，并发 {job.queue_status?.effective_concurrency || job.concurrency_limit || 3}</strong></div>
-          {job.failed_count > 0 && <button type="button" className="btn btn-secondary" onClick={retryFailed}><RefreshCw size={15} />只重试失败项</button>}
+          <div><span>Grok 上限</span><strong>每 CA 2 次，共 {job.total_count * 2} 次，并发 {job.queue_status?.effective_concurrency || job.concurrency_limit || 3}</strong></div>
+          {job.failed_count > 0 && retryableFailed && <button type="button" className="btn btn-secondary" onClick={retryFailed}><RefreshCw size={15} />继续剩余补查</button>}
+          {job.failed_count > 0 && !retryableFailed && <span className="p16-research-cost">失败项的两次 Grok 预算已用完</span>}
           {running && <button type="button" className="p16-icon-button" title="取消投研任务" aria-label="取消投研任务" onClick={cancelResearch}><Square size={14} /></button>}
           {queueWait && <p className="p16-job-wait">{queueWait}</p>}
         </div>
@@ -306,6 +336,7 @@ export default function ResearchWorkspace({ draft, onBack, onUseDraft }: Props) 
           {selected ? <main className="p16-report-detail">
             <div className="p16-report-token">{metadata?.logo_url ? <img src={metadata.logo_url} alt="" /> : <span>{metadata?.symbol?.slice(0, 1) || '?'}</span>}<div><h3>{metadata?.symbol || '未命名'} <small>{metadata?.name}</small></h3><code>{selected.contract_address}</code></div><span className={`p16-stage-badge ${selectedItem?.status}`}>{selectedItem ? STAGE_LABELS[selectedItem.status] : ''}</span></div>
             {selectedFailure && <div className="p16-research-error"><AlertTriangle size={18} /><div><strong>{selectedFailure.stage}失败：{selectedFailure.summary}</strong><span>错误码 {selectedFailure.code}</span></div></div>}
+            {selected.social_resolution && <section className="p16-inline-section"><div className="p16-section-heading"><div><h3>官方 X 身份补全</h3><p>{socialResolutionLabel(selected.social_resolution.status)}{selected.social_resolution.official_handle ? ` · @${selected.social_resolution.official_handle}` : ''}</p></div></div><div className="p16-fact-grid"><div><span>GMGN 来源</span><strong>{selected.social_resolution.gmgn_status === 'found' ? '已提供官方账号' : selected.social_resolution.gmgn_status === 'invalid' ? '返回值无效' : '本次未提供'}</strong></div><div><span>Grok 请求</span><strong>{selected.social_resolution.grok_request_attempts} / {selected.social_resolution.grok_request_limit}</strong></div><div><span>公开搜索</span><strong>{selected.social_resolution.search_tool_calls} / {selected.social_resolution.search_tool_call_limit}</strong></div><div><span>第二次原因</span><strong>{selected.social_resolution.second_request_reason === 'format_repair' ? '只整理首次证据' : selected.social_resolution.second_request_reason === 'targeted_followup' ? '针对性补查' : '未触发'}</strong></div></div></section>}
             <div className="p16-fact-grid"><div><span>流动性</span><strong>{pool.liquidity_usd == null ? '暂无' : `$${Number(pool.liquidity_usd).toLocaleString()}`}</strong></div><div><span>买入税</span><strong>{security.buy_tax == null ? '暂无' : `${security.buy_tax}%`}</strong></div><div><span>卖出税</span><strong>{security.sell_tax == null ? '暂无' : `${security.sell_tax}%`}</strong></div><div><span>蜜罐</span><strong>{security.is_honeypot == null ? '暂无' : security.is_honeypot ? '是' : '否'}</strong></div></div>
 
             <section className="p16-inline-section"><div className="p16-section-heading"><div><h3>项目团队候选</h3><p>官方、Founder、CEO 与核心团队。</p></div></div><div className="p16-candidate-list">{selected.candidates.length ? selected.candidates.map((candidate) => <div className="p16-candidate-row research" key={candidate.handle}><div><strong>@{candidate.handle}</strong><span>{candidate.display_name || researchRoleLabel(candidate.role)}</span></div><span>{researchRoleLabel(candidate.role)}</span><em>{candidate.confidence === 'verified' ? '已核验' : candidate.confidence === 'high' ? '高置信' : '待确认'}</em><small>{candidate.association || candidate.evidence?.[0]?.label || candidate.source}</small>{candidate.evidence?.[0]?.url && <a href={candidate.evidence[0].url} target="_blank" rel="noreferrer">查看证据</a>}</div>) : <div className="p16-empty-line">当前阶段尚未返回项目账号候选</div>}</div></section>

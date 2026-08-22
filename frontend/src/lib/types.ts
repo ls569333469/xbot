@@ -189,6 +189,7 @@ export interface TokenMetadata {
   decimals: number | null;
   logo_url: string | null;
   official_x_handle: string | null;
+  social_source_status?: 'found' | 'missing' | 'invalid';
   website_url: string | null;
   source: 'gmgn';
   fetched_at: string;
@@ -218,13 +219,29 @@ export interface TokenResearchReport {
     pool?: Record<string, unknown>;
     sources?: string[];
     xai?: {
-      status?: 'completed' | 'failed';
+      status?: 'completed' | 'insufficient' | 'failed';
       summary?: string;
       citations?: string[];
       duration_ms?: number;
       error_code?: string;
-      usage?: Record<string, number> | null;
+      usage?: Record<string, unknown> | null;
+      grok_request_attempts?: number;
+      search_tool_calls?: number;
     };
+  };
+  social_resolution?: {
+    status: 'pending' | 'searching' | 'format_repair' | 'targeted_followup' | 'result_ready' | 'gmgn_confirmed' | 'grok_verified' | 'grok_candidate' | 'insufficient' | 'provider_failed';
+    gmgn_status: 'found' | 'missing' | 'invalid';
+    official_handle?: string | null;
+    source?: 'gmgn' | 'grok' | 'gmgn+grok' | null;
+    confidence?: 'verified' | 'high' | 'medium' | 'low' | 'unverified' | null;
+    grok_request_attempts: number;
+    grok_request_limit: 2;
+    search_tool_calls: number;
+    search_tool_call_limit: 8;
+    second_request_reason?: 'format_repair' | 'targeted_followup' | null;
+    last_error_code?: string | null;
+    retry_allowed: boolean;
   };
   candidates: ResearchCandidate[];
   analyzer_version: string;
@@ -1417,6 +1434,8 @@ export interface TradeReadiness {
       status: 'passed' | 'failed';
       createdAt: string | null;
       validUntil?: string | null;
+      valid_now?: boolean;
+      status_view?: 'current' | 'historical';
       contextHash?: string;
       codeVersion?: string;
       stale?: boolean;
@@ -1429,6 +1448,12 @@ export interface TradeReadiness {
     wallet_address?: string | null;
     native_balance?: number | null;
     native_balances?: Array<{ symbol?: string; balance?: string | number; amount?: string | number }>;
+    native_balance_source?: string | null;
+    native_balance_checked_at?: string | null;
+    native_balance_age_ms?: number | null;
+    native_balance_ttl_ms?: number | null;
+    native_balance_fresh?: boolean;
+    native_balance_usable_for_gate?: boolean;
     rpc_probe?: {
       ok: boolean;
       chain: string;

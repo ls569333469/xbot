@@ -11,6 +11,11 @@ const {
   normalizeRequest
 } = require('./service');
 const { XAI_PROMPT_VERSION } = require('./xai-client');
+const {
+  budgetError,
+  getCheckpoints,
+  withSocialResolution
+} = require('./checkpoint-repository');
 const { TRADE_MAX_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
 
 const DEFAULT_CONCURRENCY = 3;
@@ -82,6 +87,16 @@ async function createResearchJob(input) {
   return getResearchJob(jobId);
 }
 
+async function attachSocialResolution(items, executor = db) {
+  const checkpoints = await getCheckpoints(items.map((item) => item.report?.id), { executor });
+  return items.map((item) => ({
+    ...item,
+    report: item.report
+      ? withSocialResolution(item.report, checkpoints.get(String(item.report.id)))
+      : null
+  }));
+}
+
 async function getResearchJob(id) {
   const [jobResult, itemResult] = await Promise.all([
     db.query('SELECT * FROM research_jobs WHERE id = $1', [id]),
@@ -95,7 +110,9 @@ async function getResearchJob(id) {
     )
   ]);
   const job = jobResult.rows[0];
-  return job ? { ...job, items: itemResult.rows, queue_status: researchQueue.getStatus() } : null;
+  if (!job) return null;
+  const items = await attachSocialResolution(itemResult.rows);
+  return { ...job, items, queue_status: researchQueue.getStatus() };
 }
 
 function jobStatusFromCounts(counts) {
@@ -256,6 +273,12 @@ async function failItem(item, error) {
       String(error.message || error).slice(0, 1000)
     ]
   );
+  logger.warn('project-research', 'Research queue item failed', {
+    job_id: String(item.job_id),
+    item_id: String(item.id),
+    report_id: item.report_id ? String(item.report_id) : null,
+    error_code: String(error.code || 'RESEARCH_ITEM_FAILED').slice(0, 80)
+  });
   await refreshJob(item.job_id);
 }
 
@@ -279,6 +302,8 @@ async function processItem(item) {
         return;
       }
       report = await expandReport(report.id, {
+        jobId: item.job_id,
+        itemId: item.id,
         onStage: async (stage) => setItemStage(item.id, stage, { report_id: report.id })
       });
     }
@@ -304,7 +329,11 @@ async function cancelResearchJob(jobId) {
          WHERE item.job_id = $1 ORDER BY item.id`,
         [jobId]
       );
-      return { ...job, items: items.rows, queue_status: researchQueue.getStatus() };
+      return {
+        ...job,
+        items: await attachSocialResolution(items.rows, client),
+        queue_status: researchQueue.getStatus()
+      };
     }
     await client.query(
       `UPDATE research_job_items
@@ -329,7 +358,11 @@ async function cancelResearchJob(jobId) {
         [jobId]
       )
     ]);
-    return { ...updated.rows[0], items: items.rows, queue_status: researchQueue.getStatus() };
+    return {
+      ...updated.rows[0],
+      items: await attachSocialResolution(items.rows, client),
+      queue_status: researchQueue.getStatus()
+    };
   });
 }
 
@@ -341,10 +374,26 @@ async function retryFailedItems(jobId) {
          locked_at = NULL, updated_at = NOW()
      WHERE job_id = $1 AND status = 'failed'
        AND EXISTS(SELECT 1 FROM research_jobs WHERE id = $1 AND status <> 'cancelled')
+       AND (report_id IS NULL OR NOT EXISTS(
+         SELECT 1 FROM token_research_xai_checkpoints AS checkpoint
+         WHERE checkpoint.report_id = research_job_items.report_id
+           AND checkpoint.grok_request_attempts >= 2
+           AND checkpoint.search_status <> 'result_ready'
+       ))
      RETURNING id`,
     [jobId]
   );
   if (result.rows.length === 0) {
+    const exhausted = await db.query(
+      `SELECT COUNT(*)::int AS count
+       FROM research_job_items AS item
+       JOIN token_research_xai_checkpoints AS checkpoint ON checkpoint.report_id = item.report_id
+       WHERE item.job_id = $1 AND item.status = 'failed'
+         AND checkpoint.grok_request_attempts >= 2
+         AND checkpoint.search_status <> 'result_ready'`,
+      [jobId]
+    );
+    if (Number(exhausted.rows[0]?.count || 0) > 0) throw budgetError();
     const error = new Error('Research job has no failed items to retry');
     error.code = 'RESEARCH_RETRY_EMPTY';
     throw error;

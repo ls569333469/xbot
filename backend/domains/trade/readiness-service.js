@@ -22,6 +22,7 @@ const { p20FeatureState } = require('../../lib/p20-features');
 const runtimeScopeService = require('./runtime-scope-service');
 
 const REQUIRED_MIGRATION = '042_p25_gmgn_terminal_execution.sql';
+const DEFAULT_BALANCE_CACHE_TTL_MS = 5 * 60 * 1000;
 const TRANSIENT_BLOCKERS = new Set([
   'X_6551_INGESTION_UNHEALTHY',
   'GMGN_SCHEDULER_NOT_HEALTHY'
@@ -84,9 +85,17 @@ async function loadTradeAttemptReadiness(executor = db) {
 
 function splitChainReadiness(blockers = []) {
   const unique = [...new Set(blockers)];
+  const transactionBlockers = unique.filter((code) => ![
+    'CHAIN_RPC_UNAVAILABLE',
+    'CHAIN_RPC_TIMEOUT',
+    'CHAIN_RPC_MISSING',
+    'CHAIN_NATIVE_BALANCE_UNKNOWN',
+    'CHAIN_NATIVE_BALANCE_INSUFFICIENT',
+    'CHAIN_NATIVE_BALANCE_CACHE_STALE'
+  ].includes(code));
   return {
-    fixedReady: unique.length === 0,
-    infrastructureReady: unique.every((code) => code === 'CHAIN_CONTRACT_NOT_TESTED')
+    fixedReady: transactionBlockers.length === 0,
+    infrastructureReady: transactionBlockers.every((code) => code === 'CHAIN_CONTRACT_NOT_TESTED')
   };
 }
 
@@ -406,6 +415,28 @@ function finiteBalance(value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function balanceCacheTtlMs() {
+  const configured = Number(process.env.CHAIN_READINESS_BALANCE_TTL_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured : DEFAULT_BALANCE_CACHE_TTL_MS;
+}
+
+function balanceCacheStatus(row = {}, now = Date.now()) {
+  const checkedAt = row.last_checked_at || null;
+  const timestamp = checkedAt ? new Date(checkedAt).getTime() : NaN;
+  const ageMs = Number.isFinite(timestamp) ? Math.max(0, Number(now) - timestamp) : null;
+  const ttlMs = balanceCacheTtlMs();
+  const fresh = ageMs !== null && ageMs <= ttlMs;
+  return {
+    checkedAt,
+    ageMs,
+    ttlMs,
+    fresh,
+    source: fresh ? 'chain_live_readiness' : 'stale_chain_live_readiness',
+    usableForBalance: fresh && finiteBalance(row.native_balance) !== null
+  };
 }
 
 async function applyRpcBalanceFallback(chainProbes, rpcProbes, executor = db) {
@@ -910,7 +941,8 @@ async function getSnapshot(options = {}) {
     db.query(
       `SELECT DISTINCT ON (chain, evidence_type)
          id, chain, evidence_type, status, created_at, summary_json,
-         context_hash, valid_until, code_version
+         context_hash, valid_until, code_version,
+         (valid_until > NOW()) AS valid_now
        FROM chain_readiness_evidence
        WHERE evidence_type = 'contract_probe'
        ORDER BY chain, evidence_type, created_at DESC, id DESC`
@@ -1057,6 +1089,7 @@ async function getSnapshot(options = {}) {
       status: row.status,
       createdAt: row.created_at,
       validUntil: row.valid_until,
+      validNow: row.valid_now === true,
       contextHash: row.context_hash,
       codeVersion: row.code_version,
       whitelistIds: row.summary_json?.policy?.whitelistIds || []
@@ -1080,6 +1113,7 @@ async function getSnapshot(options = {}) {
   const chains = CHAINS.filter((chain) => selectedChains.has(chain)).map((chain) => {
     const row = chainRows.find((item) => item.chain === chain) || { chain };
     const chainDefinition = CHAIN_REGISTRY[chain];
+    const persistedBalance = balanceCacheStatus(row);
     const failureCircuit = retryStatus.circuits?.find((item) => item.chain === chain) || null;
     const implemented = Boolean(chainDefinition.executionImplemented && (row.implemented || probes[chain]?.ok));
     const evidence = contractEvidence[chain] || persistedContractEvidence.get(chain) || null;
@@ -1127,7 +1161,7 @@ async function getSnapshot(options = {}) {
     if (retryStatus.quarantines?.some((item) => item.chain === chain)) {
       blockers.push('WALLET_QUARANTINE_ACTIVE');
     }
-    if (!rpcConfig(chain).url) blockers.push('CHAIN_RPC_MISSING');
+    if (!rpcConfig(chain).url) advisories.push('CHAIN_RPC_MISSING');
     const feeReserveValue = Number(process.env[`GMGN_MAX_FEE_RESERVE_${chain.toUpperCase()}`]);
     const minimumGasReserveValue = Number(process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`]);
     if (!Number.isFinite(feeReserveValue) || feeReserveValue <= 0) {
@@ -1148,13 +1182,16 @@ async function getSnapshot(options = {}) {
         Number(followPolicy.maxTradeByChain[chain] || 0)
       );
       const requiredBalance = maximumTrade + minimumGasReserveValue + feeReserveValue;
-      if (!Number.isFinite(nativeBalance)) blockers.push('CHAIN_NATIVE_BALANCE_UNKNOWN');
-      else if (nativeBalance < requiredBalance) blockers.push('CHAIN_NATIVE_BALANCE_INSUFFICIENT');
+      if (!Number.isFinite(nativeBalance)) advisories.push('CHAIN_NATIVE_BALANCE_UNKNOWN');
+      else if (nativeBalance < requiredBalance) advisories.push('CHAIN_NATIVE_BALANCE_INSUFFICIENT');
     }
     if (options.probe && probes[chain] && !probes[chain].ok) blockers.push(probes[chain].error);
     if (options.probe && executionPolicy.chains.includes(chain) && !rpcProbes[chain]?.ok) {
-      blockers.push(rpcProbes[chain]?.error || 'CHAIN_RPC_UNAVAILABLE');
+      advisories.push(rpcProbes[chain]?.error || 'CHAIN_RPC_UNAVAILABLE');
     }
+    const liveProbe = probes[chain]?.ok ? probes[chain] : null;
+    const nativeBalanceFresh = Boolean(liveProbe) || persistedBalance.fresh;
+    if (!nativeBalanceFresh) advisories.push('CHAIN_NATIVE_BALANCE_CACHE_STALE');
     const chainReadiness = splitChainReadiness(blockers);
     const strategyReady = strategyChainReady(chainReadiness, {
       dynamicEnabled: dynamicPolicy.chains.includes(chain),
@@ -1166,6 +1203,15 @@ async function getSnapshot(options = {}) {
       wallet_address: probes[chain]?.wallet || row.wallet_address || null,
       native_balances: probes[chain]?.balances || row.balances_json || [],
       native_balance: probes[chain]?.ok ? probes[chain].nativeBalance : row.native_balance,
+      native_balance_source: liveProbe?.nativeBalanceSource
+        || (liveProbe ? 'gmgn_probe' : persistedBalance.source),
+      native_balance_checked_at: liveProbe ? new Date().toISOString() : persistedBalance.checkedAt,
+      native_balance_age_ms: liveProbe ? 0 : persistedBalance.ageMs,
+      native_balance_ttl_ms: persistedBalance.ttlMs,
+      native_balance_fresh: nativeBalanceFresh,
+      native_balance_usable_for_gate: liveProbe
+        ? finiteBalance(liveProbe.nativeBalance) !== null
+        : persistedBalance.usableForBalance,
       last_error: probes[chain]?.ok ? null : (probes[chain]?.error || row.last_error || null),
       contract_tested: contractTested,
       code_capable: implemented,
@@ -1173,7 +1219,12 @@ async function getSnapshot(options = {}) {
       acceptance_status: acceptanceAuthorized ? 'active' : (acceptanceScope?.chain === chain
         ? (acceptanceScope.expired ? 'expired' : acceptanceScope.status)
         : 'none'),
-      contract_evidence: evidence ? { ...evidence, stale: !evidenceCurrent } : null,
+      contract_evidence: evidence ? {
+        ...evidence,
+        valid_now: evidenceFresh,
+        status_view: evidenceCurrent ? 'current' : 'historical',
+        stale: !evidenceCurrent
+      } : null,
       rpc_probe: rpcProbes[chain] || null,
       policy_enabled: policy.chains.includes(chain),
       dynamic_policy_enabled: dynamicPolicy.chains.includes(chain),
@@ -1545,6 +1596,8 @@ module.exports = {
   ReadinessMonitor,
   TRANSIENT_BLOCKERS,
   appendPolicyHealth,
+  balanceCacheStatus,
+  balanceCacheTtlMs,
   applyRpcBalanceFallback,
   configurationFingerprintChains,
   dynamicLivePolicyState,

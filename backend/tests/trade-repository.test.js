@@ -1,9 +1,37 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  buildGasReserveAdvisory,
   getPositionBalanceState,
   principalUsdCost
 } = require('../domains/trade/trade-repository');
+
+test('minimum gas reserve is recorded as a non-blocking advisory for an old balance', () => {
+  const previous = process.env.GMGN_MIN_GAS_RESERVE_BASE;
+  process.env.GMGN_MIN_GAS_RESERVE_BASE = '0.002';
+  try {
+    const advisory = buildGasReserveAdvisory({
+      chain: { id: 'base' },
+      budgetNative: '0.1',
+      feeReserveNative: '0.001',
+      walletNativeBalance: 0.01,
+      walletNativeBalanceSource: 'stale_cache_untrusted',
+      cacheMeta: { wallet: { fresh: false, age_ms: 1800000000 } }
+    }, { exitGasReserve: 0.002 }, {
+      retryEnabled: false,
+      maxRetries: 0,
+      maxRetryFeeNative: 0
+    });
+
+    assert.equal(advisory.code, 'MINIMUM_GAS_RESERVE_BREACH');
+    assert.equal(advisory.blocking, false);
+    assert.equal(advisory.observed_balance_source, 'stale_cache_untrusted');
+    assert.equal(advisory.required_gas_reserve, 0.002);
+  } finally {
+    if (previous === undefined) delete process.env.GMGN_MIN_GAS_RESERVE_BASE;
+    else process.env.GMGN_MIN_GAS_RESERVE_BASE = previous;
+  }
+});
 
 test('position lot USD cost comes from the native budget snapshot, not the output token price', () => {
   const cost = principalUsdCost('0.05', {

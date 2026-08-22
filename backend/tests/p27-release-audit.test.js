@@ -22,11 +22,14 @@ test('P27 release path policy excludes secrets, logs, dumps, and build output', 
 
 test('P27 content policy identifies credential material without returning values', () => {
   const gmgn = ['gmgn_', 'a'.repeat(32)].join('');
+  const xai = ['xai-', 'a'.repeat(32)].join('');
   const pem = `-----BEGIN PRIVATE KEY-----\n${'A'.repeat(96)}\n-----END PRIVATE KEY-----`;
   assert.deepEqual(secretCodes(gmgn), ['GMGN_API_KEY']);
+  assert.deepEqual(secretCodes(xai), ['XAI_API_KEY']);
   assert.deepEqual(secretCodes(pem), ['PRIVATE_KEY_PEM']);
   assert.deepEqual(secretCodes('-----BEGIN PRIVATE KEY-----'), []);
   assert.deepEqual(secretCodes('GMGN_API_KEY=example'), []);
+  assert.deepEqual(secretCodes('research-xai-first-request-started'), []);
 });
 
 test('P27 release allowlist selects runtime assets and excludes tests and local files', () => {

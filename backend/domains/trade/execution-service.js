@@ -30,6 +30,8 @@ const {
   requiresProviderGasPrice
 } = require('./triggered-provider-context');
 
+const DEFAULT_RPC_ADVISORY_TIMEOUT_MS = 500;
+
 function runtimeReadinessOptions(options = {}) {
   return {
     ...options,
@@ -50,15 +52,45 @@ function nativePriceUsd(wallet, symbol) {
   return gmgnAdapter.walletNativePriceUsd(wallet, symbol);
 }
 
+function rpcAdvisoryTimeoutMs() {
+  const configured = Number(process.env.CHAIN_RPC_ADVISORY_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured : DEFAULT_RPC_ADVISORY_TIMEOUT_MS;
+}
+
 async function resolveWalletNativeBalance(cached, dependencies = {}) {
   const gmgnBalance = nativeBalance(cached.wallet, cached.chain.nativeSymbol);
-  if (gmgnBalance !== null) {
-    return { value: gmgnBalance, source: 'gmgn', rpc: null };
+  const walletCache = cached.cacheMeta?.wallet || {};
+  if (gmgnBalance !== null && walletCache.fresh !== false) {
+    return { value: gmgnBalance, source: 'gmgn', rpc: null, cache: walletCache };
   }
 
-  const rpcProbe = await (dependencies.probeRpc || probeRpc)(cached.chain.id, {
-    walletAddress: cached.wallet.address
-  });
+  let rpcProbe;
+  try {
+    const rpcRequest = Promise.resolve()
+      .then(() => (dependencies.probeRpc || probeRpc)(cached.chain.id, {
+        walletAddress: cached.wallet.address
+      }))
+      .catch((error) => ({
+        ok: false,
+        error: error?.code || error?.message || 'CHAIN_RPC_BALANCE_UNAVAILABLE'
+      }));
+    rpcProbe = await Promise.race([
+      rpcRequest,
+      new Promise((resolve) => {
+        const timer = setTimeout(
+          () => resolve({ ok: false, error: 'CHAIN_RPC_ADVISORY_TIMEOUT' }),
+          rpcAdvisoryTimeoutMs()
+        );
+        timer.unref?.();
+      })
+    ]);
+  } catch (error) {
+    rpcProbe = {
+      ok: false,
+      error: error?.code || error?.message || 'CHAIN_RPC_BALANCE_UNAVAILABLE'
+    };
+  }
   const rpcBalance = Number(rpcProbe?.nativeBalance);
   if (rpcProbe?.ok
       && rpcProbe.nativeBalance !== null
@@ -72,6 +104,23 @@ async function resolveWalletNativeBalance(cached, dependencies = {}) {
       rpc: {
         identity: rpcProbe.identity || null,
         block_ref: rpcProbe.blockRef || null
+      },
+      cache: walletCache
+    };
+  }
+
+  if (gmgnBalance !== null && walletCache.fresh === false) {
+    return {
+      value: null,
+      source: 'stale_cache_untrusted',
+      advisory: 'WALLET_BALANCE_CACHE_STALE',
+      cache: {
+        ...walletCache,
+        cached_native_balance: gmgnBalance,
+        usable_for_balance: false
+      },
+      rpc: {
+        error: rpcProbe?.error || 'CHAIN_RPC_BALANCE_UNAVAILABLE'
       }
     };
   }
@@ -81,7 +130,11 @@ async function resolveWalletNativeBalance(cached, dependencies = {}) {
     source: 'unavailable',
     rpc: {
       error: rpcProbe?.error || 'CHAIN_RPC_BALANCE_UNAVAILABLE'
-    }
+    },
+    ...(walletCache.fresh === false
+      ? { advisory: 'WALLET_BALANCE_CACHE_STALE' }
+      : {}),
+    cache: walletCache
   };
 }
 
@@ -215,10 +268,13 @@ function evaluateRisk(context) {
   if (priceImpact.value === null) warnings.push('PRICE_IMPACT_UNKNOWN');
   const requiredNativeBalance = Number(context.requiredNativeBalance
     ?? (Number(context.budgetNative) + Number(context.feeReserveNative)));
-  if (context.walletNativeBalance === null) reasons.push('WALLET_BALANCE_UNKNOWN');
+  if (context.walletNativeBalanceSource === 'stale_cache_untrusted') {
+    warnings.push('WALLET_BALANCE_CACHE_STALE');
+  }
+  if (context.walletNativeBalance === null) warnings.push('WALLET_BALANCE_UNKNOWN');
   else if (!Number.isFinite(requiredNativeBalance)
       || context.walletNativeBalance < requiredNativeBalance) {
-    reasons.push('INSUFFICIENT_NATIVE_BALANCE');
+    warnings.push('INSUFFICIENT_NATIVE_BALANCE');
   }
   return {
     passed: reasons.length === 0,
@@ -236,6 +292,7 @@ function evaluateRisk(context) {
       price_impact_gross_pct: grossPriceImpact.value,
       buy_tax_excluded_from_price_impact_pct: priceImpact.buyTax ?? null,
       wallet_native_balance: context.walletNativeBalance,
+      wallet_native_balance_source: context.walletNativeBalanceSource || null,
       required_native_balance: requiredNativeBalance,
       exit_gas_reserve: Number(context.exitGasReserve || 0)
     }
@@ -370,6 +427,8 @@ async function buildPrepared(signalId, options = {}) {
     budgetUsdSnapshot,
     feeReserveNative,
     walletNativeBalance,
+    walletNativeBalanceSource: walletBalance.source,
+    walletBalanceAdvisory: walletBalance.advisory || null,
     conditionOrders: buildConditionOrders(signal)
   };
   const chainConfigs = await configService.get('chain_configs');
@@ -406,7 +465,9 @@ async function buildPrepared(signalId, options = {}) {
       wallet_balance: {
         native_balance: walletNativeBalance,
         source: walletBalance.source,
-        rpc: walletBalance.rpc
+        rpc: walletBalance.rpc,
+        cache: walletBalance.cache || cached.cacheMeta?.wallet || null,
+        advisory: walletBalance.advisory || null
       },
       budget: {
         principal_native: Number(budgetNative),
@@ -494,6 +555,8 @@ async function buildPrepared(signalId, options = {}) {
       risk_passed: risk.passed,
       risk_reasons: risk.reasons,
       risk_warnings: risk.warnings,
+      wallet_native_balance_source: walletBalance.source,
+      wallet_balance_advisory: walletBalance.advisory || null,
       live_allowed: policy.allowed,
       live_blockers: policy.blockers,
       cache: cached.cacheMeta

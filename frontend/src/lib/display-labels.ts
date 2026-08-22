@@ -284,6 +284,7 @@ const RISK_LABELS: Record<string, string> = {
   LIQUIDITY_UNKNOWN: '流动性数据未知',
   PRICE_IMPACT_UNKNOWN: '价格影响数据未知',
   WALLET_BALANCE_UNKNOWN: '钱包余额未知',
+  WALLET_BALANCE_CACHE_STALE: '钱包余额缓存已过期',
   INSUFFICIENT_NATIVE_BALANCE: '原生币余额不足',
 };
 
@@ -299,6 +300,12 @@ const ADVISORY_LABELS: Record<string, string> = {
   FAST_PATH_SLO_NOT_VERIFIED: '快速交易时延样本尚未达标',
   TRADE_ALERTS_NOT_VERIFIED: '资金告警尚未完成验证',
   WALLET_QUARANTINE_ACTIVE: '存在待核对的钱包写入隔离',
+  CHAIN_NATIVE_BALANCE_UNKNOWN: '该链余额暂时无法确认',
+  CHAIN_NATIVE_BALANCE_INSUFFICIENT: '该链余额观察值低于交易估算',
+  CHAIN_NATIVE_BALANCE_CACHE_STALE: '该链余额缓存已过期，仅作历史参考',
+  CHAIN_RPC_UNAVAILABLE: '该链 RPC 观察不可用，仍会继续交给 GMGN 判断',
+  CHAIN_RPC_TIMEOUT: '该链 RPC 观察超时，仍会继续交给 GMGN 判断',
+  CHAIN_RPC_MISSING: '该链未配置 RPC 观察，仍会继续交给 GMGN 判断',
 };
 
 const ADVISORY_ACTION_LABELS: Record<string, string> = {
@@ -309,6 +316,12 @@ const ADVISORY_ACTION_LABELS: Record<string, string> = {
   FAST_PATH_SLO_NOT_VERIFIED: '继续积累样本，不阻止本次作用域确认',
   TRADE_ALERTS_NOT_VERIFIED: '完成告警测试后再作为运维验收项处理',
   WALLET_QUARANTINE_ACTIVE: '先核对该钱包的未确定结果',
+  CHAIN_NATIVE_BALANCE_UNKNOWN: '记录余额未知，不阻止 GMGN 请求',
+  CHAIN_NATIVE_BALANCE_INSUFFICIENT: '仅提示观察值，不替代 GMGN 真实余额结果',
+  CHAIN_NATIVE_BALANCE_CACHE_STALE: '等待下一次探测刷新；不使用旧值阻断交易',
+  CHAIN_RPC_UNAVAILABLE: '记录 RPC 错误；不因 RPC 观察失败暂停 Engine',
+  CHAIN_RPC_TIMEOUT: '记录 RPC 超时；不因 RPC 观察失败暂停 Engine',
+  CHAIN_RPC_MISSING: '仅补充 RPC 观察配置，不阻止 GMGN 请求',
 };
 
 export function advisoryLabel(value: string): string {

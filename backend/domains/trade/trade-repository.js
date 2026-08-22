@@ -71,6 +71,39 @@ function usesWhitelistLifetimeBudget(signal) {
   return !runtimeAuthorization.scoped(signal);
 }
 
+function buildGasReserveAdvisory(prepared, chainConfig = {}, retryPolicy = {}) {
+  const configuredMinimumGasReserve = Number(
+    process.env[`GMGN_MIN_GAS_RESERVE_${String(prepared.chain.id).toUpperCase()}`] || 0
+  );
+  const exitGasReserve = Number(chainConfig.exitGasReserve || 0);
+  const requiredGasReserve = Math.max(configuredMinimumGasReserve, exitGasReserve);
+  const principal = Number(prepared.budgetNative);
+  const initialFeeReserve = Number(prepared.feeReserveNative || 0);
+  const retryFeeEnvelope = retryPolicy.retryEnabled
+    ? Number(retryPolicy.maxRetries || 0) * Number(retryPolicy.maxRetryFeeNative || 0)
+    : 0;
+  const planned = principal + initialFeeReserve + retryFeeEnvelope;
+  const observedWalletBalance = Number(prepared.walletNativeBalance);
+  const reserveConfigValid = [configuredMinimumGasReserve, exitGasReserve,
+    requiredGasReserve].every((value) => Number.isFinite(value) && value >= 0);
+  const balanceShortfall = reserveConfigValid
+    && Number.isFinite(observedWalletBalance)
+    && observedWalletBalance - planned < requiredGasReserve;
+  return {
+    code: !reserveConfigValid
+      ? 'GAS_RESERVE_CONFIG_INVALID'
+      : balanceShortfall ? 'MINIMUM_GAS_RESERVE_BREACH' : null,
+    observed_native_balance: Number.isFinite(observedWalletBalance)
+      ? observedWalletBalance : null,
+    observed_balance_source: prepared.walletNativeBalanceSource || null,
+    required_gas_reserve: requiredGasReserve,
+    planned_native: planned,
+    exit_gas_reserve: exitGasReserve,
+    cache: prepared.cacheMeta?.wallet || null,
+    blocking: false
+  };
+}
+
 async function recordUnusedFeeRelease(executor, reservation, intentId, attemptId, reason) {
   const unusedFee = unusedFeeEnvelope(reservation);
   if (unusedFee <= 0) return null;
@@ -385,18 +418,19 @@ async function createBuyAttempt(prepared) {
       error.code = 'WHITELIST_BUDGET_EXCEEDED';
       throw error;
     }
-    const configuredMinimumGasReserve = Number(
-      process.env[`GMGN_MIN_GAS_RESERVE_${prepared.chain.id.toUpperCase()}`] || 0
-    );
-    const exitGasReserve = Number(chainConfig.exitGasReserve || 0);
-    const requiredGasReserve = Math.max(configuredMinimumGasReserve, exitGasReserve);
-    if (![configuredMinimumGasReserve, exitGasReserve, requiredGasReserve]
-      .every((value) => Number.isFinite(value) && value >= 0)
-        || Number(prepared.walletNativeBalance) - planned < requiredGasReserve) {
-      const error = new Error('Minimum native gas reserve would be breached');
-      error.code = 'MINIMUM_GAS_RESERVE_BREACH';
-      error.details = { requiredGasReserve, exitGasReserve };
-      throw error;
+    const gasReserveAdvisory = buildGasReserveAdvisory(prepared, chainConfig, policy);
+    if (gasReserveAdvisory.code) {
+      prepared.riskSnapshot = {
+        ...(prepared.riskSnapshot || {}),
+        warnings: [...new Set([
+          ...(prepared.riskSnapshot?.warnings || []),
+          gasReserveAdvisory.code
+        ])],
+        checks: {
+          ...(prepared.riskSnapshot?.checks || {}),
+          gas_reserve_advisory: gasReserveAdvisory
+        }
+      };
     }
 
     const requestFingerprint = fingerprint({
@@ -424,7 +458,8 @@ async function createBuyAttempt(prepared) {
         exit_strategy: signal.exit_strategy,
         exit_strategy_version: signal.exit_strategy_version,
         token_decimals: prepared.token.decimals,
-        token_symbol: prepared.token.symbol
+        token_symbol: prepared.token.symbol,
+        gas_reserve_advisory: gasReserveAdvisory
       },
       traceId: prepared.traceId || signal.trace_id || null,
       timing: prepared.timing || {}
@@ -3232,6 +3267,7 @@ async function listAttempts(limit = 100) {
 module.exports = {
   addAttemptEvent,
   backfillLegacyPosition,
+  buildGasReserveAdvisory,
   claimExternalClose,
   releaseExternalCloseVerification,
   claimStrategyClose,

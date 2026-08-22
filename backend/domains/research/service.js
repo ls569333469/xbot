@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const db = require('../../lib/db');
+const logger = require('../../lib/logger');
 const researchAccess = require('../../lib/gmgn-access-service').accessFor('research');
 const gmgnAdapter = require('../../lib/gmgn-adapter');
 const { cache, cacheTtls } = require('../../lib/gmgn-cache');
@@ -8,14 +9,28 @@ const { X6551Client } = require('../../lib/x-client-6551');
 const {
   XAI_MODEL,
   XAI_PROMPT_VERSION,
-  discoverCandidates
+  runFirstResearch,
+  runFormatRepair,
+  runTargetedFollowup,
+  structuredResultFromOutput
 } = require('./xai-client');
+const {
+  MAX_GROK_REQUESTS,
+  MAX_SEARCH_TOOL_CALLS,
+  budgetError,
+  ensureCheckpoint,
+  getCheckpoint,
+  recordResponse,
+  reserveRequest,
+  withSocialResolution
+} = require('./checkpoint-repository');
 const { sanitizeCandidate, sanitizeTokenMetadata } = require('./sanitizers');
 
-const REPORT_ANALYZER_VERSION = 'p16-v3';
+const REPORT_ANALYZER_VERSION = 'p37-v1';
 const CONFIDENCE_RANK = new Map([
   ['unverified', 0], ['low', 1], ['medium', 2], ['high', 3], ['verified', 4]
 ]);
+const ACTIVE_CHECKPOINT_TTL_MS = 4 * 60 * 1000;
 
 function normalizeRequest(chainId, addressValue) {
   const chain = requireChain(String(chainId || '').trim().toLowerCase());
@@ -250,6 +265,196 @@ async function upsertActorCandidate(candidate, chainId, executor = db) {
   );
 }
 
+function hasReliableOfficialCandidate(candidates, metadata = {}) {
+  if (metadata.official_x_handle && candidates.some((candidate) => (
+    candidate.handle === metadata.official_x_handle
+  ))) return true;
+  return candidates.some((candidate) => {
+    if (candidate.role !== 'official_project' || !['verified', 'high'].includes(candidate.confidence)) {
+      return false;
+    }
+    const evidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+    return Boolean(candidate.association)
+      && evidence.some((item) => item.url || item.tweet_id);
+  });
+}
+
+function hasResolvedOfficialIdentity(candidates, metadata, providerStatus) {
+  if (metadata?.official_x_handle) return hasReliableOfficialCandidate(candidates, metadata);
+  return providerStatus === 'resolved' && hasReliableOfficialCandidate(candidates, metadata);
+}
+
+function reusableEvidence(error, checkpoint) {
+  return String(error?.evidenceText || checkpoint?.evidence_text || '').trim();
+}
+
+function secondRequestReason(error, checkpoint) {
+  const structureErrors = new Set([
+    'XAI_STRUCTURE_OUTPUT_EMPTY',
+    'XAI_STRUCTURE_JSON_INVALID',
+    'XAI_STRUCTURE_SCHEMA_INVALID'
+  ]);
+  const errorCode = error?.code || checkpoint?.last_error_code;
+  return structureErrors.has(errorCode) && reusableEvidence(error, checkpoint)
+    ? 'format_repair'
+    : 'targeted_followup';
+}
+
+function shouldStopWithoutSecondRequest(error) {
+  return new Set([
+    'XAI_KEY_MISSING',
+    'XAI_BASE_URL_INVALID',
+    'XAI_PROXY_URL_INVALID',
+    'XAI_AUTH_INVALID',
+    'XAI_CREDITS_EXHAUSTED',
+    'XAI_PERMISSION_DENIED',
+    'XAI_MODEL_UNAVAILABLE'
+  ]).has(error?.code);
+}
+
+function checkpointRequestInProgress(checkpoint, now = Date.now()) {
+  if (!['searching', 'format_repair', 'targeted_followup'].includes(checkpoint?.search_status)) {
+    return false;
+  }
+  const updatedAt = Date.parse(checkpoint.updated_at || '');
+  return Number.isFinite(updatedAt) && now - updatedAt < ACTIVE_CHECKPOINT_TTL_MS;
+}
+
+function requestInProgressError() {
+  const error = new Error('A Grok request is already in progress for this research report');
+  error.code = 'XAI_GROK_REQUEST_IN_PROGRESS';
+  error.status = 409;
+  return error;
+}
+
+function mergeCitations(...groups) {
+  return [...new Set(groups.flat().filter(Boolean))].slice(0, 30);
+}
+
+function appendUsage(checkpoint, phase, usage) {
+  const previous = Array.isArray(checkpoint?.search_usage?.requests)
+    ? checkpoint.search_usage.requests
+    : [];
+  return {
+    requests: [...previous, { phase, usage: usage || null }].slice(-MAX_GROK_REQUESTS)
+  };
+}
+
+function summarizeUsage(searchUsage) {
+  const summary = {};
+  for (const request of Array.isArray(searchUsage?.requests) ? searchUsage.requests : []) {
+    for (const key of ['input_tokens', 'output_tokens', 'total_tokens']) {
+      const value = Number(request?.usage?.[key]);
+      if (Number.isFinite(value) && value >= 0) summary[key] = (summary[key] || 0) + value;
+    }
+  }
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function researchInput(report, metadata) {
+  return {
+    chain: report.chain_id,
+    address: report.contract_address,
+    name: metadata.name,
+    symbol: metadata.symbol,
+    website_url: metadata.website_url,
+    official_x_handle: metadata.official_x_handle
+  };
+}
+
+function researchLogMeta(report, phase, options = {}, values = {}) {
+  return {
+    job_id: options.jobId ? String(options.jobId) : null,
+    item_id: options.itemId ? String(options.itemId) : null,
+    report_id: String(report.id),
+    chain_id: report.chain_id,
+    ca_hash: crypto.createHash('sha256').update(report.contract_address).digest('hex').slice(0, 12),
+    prompt_version: XAI_PROMPT_VERSION,
+    stage: phase,
+    ...values
+  };
+}
+
+async function executeGrokPhase(report, input, checkpoint, phase, reason, options = {}) {
+  const phaseStartedAt = Date.now();
+  const runner = phase === 'format_repair'
+    ? runFormatRepair
+    : phase === 'targeted_followup' ? runTargetedFollowup : runFirstResearch;
+  const remainingSearchCalls = Math.max(0, MAX_SEARCH_TOOL_CALLS - Number(checkpoint.search_tool_calls || 0));
+  if (phase !== 'format_repair' && remainingSearchCalls === 0) throw budgetError();
+  let reserved = checkpoint;
+  let requestReserved = false;
+  const runnerOptions = {
+    ...(options.xaiOptions || {}),
+    maxToolCalls: Math.min(4, remainingSearchCalls || 4),
+    evidenceText: checkpoint.evidence_text,
+    citations: checkpoint.citations,
+    beforeRequest: async () => {
+      reserved = await reserveRequest(report.id, phase === 'first_search' ? 'searching' : phase, {
+        reason: reason || null
+      });
+      requestReserved = true;
+      const reservationMeta = researchLogMeta(report, phase, options, {
+        grok_request_attempt: Number(reserved.grok_request_attempts),
+        request_limit: MAX_GROK_REQUESTS,
+        second_request_reason: reason || null,
+        search_tool_calls: Number(reserved.search_tool_calls || 0)
+      });
+      logger.info(
+        'project-research',
+        Number(reserved.grok_request_attempts) === 2
+          ? 'research-xai-second-request-started'
+          : 'research-xai-first-request-started',
+        reservationMeta
+      );
+    }
+  };
+  try {
+    const result = await runner(input, runnerOptions);
+    const updated = await recordResponse(report.id, {
+      search_status: 'result_ready',
+      evidence_text: result.rawOutput,
+      citations: mergeCitations(reserved.citations, result.citations),
+      search_usage: appendUsage(reserved, phase, result.usage),
+      search_tool_calls: result.searchToolCalls,
+      last_error_code: null
+    });
+    const completedEvent = phase === 'format_repair'
+      ? 'research-xai-format-repair-completed'
+      : phase === 'targeted_followup'
+        ? 'research-xai-targeted-followup-completed'
+        : 'research-xai-first-request-completed';
+    logger.info('project-research', completedEvent, researchLogMeta(report, phase, options, {
+      grok_request_attempt: Number(updated?.grok_request_attempts || reserved.grok_request_attempts),
+      second_request_reason: reason || null,
+      search_tool_calls: Number(updated?.search_tool_calls || 0),
+      input_tokens: Number(result.usage?.input_tokens || 0),
+      output_tokens: Number(result.usage?.output_tokens || 0),
+      total_tokens: Number(result.usage?.total_tokens || 0),
+      output_length: result.rawOutput.length,
+      response_status: result.status,
+      duration_ms: Date.now() - phaseStartedAt,
+      candidate_count: result.candidates.length
+    }));
+    return { result, checkpoint: updated || reserved };
+  } catch (error) {
+    if (!requestReserved) {
+      error.checkpoint = await getCheckpoint(report.id) || checkpoint;
+      throw error;
+    }
+    const updated = await recordResponse(report.id, {
+      search_status: 'failed',
+      evidence_text: error.evidenceText,
+      citations: mergeCitations(reserved.citations, error.citations),
+      search_usage: appendUsage(reserved, phase, error.usage),
+      search_tool_calls: error.searchToolCalls,
+      last_error_code: String(error.code || 'XAI_RESEARCH_FAILED').slice(0, 80)
+    });
+    error.checkpoint = updated || reserved;
+    throw error;
+  }
+}
+
 async function createReport(input) {
   const { chain, address } = normalizeRequest(input.chain_id, input.contract_address);
   const metadata = await getTokenMetadata(chain.id, address);
@@ -301,7 +506,7 @@ async function createReport(input) {
     ]
   );
   await Promise.all(candidates.map((candidate) => upsertActorCandidate(candidate, chain.id)));
-  return result.rows[0];
+  return withSocialResolution(result.rows[0], null);
 }
 
 async function findReusableReport(chainId, addressValue) {
@@ -323,36 +528,96 @@ async function findReusableReport(chainId, addressValue) {
 
 async function getReport(id) {
   const result = await db.query('SELECT * FROM token_research_reports WHERE id = $1', [id]);
-  return result.rows[0] || null;
+  const report = result.rows[0] || null;
+  if (!report) return null;
+  const checkpoint = await getCheckpoint(report.id);
+  return withSocialResolution(report, checkpoint);
 }
 
 async function expandReport(id, options = {}) {
-  const report = await getReport(id);
+  const reportResult = await db.query('SELECT * FROM token_research_reports WHERE id = $1', [id]);
+  const report = reportResult.rows[0] || null;
   if (!report) throw new Error('Research report not found');
   const metadata = report.provider_snapshot?.metadata || {};
+  const input = researchInput(report, metadata);
   const startedAt = Date.now();
+  let checkpoint = await ensureCheckpoint({
+    ...report,
+    prompt_version: XAI_PROMPT_VERSION
+  });
+  if (checkpointRequestInProgress(checkpoint)) throw requestInProgressError();
+  if (report.analysis_finished_at
+      && !report.xai_error_code
+      && report.analyzer_version === `${REPORT_ANALYZER_VERSION}+xai`
+      && ['completed', 'insufficient'].includes(checkpoint.search_status)) {
+    return withSocialResolution(report, checkpoint);
+  }
   await db.query(
     `UPDATE token_research_reports
      SET analysis_started_at = NOW(), analysis_finished_at = NULL,
-         xai_error_code = NULL, updated_at = NOW()
+         prompt_version = $2, xai_error_code = NULL, updated_at = NOW()
      WHERE id = $1`,
-    [id]
+    [id, XAI_PROMPT_VERSION]
   );
   try {
-    const expanded = await discoverCandidates({
-      chain: report.chain_id,
-      address: report.contract_address,
-      name: metadata.name,
-      symbol: metadata.symbol,
-      website_url: metadata.website_url,
-      official_x_handle: metadata.official_x_handle
-    });
+    let expanded = null;
+    let discoveredCandidates = [];
+    let firstError = null;
+    if (checkpoint.search_status === 'result_ready' && checkpoint.evidence_text) {
+      try {
+        expanded = structuredResultFromOutput(checkpoint.evidence_text, {
+          citations: checkpoint.citations,
+          searchToolCalls: checkpoint.search_tool_calls
+        });
+        discoveredCandidates = expanded.candidates;
+      } catch {
+        expanded = null;
+      }
+    }
+    if (!expanded && Number(checkpoint.grok_request_attempts) === 0) {
+      try {
+        const first = await executeGrokPhase(report, input, checkpoint, 'first_search', null, options);
+        expanded = first.result;
+        discoveredCandidates = first.result.candidates;
+        checkpoint = first.checkpoint;
+      } catch (error) {
+        firstError = error;
+        checkpoint = error.checkpoint || await getCheckpoint(report.id) || checkpoint;
+      }
+    }
+
+    const mergedAfterFirst = expanded
+      ? mergeCandidates(report.candidates || [], expanded.candidates)
+      : report.candidates || [];
+    const firstSucceeded = expanded
+      && hasResolvedOfficialIdentity(mergedAfterFirst, metadata, expanded.status);
+    if (!firstSucceeded) {
+      if (firstError && shouldStopWithoutSecondRequest(firstError)) throw firstError;
+      if (Number(checkpoint.grok_request_attempts) >= MAX_GROK_REQUESTS) {
+        if (firstError) throw firstError;
+        throw budgetError();
+      }
+      let reason = checkpoint.second_request_reason;
+      if (!reason) reason = expanded ? 'targeted_followup' : secondRequestReason(firstError, checkpoint);
+      if (firstError?.code === 'XAI_RATE_LIMITED' && firstError.retryAfterMs) {
+        const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+        await sleep(firstError.retryAfterMs);
+      }
+      await options.onStage?.('grok');
+      const second = await executeGrokPhase(report, input, checkpoint, reason, reason, options);
+      expanded = second.result;
+      discoveredCandidates = mergeCandidates(discoveredCandidates, second.result.candidates);
+      checkpoint = second.checkpoint;
+    }
+
     await options.onStage?.('verification');
     const candidates = await verifyCandidates(
-      mergeCandidates(report.candidates || [], expanded.candidates),
+      mergeCandidates(report.candidates || [], discoveredCandidates),
       metadata,
       { contract_address: report.contract_address }
     );
+    const resolved = hasResolvedOfficialIdentity(candidates, metadata, expanded.status);
+    const resolutionStatus = resolved ? 'completed' : 'insufficient';
     const durationMs = Date.now() - startedAt;
     const result = await db.query(
       `UPDATE token_research_reports
@@ -366,13 +631,15 @@ async function expandReport(id, options = {}) {
         JSON.stringify(candidates),
         {
           xai: {
-            status: 'completed',
+            status: resolutionStatus,
             model: XAI_MODEL,
             prompt_version: XAI_PROMPT_VERSION,
             duration_ms: durationMs,
             summary: expanded.summary,
-            citations: expanded.citations,
-            usage: expanded.usage
+            citations: checkpoint.citations,
+            usage: summarizeUsage(checkpoint.search_usage),
+            grok_request_attempts: checkpoint.grok_request_attempts,
+            search_tool_calls: checkpoint.search_tool_calls
           }
         },
         `${REPORT_ANALYZER_VERSION}+xai`,
@@ -385,10 +652,27 @@ async function expandReport(id, options = {}) {
     await Promise.all(candidates.map((candidate) => (
       upsertActorCandidate(candidate, report.chain_id)
     )));
-    return result.rows[0];
+    checkpoint = await recordResponse(report.id, {
+      search_status: resolutionStatus,
+      evidence_text: expanded.rawOutput,
+      citations: checkpoint.citations,
+      search_usage: checkpoint.search_usage,
+      search_tool_calls: 0,
+      last_error_code: null
+    }) || checkpoint;
+    return withSocialResolution(result.rows[0], checkpoint);
   } catch (error) {
     const durationMs = Date.now() - startedAt;
     const errorCode = String(error.code || 'XAI_RESEARCH_FAILED').slice(0, 80);
+    checkpoint = await getCheckpoint(report.id) || checkpoint;
+    await recordResponse(report.id, {
+      search_status: 'failed',
+      evidence_text: checkpoint.evidence_text,
+      citations: checkpoint.citations,
+      search_usage: checkpoint.search_usage,
+      search_tool_calls: 0,
+      last_error_code: errorCode
+    });
     await db.query(
       `UPDATE token_research_reports
        SET provider_snapshot = provider_snapshot || $1::jsonb,
@@ -404,7 +688,9 @@ async function expandReport(id, options = {}) {
             prompt_version: XAI_PROMPT_VERSION,
             duration_ms: durationMs,
             error_code: errorCode,
-            usage: error.usage || null
+            usage: summarizeUsage(checkpoint.search_usage) || error.usage || null,
+            grok_request_attempts: checkpoint.grok_request_attempts,
+            search_tool_calls: checkpoint.search_tool_calls
           }
         },
         XAI_MODEL,
@@ -414,8 +700,27 @@ async function expandReport(id, options = {}) {
         id
       ]
     );
+    logger.warn('project-research', errorCode === 'XAI_GROK_REQUEST_BUDGET_EXHAUSTED'
+      ? 'research-xai-budget-exhausted'
+      : 'research-xai-failed', researchLogMeta(report, checkpoint.search_status, options, {
+      error_code: errorCode,
+      grok_request_attempt: Number(checkpoint.grok_request_attempts || 0),
+      second_request_reason: checkpoint.second_request_reason || null,
+      search_tool_calls: Number(checkpoint.search_tool_calls || 0),
+      duration_ms: durationMs
+    }));
     throw error;
   }
+}
+
+async function retrySocialResolution(id, options = {}) {
+  const checkpoint = await getCheckpoint(id);
+  if (checkpoint
+      && Number(checkpoint.grok_request_attempts) >= MAX_GROK_REQUESTS
+      && checkpoint.search_status !== 'result_ready') {
+    throw budgetError();
+  }
+  return expandReport(id, options);
 }
 
 function candidateEvidenceSnapshot(candidate) {
@@ -503,11 +808,13 @@ module.exports = {
   getTokenMetadata,
   listActors,
   normalizeRequest,
+  retrySocialResolution,
   reportToWhitelistDraft,
   reportCacheKey,
   mergeCandidates,
   upsertActorCandidate,
   verifyCandidates,
   verifyOfficialCandidate,
+  hasReliableOfficialCandidate,
   REPORT_ANALYZER_VERSION
 };

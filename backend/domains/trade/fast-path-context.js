@@ -8,6 +8,38 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const DEFAULT_BALANCE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function balanceCacheTtlMs() {
+  const configured = Number(process.env.CHAIN_READINESS_BALANCE_TTL_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured : DEFAULT_BALANCE_CACHE_TTL_MS;
+}
+
+function cacheAgeMs(checkedAt, now = Date.now()) {
+  if (!checkedAt) return null;
+  const timestamp = new Date(checkedAt).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Number(now) - timestamp);
+}
+
+function walletCacheMeta(readiness = {}, now = Date.now()) {
+  const checkedAt = readiness.last_checked_at || null;
+  const ageMs = cacheAgeMs(checkedAt, now);
+  const ttlMs = balanceCacheTtlMs();
+  const fresh = ageMs !== null && ageMs <= ttlMs;
+  return {
+    version: 'p39-wallet-cache-v1',
+    age_ms: ageMs,
+    ttl_ms: ttlMs,
+    checked_at: checkedAt,
+    fresh,
+    usable_for_balance: fresh,
+    hit: true,
+    source: fresh ? 'chain_live_readiness' : 'stale_chain_live_readiness'
+  };
+}
+
 function tokenFromLocalSnapshot(signal, snapshot = {}) {
   const info = snapshot.info && typeof snapshot.info === 'object' ? snapshot.info : {};
   const decimals = Number(info.decimals ?? signal.token_decimals);
@@ -30,7 +62,13 @@ function localCacheMeta(source) {
 }
 
 async function loadExecutionProfile(signal, chain, options = {}) {
-  if (options.executionProfile) return options.executionProfile;
+  if (options.executionProfile) {
+    return {
+      ...options.executionProfile,
+      walletCache: options.executionProfile.walletCache
+        || localCacheMeta('execution_profile')
+    };
+  }
   const executor = options.executor || db;
   const result = await executor.query(
     `SELECT chain, wallet_address, balances_json, native_balance, last_checked_at
@@ -51,7 +89,8 @@ async function loadExecutionProfile(signal, chain, options = {}) {
   }
   return {
     wallet: { chain: chain.id, address: walletAddress, balances },
-    readiness
+    readiness,
+    walletCache: walletCacheMeta(readiness)
   };
 }
 
@@ -79,7 +118,7 @@ async function loadCachedContext(signal, options = {}) {
     gas,
     nativeToken,
     cacheMeta: {
-      wallet: localCacheMeta('chain_live_readiness'),
+      wallet: profile.walletCache || localCacheMeta('chain_live_readiness'),
       token: localCacheMeta(snapshot.info ? 'verification_snapshot' : 'signal_snapshot'),
       security: localCacheMeta(snapshot.security ? 'verification_snapshot' : 'unknown'),
       pool: localCacheMeta(snapshot.pool ? 'verification_snapshot' : 'unknown'),

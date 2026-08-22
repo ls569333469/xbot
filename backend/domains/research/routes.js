@@ -46,6 +46,19 @@ router.post('/token-reports/:id/expand', async (req, res) => {
   }
 });
 
+router.post('/token-reports/:id/retry-social-resolution', async (req, res) => {
+  try {
+    const data = await service.retrySocialResolution(req.params.id);
+    res.json({ ok: true, data });
+  } catch (error) {
+    res.status(error.status || 400).json({
+      ok: false,
+      error: error.message,
+      code: error.code || 'BAD_REQUEST'
+    });
+  }
+});
+
 router.post('/token-reports/:id/whitelist-draft', async (req, res) => {
   try {
     const data = await service.reportToWhitelistDraft(req.params.id);

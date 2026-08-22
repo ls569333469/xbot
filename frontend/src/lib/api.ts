@@ -208,6 +208,7 @@ export const api = {
     createReport: (chain_id: string, contract_address: string) => fetchApi<ApiResponse<import('./types').TokenResearchReport>>('/api/research/token-reports', { method: 'POST', body: JSON.stringify({ chain_id, contract_address }) }),
     getReport: (id: string) => fetchApi<ApiResponse<import('./types').TokenResearchReport>>(`/api/research/token-reports/${id}`),
     expandReport: (id: string) => fetchApi<ApiResponse<import('./types').TokenResearchReport>>(`/api/research/token-reports/${id}/expand`, { method: 'POST' }),
+    retrySocialResolution: (id: string) => fetchApi<ApiResponse<import('./types').TokenResearchReport>>(`/api/research/token-reports/${id}/retry-social-resolution`, { method: 'POST' }),
     whitelistDraft: (id: string) => fetchApi<ApiResponse<import('./types').WhitelistDraftPayload>>(`/api/research/token-reports/${id}/whitelist-draft`, { method: 'POST' }),
     actors: (params?: Record<string, string>) => fetchApi<ApiResponse<unknown[]>>(
       `/api/research/actors${params ? `?${new URLSearchParams(params).toString()}` : ''}`

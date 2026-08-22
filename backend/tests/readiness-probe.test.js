@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   appendPolicyHealth,
+  balanceCacheStatus,
+  balanceCacheTtlMs,
   contractApprovalReady,
   configurationFingerprintChains,
   followLivePolicyState,
@@ -88,9 +90,39 @@ test('chain readiness separates fixed CA contract evidence from shared infrastru
     infrastructureReady: true
   });
   assert.deepEqual(splitChainReadiness(['CHAIN_RPC_UNAVAILABLE']), {
-    fixedReady: false,
-    infrastructureReady: false
+    fixedReady: true,
+    infrastructureReady: true
   });
+  assert.deepEqual(splitChainReadiness(['CHAIN_RPC_MISSING']), {
+    fixedReady: true,
+    infrastructureReady: true
+  });
+});
+
+test('persisted wallet balance freshness is explicit and configurable', () => {
+  const previous = process.env.CHAIN_READINESS_BALANCE_TTL_MS;
+  process.env.CHAIN_READINESS_BALANCE_TTL_MS = '60000';
+  try {
+    const fresh = balanceCacheStatus({
+      native_balance: '0.5',
+      last_checked_at: '2026-08-22T00:00:00.000Z'
+    }, Date.parse('2026-08-22T00:00:30.000Z'));
+    assert.equal(balanceCacheTtlMs(), 60000);
+    assert.equal(fresh.fresh, true);
+    assert.equal(fresh.usableForBalance, true);
+    assert.equal(fresh.ageMs, 30000);
+
+    const stale = balanceCacheStatus({
+      native_balance: '0.5',
+      last_checked_at: '2026-08-01T00:00:00.000Z'
+    }, Date.parse('2026-08-22T00:00:00.000Z'));
+    assert.equal(stale.fresh, false);
+    assert.equal(stale.usableForBalance, false);
+    assert.equal(stale.source, 'stale_chain_live_readiness');
+  } finally {
+    if (previous === undefined) delete process.env.CHAIN_READINESS_BALANCE_TTL_MS;
+    else process.env.CHAIN_READINESS_BALANCE_TTL_MS = previous;
+  }
 });
 
 test('P21 can use an infrastructure-ready chain while fixed CA evidence remains pending', () => {

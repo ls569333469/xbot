@@ -842,6 +842,9 @@ export default function SettingsPage() {
                   <div className="text-xs text-secondary font-mono">
                     GMGN 订单 {chain.trade_evidence.confirmedOrders} · RPC 回执 {chain.trade_evidence.confirmedReceipts}
                   </div>
+                  <div className="text-xs text-secondary font-mono">
+                    余额缓存 {chain.native_balance_fresh ? '新鲜' : '过期/历史'} · {chain.native_balance_source || '未知来源'} · {chain.native_balance_age_ms == null ? '未记录' : `${Math.floor(chain.native_balance_age_ms / 60000)} 分钟前`}
+                  </div>
                 </div>
               ))}
             </div>

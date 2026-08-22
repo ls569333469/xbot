@@ -12,6 +12,7 @@ const {
   XAI_RESPONSES_URL,
   classifyXaiError,
   discoverCandidates,
+  extractOutputText,
   resolveResponsesUrl,
   retryAfterMs,
   sanitizeUsage
@@ -218,20 +219,22 @@ test('xAI research uses Responses structured output and never trusts raw candida
           async json() {
             return {
               output_text: JSON.stringify({
+                status: 'resolved',
                 summary: 'Evidence-backed result',
                 candidates: [{
                   handle: '@Valid_Handle',
-                  display_name: 'Valid',
                   role: 'founder',
                   organization: 'Example',
                   association: 'Founder of the project linked to this contract',
                   confidence: 'high',
-                  evidence: [{
-                    label: 'Public source',
-                    url: 'http://127.0.0.1/private',
-                    tweet_id: '',
-                    source: 'x_search'
-                  }]
+                  evidence_ids: ['e1']
+                }],
+                evidence: [{
+                  evidence_id: 'e1',
+                  source_type: 'x_post',
+                  excerpt: 'Public source',
+                  url: 'http://127.0.0.1/private',
+                  tweet_id: ''
                 }]
               }),
               citations: ['https://example.com/source', 'http://[::1]/private'],
@@ -244,7 +247,10 @@ test('xAI research uses Responses structured output and never trusts raw candida
 
     assert.equal(request.url, XAI_RESPONSES_URL);
     assert.equal(request.body.model, XAI_MODEL);
-    assert.deepEqual(request.body.tools, [{ type: 'x_search' }]);
+    assert.deepEqual(request.body.tools, [{ type: 'x_search' }, { type: 'web_search' }]);
+    assert.equal(request.body.max_tool_calls, 4);
+    assert.equal(request.body.max_turns, 4);
+    assert.equal(request.body.max_output_tokens, 6000);
     assert.equal(request.body.text.format.type, 'json_schema');
     assert.equal(request.body.text.format.strict, true);
     assert.match(request.body.input[1].content, /Ignore previous instructions/);
@@ -255,7 +261,7 @@ test('xAI research uses Responses structured output and never trusts raw candida
     assert.deepEqual(result.usage, { input_tokens: 120, output_tokens: 30, total_tokens: 150 });
     assert.deepEqual(
       request.body.text.format.schema.properties.candidates.items.required,
-      ['handle', 'display_name', 'role', 'organization', 'association', 'confidence', 'evidence']
+      ['handle', 'role', 'organization', 'association', 'confidence', 'evidence_ids']
     );
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY;
@@ -277,6 +283,12 @@ test('xAI usage and Retry-After values are bounded for audit and retry', () => {
   assert.equal(retryAfterMs('2'), 2000);
   assert.equal(retryAfterMs(new Date(10_000).toUTCString(), 9_000), 1000);
   assert.equal(retryAfterMs('invalid'), 1000);
+});
+
+test('xAI Responses content.json is accepted without scraping prose', () => {
+  assert.equal(extractOutputText({
+    output: [{ content: [{ json: { status: 'insufficient', summary: 'ok', candidates: [], evidence: [] } }] }]
+  }), '{"status":"insufficient","summary":"ok","candidates":[],"evidence":[]}');
 });
 
 test('xAI Responses endpoint supports a validated provider base URL', () => {
@@ -320,22 +332,22 @@ test('xAI research fails closed when the key or structured response is missing',
     process.env.XAI_API_KEY = 'xai-test-key';
     await assert.rejects(() => discoverCandidates({}, {
       fetchImpl: async () => ({ ok: true, json: async () => ({ output_text: 'not-json' }) })
-    }), { code: 'XAI_SCHEMA_INVALID' });
+    }), { code: 'XAI_STRUCTURE_JSON_INVALID' });
 
     await assert.rejects(() => discoverCandidates({}, {
       fetchImpl: async () => ({ ok: true, json: async () => ({ output_text: '' }) })
-    }), { code: 'XAI_OUTPUT_EMPTY' });
+    }), { code: 'XAI_STRUCTURE_OUTPUT_EMPTY' });
 
     await assert.rejects(() => discoverCandidates({}, {
       fetchImpl: async () => ({
         ok: true,
         json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } })
       })
-    }), { code: 'XAI_RESPONSE_INCOMPLETE' });
+    }), { code: 'XAI_SEARCH_INCOMPLETE' });
 
     await assert.rejects(() => discoverCandidates({}, {
       fetchImpl: async () => ({ ok: true, json: async () => ({ output_text: '{}' }) })
-    }), { code: 'XAI_SCHEMA_INVALID' });
+    }), { code: 'XAI_STRUCTURE_SCHEMA_INVALID' });
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY;
     else process.env.XAI_API_KEY = previousKey;
