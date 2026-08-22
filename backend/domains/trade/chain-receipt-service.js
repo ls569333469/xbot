@@ -9,6 +9,13 @@ const GMGN_ROUTER_SWAP_EVENT_TOPICS = new Set([
   // Current EVM router event emitted by the live ETH sell path.
   '0x3145c7c5a7804148dd68148a26f9f6a2ad2816be643e0f456290a8b81b9c5154'
 ]);
+const EVM_WRAPPED_NATIVE_WITHDRAWAL_TOPIC =
+  '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65';
+const WRAPPED_NATIVE_TOKENS_BY_CHAIN_ID = Object.freeze({
+  1: new Set(['0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2']),
+  56: new Set(['0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c']),
+  8453: new Set(['0x4200000000000000000000000000000000000006'])
+});
 
 function jsonSafe(value) {
   return JSON.parse(JSON.stringify(value, (_key, item) => (
@@ -45,6 +52,46 @@ function closedTokenAccountRentRaw(transfers, walletAddress, tradedToken) {
 function topicAddress(topic) {
   const value = String(topic || '').toLowerCase();
   return /^0x[0-9a-f]{64}$/.test(value) ? `0x${value.slice(-40)}` : null;
+}
+
+function wrappedNativeWithdrawalProceeds(receipt, walletAddress, dependencies = {}) {
+  const wallet = String(walletAddress || '').toLowerCase();
+  const router = String(receipt?.to || '').toLowerCase();
+  const sender = String(receipt?.from || '').toLowerCase();
+  const chainId = Number(dependencies.chainId);
+  const wrappedTokens = WRAPPED_NATIVE_TOKENS_BY_CHAIN_ID[chainId];
+  const expectedOutput = String(dependencies.expectedOutputAmountRaw || '');
+  const allowProviderOutputMismatch = dependencies.allowProviderOutputMismatch === true;
+  if (!wallet || sender !== wallet || !router || !wrappedTokens
+      || (!allowProviderOutputMismatch && !/^\d+$/.test(expectedOutput))) return null;
+
+  for (const log of receipt.logs || []) {
+    const topics = Array.isArray(log.topics) ? log.topics : [];
+    const wrappedToken = String(log.address || '').toLowerCase();
+    if (!wrappedTokens.has(wrappedToken)
+        || String(topics[0] || '').toLowerCase() !== EVM_WRAPPED_NATIVE_WITHDRAWAL_TOPIC
+        || topicAddress(topics[1]) !== router) continue;
+    const data = String(log.data || '').replace(/^0x/, '');
+    if (!/^[0-9a-f]{64}$/i.test(data)) continue;
+    const amountRaw = BigInt(`0x${data}`).toString();
+    if (BigInt(amountRaw) <= 0n
+        || (!allowProviderOutputMismatch && amountRaw !== expectedOutput)) continue;
+    return {
+      amountRaw,
+      verification: {
+        method: 'wrapped_native_withdrawal',
+        chain_id: chainId,
+        wrapped_token: wrappedToken,
+        event_topic: EVM_WRAPPED_NATIVE_WITHDRAWAL_TOPIC,
+        log_index: Number(log.index ?? -1),
+        withdrawal_source: router,
+        recipient: wallet,
+        provider_output_amount_raw: /^\d+$/.test(expectedOutput) ? expectedOutput : null,
+        provider_output_matched: amountRaw === expectedOutput
+      }
+    };
+  }
+  return null;
 }
 
 function gmgnRouterNativeProceeds(receipt, walletAddress, dependencies = {}) {
@@ -167,6 +214,12 @@ async function verifyEvm(txHash, config, dependencies = {}) {
   const routerProceeds = dependencies.verifyNativeBalanceDelta
     ? gmgnRouterNativeProceeds(receipt, walletAddress, dependencies)
     : null;
+  const wrappedWithdrawal = dependencies.verifyNativeBalanceDelta
+    ? wrappedNativeWithdrawalProceeds(receipt, walletAddress, {
+      ...dependencies,
+      chainId: dependencies.chainId || config.chainId
+    })
+    : null;
   if (dependencies.verifyNativeBalanceDelta && walletAddress && receipt.blockNumber > 0) {
     try {
       const [transaction, beforeBalance, afterBalance, rawBlock] = await Promise.all([
@@ -210,11 +263,12 @@ async function verifyEvm(txHash, config, dependencies = {}) {
       index: log.index
     })),
     nativeBalanceDeltaRaw,
-    nativeProceedsRaw: routerProceeds?.amountRaw || null,
+    nativeProceedsRaw: routerProceeds?.amountRaw || wrappedWithdrawal?.amountRaw || null,
     raw: {
       receipt: jsonSafe(receipt),
       nativeBalanceVerification,
-      nativeProceedsVerification: routerProceeds?.verification || null
+      nativeProceedsVerification: routerProceeds?.verification
+        || wrappedWithdrawal?.verification || null
     }
   };
 }
@@ -376,6 +430,7 @@ module.exports = {
   jsonSafe,
   probeRpc,
   scanWalletSinceSnapshot,
+  wrappedNativeWithdrawalProceeds,
   verify,
   verifyEvm,
   verifySolana

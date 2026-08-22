@@ -21,7 +21,8 @@ const CLOSE_ERROR_MESSAGES: Record<string, string> = {
   STRATEGY_STATE_UNSAFE: '止盈止损策略正在变化，请稍后刷新再试',
   STRATEGY_CANCEL_UNCERTAIN: '止盈止损取消结果待确认，系统未继续卖出',
   STRATEGY_CANCEL_UNVERIFIED: '未能确认止盈止损已取消，系统未继续卖出',
-  STRATEGY_TRIGGERED_DURING_CANCEL: '止盈止损在取消过程中已触发，请等待仓位对账'
+  STRATEGY_TRIGGERED_DURING_CANCEL: '止盈止损在取消过程中已触发，请等待仓位对账',
+  KNOWN_CLOSE_ORDER_NOT_FOUND: '没有找到可重新核验的已知平仓订单，请刷新后再试'
 };
 
 function closeErrorMessage(response: ApiResponse<unknown>, fallback: string) {
@@ -81,6 +82,11 @@ export default function PositionsPage() {
     }
   }, [lastEvent, toast, fetchPositions]);
 
+  const hasKnownCloseOrder = (position: Position) => (
+    ['closing', 'close_uncertain'].includes(position.status)
+    && Boolean(position.execution?.tx_hash)
+  );
+
   const handleWalletSync = async (id: EntityId, confirmed = false) => {
     if (!confirmed && !confirm(
       '确认同步交易钱包？\n\n系统将查询该代币余额和卖出记录；如发现遗留保护策略，会先核验并取消。只有找到唯一链上卖出证据后才会更新仓位。'
@@ -115,6 +121,37 @@ export default function PositionsPage() {
     }
   };
 
+  const handleKnownCloseReconciliation = async (id: EntityId) => {
+    setSyncingIds(previous => new Set(previous).add(id));
+    try {
+      const response = await api.trade.reconcileKnownClose(id);
+      if (!response.ok || !response.data) {
+        throw new Error(closeErrorMessage(response, '平仓重新核验失败'));
+      }
+      const messages: Record<string, { message: string; type: 'success' | 'warning' | 'info' }> = {
+        confirmed: { message: '平仓链上回执已核验，仓位已完成', type: 'success' },
+        native_proceeds_unverified: { message: '已重新核验，但仍未确认原生币收益', type: 'warning' },
+        transfer_mismatch: { message: '已重新核验，但代币转账数量不匹配', type: 'warning' },
+        chain_verifying: { message: '平仓回执仍在链上确认中', type: 'info' },
+        chain_pending: { message: '平仓交易仍在等待链上回执', type: 'info' },
+        chain_failed: { message: '平仓链上回执失败，已保留待核对状态', type: 'warning' }
+      };
+      const feedback = messages[response.data.status]
+        || { message: `平仓核验状态：${response.data.status}`, type: 'info' as const };
+      toast(feedback.message, feedback.type);
+      void fetchPositions();
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : '平仓重新核验异常', 'error');
+      void fetchPositions();
+    } finally {
+      setSyncingIds(previous => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
   const handleClose = async (id: EntityId) => {
     const position = positions.find(item => item.id === id);
     if (!position) return;
@@ -133,7 +170,8 @@ export default function PositionsPage() {
           if (confirm(
             '交易钱包中已没有该代币。是否立即同步钱包卖出记录，并清理遗留保护策略？'
           )) {
-            await handleWalletSync(id, true);
+            if (hasKnownCloseOrder(position)) await handleKnownCloseReconciliation(id);
+            else await handleWalletSync(id, true);
           }
           return;
         }
@@ -291,10 +329,17 @@ export default function PositionsPage() {
           <button
             className="btn btn-secondary"
             style={{ width: 30, height: 30, padding: 0 }}
-            onClick={() => handleWalletSync(row.id)}
+            onClick={() => {
+              if (hasKnownCloseOrder(row)) void handleKnownCloseReconciliation(row.id);
+              else void handleWalletSync(row.id);
+            }}
             disabled={syncingIds.has(row.id) || closingIds.has(row.id)}
-            title="同步交易钱包"
-            aria-label="同步交易钱包"
+            title={hasKnownCloseOrder(row)
+              ? '重新核验已知平仓'
+              : '同步交易钱包'}
+            aria-label={hasKnownCloseOrder(row)
+              ? '重新核验已知平仓'
+              : '同步交易钱包'}
           >
             <RefreshCw size={13} className={syncingIds.has(row.id) ? 'spin' : ''} />
           </button>

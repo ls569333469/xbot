@@ -313,6 +313,26 @@ router.post('/positions/:id/close/execute', async (req, res) => {
   }
 });
 
+router.post('/positions/:id/reconcile-known-close', async (req, res) => {
+  try {
+    if (req.body?.confirmation !== 'RECONCILE KNOWN CLOSE') {
+      return res.status(400).json({
+        ok: false,
+        error: 'Explicit known close reconciliation confirmation is required',
+        code: 'CONFIRMATION_REQUIRED'
+      });
+    }
+    const data = await reconciler.reconcileKnownPositionClose(req.params.id);
+    req.app.get('wsBroadcast')?.({
+      type: 'position:update',
+      payload: { position_id: Number(req.params.id), ...data }
+    });
+    res.json({ ok: true, data });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
 router.post('/positions/:id/reconcile-external-close', async (req, res) => {
   try {
     if (req.body?.confirmation !== 'SYNC EXTERNAL CLOSE') {

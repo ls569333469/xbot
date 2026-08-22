@@ -1090,6 +1090,15 @@ export interface ExternalCloseReconciliation {
   strategyGroupId?: EntityId | null;
 }
 
+export interface KnownCloseReconciliation {
+  positionId: EntityId;
+  source: 'known_close_order';
+  status: 'confirmed' | 'native_proceeds_unverified' | 'transfer_mismatch'
+    | 'chain_verifying' | 'chain_failed' | 'chain_pending'
+    | 'reconciliation_claimed_elsewhere';
+  orderId?: EntityId | null;
+}
+
 export interface TradeSignal {
   id: EntityId;
   contract_version: 'p27.v1';

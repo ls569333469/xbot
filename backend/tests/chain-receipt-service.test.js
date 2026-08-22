@@ -4,6 +4,7 @@ const {
   closedTokenAccountRentRaw,
   gmgnRouterNativeProceeds,
   probeRpc,
+  wrappedNativeWithdrawalProceeds,
   verifyEvm,
   verifySolana
 } = require('../domains/trade/chain-receipt-service');
@@ -113,6 +114,45 @@ test('GMGN live ETH router event proves proceeds when approve and swap share the
   assert.equal(evidence.verification.event_topic, GMGN_LIVE_ETH_SWAP_TOPIC);
 });
 
+test('Base WETH withdrawal proves exact native proceeds when the router event is not the payout amount', () => {
+  const wallet = '0x2ee060cac1b13d7758bf03298730f3b067dfa898';
+  const router = '0x4313c378cc91ea583c91387b9216e2c03096b27f';
+  const output = '987121677069770';
+  const withdrawalTopic = '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65';
+  const evidence = wrappedNativeWithdrawalProceeds({
+    from: wallet,
+    to: router,
+    logs: [{
+      address: '0x4200000000000000000000000000000000000006',
+      index: 52,
+      topics: [withdrawalTopic, `0x${router.slice(2).padStart(64, '0')}`],
+      data: `0x${uint256(output)}`
+    }]
+  }, wallet, { chainId: 8453, expectedOutputAmountRaw: output });
+  assert.equal(evidence.amountRaw, output);
+  assert.equal(evidence.verification.method, 'wrapped_native_withdrawal');
+  assert.equal(evidence.verification.withdrawal_source, router);
+
+  assert.equal(wrappedNativeWithdrawalProceeds({
+    from: wallet,
+    to: router,
+    logs: [{
+      address: '0x4200000000000000000000000000000000000006',
+      topics: [withdrawalTopic, `0x${wallet.slice(2).padStart(64, '0')}`],
+      data: `0x${uint256(output)}`
+    }]
+  }, wallet, { chainId: 8453, expectedOutputAmountRaw: output }), null);
+  assert.equal(wrappedNativeWithdrawalProceeds({
+    from: wallet,
+    to: router,
+    logs: [{
+      address: '0x4200000000000000000000000000000000000006',
+      topics: [withdrawalTopic, `0x${router.slice(2).padStart(64, '0')}`],
+      data: `0x${uint256('987121677069771')}`
+    }]
+  }, wallet, { chainId: 8453, expectedOutputAmountRaw: output }), null);
+});
+
 function providerWithTransactions(transactions, receipt = { status: 1, blockNumber: 100, logs: [] }) {
   return {
     getNetwork: async () => ({ chainId: 8453n }),
@@ -162,6 +202,54 @@ test('EVM receipt verifies GMGN native proceeds despite another wallet transacti
   assert.equal(verified.nativeBalanceDeltaRaw, null);
   assert.equal(verified.nativeProceedsRaw, output);
   assert.equal(verified.raw.nativeProceedsVerification.event_topic, GMGN_LIVE_ETH_SWAP_TOPIC);
+});
+
+test('EVM receipt uses Base WETH withdrawal after an ambiguous wallet balance delta', async () => {
+  const wallet = '0x2ee060cac1b13d7758bf03298730f3b067dfa898';
+  const router = '0x4313c378cc91ea583c91387b9216e2c03096b27f';
+  const input = '449765582468526225438846';
+  const output = '987121677069770';
+  const withdrawalTopic = '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65';
+  const provider = providerWithTransactions([
+    { hash: '0xapprove', from: wallet, to: '0xtoken' },
+    { hash: '0xtarget', from: wallet, to: router }
+  ], {
+    status: 1,
+    blockNumber: 100,
+    from: wallet,
+    to: router,
+    logs: [
+      {
+        address: router,
+        index: 41,
+        topics: [
+          GMGN_LIVE_ETH_SWAP_TOPIC,
+          `0x${wallet.slice(2).padStart(64, '0')}`,
+          `0x${wallet.slice(2).padStart(64, '0')}`,
+          `0x${'0'.padStart(64, '0')}`
+        ],
+        data: `0x${uint256(input)}${uint256('15636007364785168')}`
+      },
+      {
+        address: '0x4200000000000000000000000000000000000006',
+        index: 52,
+        topics: [withdrawalTopic, `0x${router.slice(2).padStart(64, '0')}`],
+        data: `0x${uint256(output)}`
+      }
+    ]
+  });
+  const verified = await verifyEvm('0xtarget', {
+    url: 'http://unused', chainId: 8453, confirmations: 2
+  }, {
+    walletAddress: wallet,
+    expectedInputAmountRaw: input,
+    expectedOutputAmountRaw: output,
+    verifyNativeBalanceDelta: true,
+    provider
+  });
+  assert.equal(verified.nativeBalanceDeltaRaw, null);
+  assert.equal(verified.nativeProceedsRaw, output);
+  assert.equal(verified.raw.nativeProceedsVerification.method, 'wrapped_native_withdrawal');
 });
 
 test('EVM receipt derives native proceeds only from an unambiguous wallet block delta', async () => {

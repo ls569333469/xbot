@@ -46,6 +46,42 @@ test('strategy synchronization batches one open/history query per chain and wall
   assert.equal(strategyBatchGroupBudget('invalid'), 1);
 });
 
+test('known position close reconciliation reuses the stored sell order instead of external wallet recovery', async () => {
+  const row = { id: 148, position_id: 577, side: 'sell', tx_hash: '0xknown', normalized_status: 'chain_verifying' };
+  let reconciledRow = null;
+  const reconciler = new TradeReconciler({
+    repository: {
+      getKnownSellOrderForPosition: async (positionId) => {
+        assert.equal(positionId, 577);
+        return row;
+      }
+    }
+  });
+  reconciler.reconcileOrder = async (order) => {
+    reconciledRow = order;
+    return { orderId: order.id, status: 'confirmed', positionId: order.position_id };
+  };
+
+  const result = await reconciler.reconcileKnownPositionClose(577);
+  assert.deepEqual(result, {
+    positionId: 577,
+    source: 'known_close_order',
+    orderId: 148,
+    status: 'confirmed'
+  });
+  assert.equal(reconciledRow, row);
+});
+
+test('known position close reconciliation refuses to guess an order', async () => {
+  const reconciler = new TradeReconciler({
+    repository: { getKnownSellOrderForPosition: async () => null }
+  });
+  await assert.rejects(
+    reconciler.reconcileKnownPositionClose(577),
+    (error) => error.code === 'KNOWN_CLOSE_ORDER_NOT_FOUND'
+  );
+});
+
 test('strategy query failures use state-aware persistent retry windows', () => {
   const now = Date.parse('2026-08-15T00:00:00.000Z');
   const timeout = Object.assign(new Error('network timeout'), { code: 'GMGN_REQUEST_TIMEOUT' });

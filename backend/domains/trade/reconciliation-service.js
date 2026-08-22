@@ -313,6 +313,21 @@ class TradeReconciler {
     }
   }
 
+  async reconcileKnownPositionClose(positionId) {
+    const row = await this.repository.getKnownSellOrderForPosition?.(positionId);
+    if (!row) {
+      const error = new Error('No known chain-verifying sell order is available for this position');
+      error.code = 'KNOWN_CLOSE_ORDER_NOT_FOUND';
+      throw error;
+    }
+    const result = await this.reconcileOrder(row);
+    return {
+      positionId: Number(positionId),
+      source: 'known_close_order',
+      ...result
+    };
+  }
+
   async reconcileClaimedOrder(row) {
     let normalized;
     if (row.normalized_status === 'chain_verifying') {

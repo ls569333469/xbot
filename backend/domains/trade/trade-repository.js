@@ -1133,6 +1133,34 @@ async function getOrderForReconciliation(orderId) {
   return result.rows[0] || null;
 }
 
+async function getKnownSellOrderForPosition(positionId) {
+  const result = await db.query(
+    `SELECT orders.*, attempts.chain, attempts.wallet_address, attempts.signal_id,
+            attempts.side, attempts.intent_id, attempts.attempt_no, attempts.trace_id,
+            attempts.whitelist_id, attempts.position_id,
+            attempts.metadata AS attempt_metadata,
+            attempts.status AS attempt_status,
+            attempts.input_token, attempts.output_token,
+            attempts.input_amount_raw AS attempt_input_amount_raw,
+            attempts.output_amount_raw AS attempt_output_amount_raw,
+            attempts.pre_submit_snapshot_json, attempts.snapshot_version,
+            attempts.failure_evidence_started_at,
+            intent.config_snapshot_json, intent.status AS intent_status,
+            intent.max_retries, intent.retry_count, intent.expires_at
+     FROM trade_orders AS orders
+     JOIN trade_attempts AS attempts ON attempts.id = orders.attempt_id
+     JOIN trade_intents AS intent ON intent.id = attempts.intent_id
+     WHERE attempts.position_id = $1
+       AND attempts.side = 'sell'
+       AND orders.normalized_status = 'chain_verifying'
+       AND NULLIF(orders.tx_hash, '') IS NOT NULL
+     ORDER BY orders.id DESC
+     LIMIT 1`,
+    [positionId]
+  );
+  return result.rows[0] || null;
+}
+
 async function claimOrderReconciliation(orderId, token, leaseMs = 15_000) {
   const result = await db.query(
     `UPDATE trade_orders
@@ -3280,6 +3308,7 @@ module.exports = {
   getAttempt,
   getAttemptDetails,
   getOrderForReconciliation,
+  getKnownSellOrderForPosition,
   getExecutionTrace,
   getPositionForClose,
   getPositionBalanceState,

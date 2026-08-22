@@ -402,6 +402,13 @@ export const api = {
     executeSignal: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/signals/${id}/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE BUY' }) }),
     prepareClose: (id: EntityId, percent = 100) => fetchApi<ApiResponse<import('./types').ClosePreparation>>(`/api/trade/positions/${id}/close/prepare`, { method: 'POST', body: JSON.stringify({ percent }) }),
     executeClose: (id: EntityId, prepareToken: string) => fetchApi<ApiResponse<Record<string, unknown>>>(`/api/trade/positions/${id}/close/execute`, { method: 'POST', body: JSON.stringify({ prepare_token: prepareToken, confirmation: 'EXECUTE LIVE CLOSE' }) }),
+    reconcileKnownClose: (id: EntityId) => fetchApi<ApiResponse<import('./types').KnownCloseReconciliation>>(
+      `/api/trade/positions/${id}/reconcile-known-close`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'RECONCILE KNOWN CLOSE' }),
+        signal: AbortSignal.timeout(75_000)
+      }
+    ),
     reconcileExternalClose: (id: EntityId) => fetchApi<ApiResponse<import('./types').ExternalCloseReconciliation>>(
       `/api/trade/positions/${id}/reconcile-external-close`, {
         method: 'POST',
