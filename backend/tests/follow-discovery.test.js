@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { normalizePolicyInput, remove } = require('../domains/follow-discovery/policy-service');
-const { enqueueFollow, markFailed, markWaiting } = require('../domains/follow-discovery/repository');
+const { list: listPolicies, normalizePolicyInput, remove } = require('../domains/follow-discovery/policy-service');
+const { enqueueFollow, listEvents, markFailed, markWaiting } = require('../domains/follow-discovery/repository');
 const { normalizeResearchCandidates, resolveFollowEvent } = require('../domains/follow-discovery/resolver');
 const { materialize } = require('../domains/follow-discovery/materializer');
 const { evaluateSignal } = require('../domains/follow-discovery/authorization');
@@ -11,6 +11,30 @@ const ADDRESSES = [
   '0x0000000000000000000000000000000000000001',
   '0x0000000000000000000000000000000000000002'
 ];
+
+test('Follow policy list filters search and mode with parameterized predicates', async () => {
+  let captured;
+  await listPolicies({ search: 'xueqiu', mode: 'live' }, { async query(sql, params) {
+    captured = { sql, params };
+    return { rows: [] };
+  } });
+  assert.match(captured.sql, /kol\.x_handle ILIKE/);
+  assert.match(captured.sql, /kol\.display_name ILIKE/);
+  assert.match(captured.sql, /policy\.mode =/);
+  assert.deepEqual(captured.params, ['%xueqiu%', 'live']);
+});
+
+test('Follow event list filters target handles and contract addresses with parameterized search', async () => {
+  let captured;
+  await listEvents({ search: '0xabc', status: 'rejected', limit: '20' }, { async query(sql, params) {
+    captured = { sql, params };
+    return { rows: [] };
+  } });
+  assert.match(captured.sql, /event\.target_handle ILIKE/);
+  assert.match(captured.sql, /event\.contract_address/);
+  assert.match(captured.sql, /event\.status =/);
+  assert.deepEqual(captured.params, ['rejected', '%0xabc%', 20]);
+});
 
 test('Record follow policy is valid without a trade template and keeps zero trade configuration', async () => {
   const policy = await normalizePolicyInput({

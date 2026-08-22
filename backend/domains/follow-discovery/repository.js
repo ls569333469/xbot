@@ -5,6 +5,7 @@ const { parseResetAt } = require('../../lib/gmgn-rate-scheduler');
 async function listEvents(filters = {}, executor = db) {
   const params = [];
   let where = 'WHERE 1=1';
+  const search = String(filters.search || '').trim();
   if (filters.policy_id) {
     params.push(Number(filters.policy_id));
     where += ` AND event.policy_id = $${params.length}`;
@@ -12,6 +13,14 @@ async function listEvents(filters = {}, executor = db) {
   if (filters.status) {
     params.push(String(filters.status));
     where += ` AND event.status = $${params.length}`;
+  }
+  if (search) {
+    params.push(`%${search}%`);
+    where += ` AND (event.actor_handle ILIKE $${params.length}
+      OR event.target_handle ILIKE $${params.length}
+      OR COALESCE(event.contract_address, '') ILIKE $${params.length}
+      OR kol.x_handle ILIKE $${params.length}
+      OR kol.display_name ILIKE $${params.length})`;
   }
   params.push(Math.min(200, Math.max(1, Number(filters.limit || 50))));
   const result = await executor.query(

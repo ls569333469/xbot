@@ -460,6 +460,8 @@ export interface FollowDiscoveryPolicy {
   watch_sync_status?: string | null;
   watch_sync_error?: string | null;
   watch_synced_at?: string | null;
+  watch_desired_present?: boolean | null;
+  updated_at?: string;
 }
 
 export interface FollowDiscoveryPrompts {
@@ -487,6 +489,7 @@ export interface FollowDiscoveryEvent {
   chain_id?: ChainId | null;
   contract_address?: string | null;
   failure_code?: string | null;
+  last_error?: string | null;
   provider_created_at: string;
   policy_revision: number;
   current_policy_revision: number;

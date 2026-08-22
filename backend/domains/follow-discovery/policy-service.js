@@ -122,9 +122,19 @@ async function normalizePolicyInput(input = {}, current = {}, executor = db) {
 async function list(filters = {}, executor = db) {
   const params = [];
   let where = 'WHERE policy.archived_at IS NULL';
+  const search = String(filters.search || '').trim();
+  const mode = String(filters.mode || '').trim().toLowerCase();
   if (filters.kol_id) {
     params.push(Number(filters.kol_id));
     where += ` AND policy.kol_id = $${params.length}`;
+  }
+  if (search) {
+    params.push(`%${search}%`);
+    where += ` AND (kol.x_handle ILIKE $${params.length} OR kol.display_name ILIKE $${params.length})`;
+  }
+  if (mode && MODES.has(mode)) {
+    params.push(mode);
+    where += ` AND policy.mode = $${params.length}`;
   }
   const result = await executor.query(
     `SELECT policy.*, kol.x_user_id, kol.x_handle, kol.display_name,
