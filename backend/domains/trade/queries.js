@@ -16,7 +16,7 @@ const POSITION_SELECT = `
   ts.kol_handle, ts.signal_type, ts.kol_weight, ts.risk_check,
   trade_flow.trade_intent_id, trade_flow.trade_intent_status,
   trade_flow.trade_attempt_id, trade_flow.attempt_no,
-  trade_flow.trade_attempt_status, trade_flow.failure_class,
+  trade_flow.trade_attempt_status, trade_flow.trade_attempt_side, trade_flow.failure_class,
   trade_flow.trade_error_code, trade_flow.order_id, trade_flow.tx_hash`;
 
 const POSITION_FROM = `
@@ -32,12 +32,13 @@ const POSITION_FROM = `
     SELECT intent.id AS trade_intent_id, intent.status AS trade_intent_status,
            attempt.id AS trade_attempt_id, attempt.attempt_no,
            attempt.status AS trade_attempt_status,
-           attempt.failure_class, attempt.error_code AS trade_error_code,
+           attempt.failure_class, attempt.side AS trade_attempt_side,
+           attempt.error_code AS trade_error_code,
            orders.id AS order_id, orders.tx_hash
     FROM trade_intents intent
     LEFT JOIN LATERAL (
       SELECT attempt_row.id, attempt_row.attempt_no, attempt_row.status,
-             attempt_row.failure_class, attempt_row.error_code
+             attempt_row.side, attempt_row.failure_class, attempt_row.error_code
       FROM trade_attempts attempt_row
       WHERE attempt_row.intent_id = intent.id ORDER BY attempt_row.attempt_no DESC LIMIT 1
     ) attempt ON true

@@ -136,6 +136,9 @@ function projectSignal(row, currentProjection = { status: 'unknown', blockers: [
 function projectPosition(row) {
   const projectedAsset = asset(row);
   const blockers = [row.trade_error_code].filter(Boolean);
+  const executionTxHash = row.trade_attempt_side === 'sell'
+    ? row.sell_tx_hash || row.tx_hash || null
+    : row.sell_tx_hash || row.buy_tx_hash || row.tx_hash || null;
   return {
     ...row,
     contract_version: CONTRACT_VERSION,
@@ -149,7 +152,8 @@ function projectPosition(row) {
       intent_id: row.trade_intent_id ?? null,
       attempt_id: row.trade_attempt_id ?? null,
       order_id: row.order_id ?? null,
-      tx_hash: row.sell_tx_hash || row.buy_tx_hash || row.tx_hash || null,
+      tx_hash: executionTxHash,
+      side: row.trade_attempt_side ?? null,
       blockers
     },
     risk: riskProjection(row, blockers)

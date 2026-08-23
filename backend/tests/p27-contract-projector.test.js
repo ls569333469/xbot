@@ -161,6 +161,29 @@ test('Position and Attempt infer only provable strategy attribution', () => {
     chain: 'base', output_token: '0x1234567890abcdef', side: 'buy', status: 'rejected' }).strategy_type, 'unknown');
 });
 
+test('Position execution exposes the latest attempt side before choosing close recovery', () => {
+  const buyPosition = projectPosition({
+    id: 1, chain_id: 'base', contract_address: '0x1234567890abcdef', status: 'closing',
+    buy_tx_hash: '0xbuy', trade_attempt_side: 'buy'
+  });
+  assert.equal(buyPosition.execution.side, 'buy');
+  assert.equal(buyPosition.execution.tx_hash, '0xbuy');
+
+  const sellPosition = projectPosition({
+    id: 2, chain_id: 'base', contract_address: '0x1234567890abcdef', status: 'closing',
+    buy_tx_hash: '0xbuy', tx_hash: '0xsell', trade_attempt_side: 'sell'
+  });
+  assert.equal(sellPosition.execution.side, 'sell');
+  assert.equal(sellPosition.execution.tx_hash, '0xsell');
+
+  const pendingSellPosition = projectPosition({
+    id: 3, chain_id: 'base', contract_address: '0x1234567890abcdef', status: 'closing',
+    buy_tx_hash: '0xbuy', trade_attempt_side: 'sell'
+  });
+  assert.equal(pendingSellPosition.execution.side, 'sell');
+  assert.equal(pendingSellPosition.execution.tx_hash, null);
+});
+
 test('Closed Position CSV uses RFC 4180 escaping and neutralizes formulas', () => {
   const csv = closedPositionCsv([{
     id: 1, signal_id: 2, whitelist_id: 3, strategy_type: 'dynamic_policy',

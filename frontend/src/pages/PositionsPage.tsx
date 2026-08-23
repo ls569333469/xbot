@@ -84,6 +84,7 @@ export default function PositionsPage() {
 
   const hasKnownCloseOrder = (position: Position) => (
     ['closing', 'close_uncertain'].includes(position.status)
+    && position.execution?.side === 'sell'
     && Boolean(position.execution?.tx_hash)
   );
 

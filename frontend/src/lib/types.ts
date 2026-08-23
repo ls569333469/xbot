@@ -1058,6 +1058,7 @@ export interface EntityExecution {
   attempt_id: EntityId | null;
   order_id: EntityId | null;
   tx_hash: string | null;
+  side?: 'buy' | 'sell' | 'strategy_create' | 'strategy_cancel' | null;
   blockers: string[];
 }
 
