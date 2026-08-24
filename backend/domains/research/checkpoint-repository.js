@@ -112,14 +112,14 @@ async function reserveRequest(reportId, phase, options = {}) {
      SET grok_request_attempts = grok_request_attempts + 1,
          search_status = $2,
          second_request_reason = CASE
-           WHEN grok_request_attempts = 1 THEN $3
+           WHEN grok_request_attempts = 1 THEN $3::text
            ELSE second_request_reason
          END,
          last_error_code = NULL,
          updated_at = NOW()
      WHERE report_id = $1
        AND grok_request_attempts < $4
-       AND (grok_request_attempts = 0 OR $3 IS NOT NULL)
+       AND (grok_request_attempts = 0 OR $3::text IS NOT NULL)
      RETURNING *`,
     [reportId, phase, reason, MAX_GROK_REQUESTS]
   );

@@ -123,8 +123,33 @@ const {
   runTargetedFollowup,
   structuredResultFromOutput
 } = require('../domains/research/xai-client');
-const { withSocialResolution } = require('../domains/research/checkpoint-repository');
+const { reserveRequest, withSocialResolution } = require('../domains/research/checkpoint-repository');
 const { expandReport } = require('../domains/research/service');
+
+test('P37 first request reserves a nullable reason with an explicit PostgreSQL type', async () => {
+  let sql = '';
+  let params = [];
+  const row = {
+    report_id: 'regression',
+    grok_request_attempts: 1,
+    search_status: 'searching',
+    second_request_reason: null
+  };
+  const executor = {
+    async query(statement, values) {
+      sql = String(statement);
+      params = values;
+      return { rows: [row] };
+    }
+  };
+
+  const reserved = await reserveRequest('regression', 'searching', { executor });
+
+  assert.equal(reserved, row);
+  assert.deepEqual(params, ['regression', 'searching', null, 2]);
+  assert.match(sql, /THEN \$3::text/);
+  assert.match(sql, /\$3::text IS NOT NULL/);
+});
 
 function report(id, officialHandle = null) {
   return {
