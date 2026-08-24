@@ -12,6 +12,13 @@ function budgetError() {
   return error;
 }
 
+function searchToolBudgetError() {
+  const error = new Error('Public search tool budget is exhausted for this research report');
+  error.code = 'XAI_SEARCH_TOOL_BUDGET_EXHAUSTED';
+  error.status = 409;
+  return error;
+}
+
 function normalizeEvidence(value) {
   if (value === null || value === undefined) return null;
   return String(value).slice(0, MAX_EVIDENCE_LENGTH);
@@ -194,6 +201,7 @@ function toSocialResolution(checkpoint, report = {}) {
     second_request_reason: checkpoint?.second_request_reason || null,
     last_error_code: checkpoint?.last_error_code || report.xai_error_code || null,
     retry_allowed: attempts < MAX_GROK_REQUESTS
+      && searchCalls < MAX_SEARCH_TOOL_CALLS
       && !['gmgn_confirmed', 'grok_verified', 'grok_candidate'].includes(status)
   };
 }
@@ -208,6 +216,7 @@ module.exports = {
   MAX_GROK_REQUESTS,
   MAX_SEARCH_TOOL_CALLS,
   budgetError,
+  searchToolBudgetError,
   ensureCheckpoint,
   getCheckpoint,
   getCheckpoints,

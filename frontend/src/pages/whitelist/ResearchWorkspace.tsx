@@ -98,12 +98,13 @@ function researchFailure(item: ResearchJobItem | null) {
     XAI_SEARCH_NO_TOOL_USE: { stage: 'Grok 搜索', summary: 'Grok 未执行要求的公开搜索' },
     XAI_SEARCH_TIMEOUT: { stage: 'Grok 搜索', summary: 'Grok 搜索超时' },
     XAI_SEARCH_INCOMPLETE: { stage: 'Grok 搜索', summary: 'Grok 搜索结果不完整' },
-    XAI_SEARCH_TOOL_BUDGET_EXCEEDED: { stage: 'Grok 搜索', summary: 'Grok 搜索超过本次允许的工具预算' },
+    XAI_SEARCH_TOOL_BUDGET_EXCEEDED: { stage: 'Grok 搜索', summary: '单次 Grok 返回的公开搜索工具调用超过上限，结果被拒绝' },
+    XAI_SEARCH_TOOL_BUDGET_EXHAUSTED: { stage: 'Grok 搜索', summary: '本次 CA 的公开搜索工具调用已达到上限' },
     XAI_STRUCTURE_OUTPUT_EMPTY: { stage: 'Grok 结构化', summary: 'Grok 没有返回可整理的内容' },
     XAI_STRUCTURE_JSON_INVALID: { stage: 'Grok 结构化', summary: 'Grok 返回的 JSON 格式无效' },
     XAI_STRUCTURE_SCHEMA_INVALID: { stage: 'Grok 结构化', summary: 'Grok 返回字段不符合投研契约' },
     XAI_STRUCTURE_REPAIR_FAILED: { stage: 'Grok 结构化', summary: '首次证据的格式修复失败' },
-    XAI_GROK_REQUEST_BUDGET_EXHAUSTED: { stage: 'Grok 分析', summary: '本次 CA 的两次 Grok 请求预算已用完' },
+    XAI_GROK_REQUEST_BUDGET_EXHAUSTED: { stage: 'Grok 分析', summary: '本次 CA 的 Grok 请求次数已达到 2 次，未发起第三次请求' },
     XAI_GROK_REQUEST_IN_PROGRESS: { stage: 'Grok 分析', summary: '同一 CA 已有 Grok 请求正在执行' },
     XAI_RESPONSE_INCOMPLETE: { stage: 'Grok 分析', summary: 'Grok 响应中断，结果未生成完整' },
     XAI_OUTPUT_EMPTY: { stage: 'Grok 分析', summary: 'Grok 未返回可用的分析内容' },
@@ -197,6 +198,13 @@ export default function ResearchWorkspace({ draft, onBack, onUseDraft }: Props) 
   const running = Boolean(job && !TERMINAL_JOB_STATES.has(job.status));
   const retryableFailed = Boolean(job?.items.some((item) => (
     item.status === 'failed' && (item.report?.social_resolution?.retry_allowed ?? true)
+  )));
+  const requestBudgetExhausted = Boolean(job?.items.some((item) => (
+    item.status === 'failed' && item.error_code === 'XAI_GROK_REQUEST_BUDGET_EXHAUSTED'
+  )));
+  const searchBudgetExhausted = Boolean(job?.items.some((item) => (
+    item.status === 'failed'
+      && ['XAI_SEARCH_TOOL_BUDGET_EXCEEDED', 'XAI_SEARCH_TOOL_BUDGET_EXHAUSTED'].includes(item.error_code || '')
   )));
   const jobId = job?.id;
   const jobStatus = job?.status;
@@ -317,7 +325,8 @@ export default function ResearchWorkspace({ draft, onBack, onUseDraft }: Props) 
           <div><span>失败</span><strong>{job.failed_count}</strong></div>
           <div><span>Grok 上限</span><strong>每 CA 2 次，共 {job.total_count * 2} 次，并发 {job.queue_status?.effective_concurrency || job.concurrency_limit || 3}</strong></div>
           {job.failed_count > 0 && retryableFailed && <button type="button" className="btn btn-secondary" onClick={retryFailed}><RefreshCw size={15} />继续剩余补查</button>}
-          {job.failed_count > 0 && !retryableFailed && <span className="p16-research-cost">失败项的两次 Grok 预算已用完</span>}
+          {job.failed_count > 0 && !retryableFailed && requestBudgetExhausted && <span className="p16-research-cost">失败项的 Grok 请求次数已达到上限</span>}
+          {job.failed_count > 0 && !retryableFailed && !requestBudgetExhausted && searchBudgetExhausted && <span className="p16-research-cost">失败项的公开搜索工具调用已达到上限</span>}
           {running && <button type="button" className="p16-icon-button" title="取消投研任务" aria-label="取消投研任务" onClick={cancelResearch}><Square size={14} /></button>}
           {queueWait && <p className="p16-job-wait">{queueWait}</p>}
         </div>

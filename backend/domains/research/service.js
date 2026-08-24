@@ -22,6 +22,7 @@ const {
   getCheckpoint,
   recordResponse,
   reserveRequest,
+  searchToolBudgetError,
   withSocialResolution
 } = require('./checkpoint-repository');
 const { sanitizeCandidate, sanitizeTokenMetadata } = require('./sanitizers');
@@ -282,6 +283,29 @@ function hasReliableOfficialCandidate(candidates, metadata = {}) {
 function hasResolvedOfficialIdentity(candidates, metadata, providerStatus) {
   if (metadata?.official_x_handle) return hasReliableOfficialCandidate(candidates, metadata);
   return providerStatus === 'resolved' && hasReliableOfficialCandidate(candidates, metadata);
+}
+
+function hasProviderConfirmedIdentity(candidates, metadata) {
+  const officialHandle = metadata?.official_x_handle;
+  if (!officialHandle) return false;
+  return candidates.some((candidate) => (
+    candidate.handle === officialHandle
+      && candidate.role === 'official_project'
+      && String(candidate.source || '').split('+').includes('gmgn')
+  ));
+}
+
+function providerResolutionResult(checkpoint, metadata) {
+  return {
+    provider: 'gmgn',
+    status: 'resolved',
+    summary: `GMGN 已提供官方 X @${metadata.official_x_handle}，本次跳过 Grok 搜索。`,
+    candidates: [],
+    citations: checkpoint.citations || [],
+    usage: null,
+    searchToolCalls: 0,
+    rawOutput: checkpoint.evidence_text || ''
+  };
 }
 
 function reusableEvidence(error, checkpoint) {
@@ -574,6 +598,19 @@ async function expandReport(id, options = {}) {
         expanded = null;
       }
     }
+    if (!expanded && hasProviderConfirmedIdentity(report.candidates || [], metadata)) {
+      expanded = providerResolutionResult(checkpoint, metadata);
+      logger.info('project-research', 'research-xai-skipped-provider-confirmed', researchLogMeta(
+        report,
+        'gmgn_confirmed',
+        options,
+        {
+          official_handle: metadata.official_x_handle,
+          grok_request_attempt: Number(checkpoint.grok_request_attempts || 0),
+          search_tool_calls: Number(checkpoint.search_tool_calls || 0)
+        }
+      ));
+    }
     if (!expanded && Number(checkpoint.grok_request_attempts) === 0) {
       try {
         const first = await executeGrokPhase(report, input, checkpoint, 'first_search', null, options);
@@ -593,6 +630,10 @@ async function expandReport(id, options = {}) {
       && hasResolvedOfficialIdentity(mergedAfterFirst, metadata, expanded.status);
     if (!firstSucceeded) {
       if (firstError && shouldStopWithoutSecondRequest(firstError)) throw firstError;
+      if (Number(checkpoint.search_tool_calls) >= MAX_SEARCH_TOOL_CALLS) {
+        if (firstError) throw firstError;
+        throw searchToolBudgetError();
+      }
       if (Number(checkpoint.grok_request_attempts) >= MAX_GROK_REQUESTS) {
         if (firstError) throw firstError;
         throw budgetError();
@@ -619,6 +660,7 @@ async function expandReport(id, options = {}) {
     const resolved = hasResolvedOfficialIdentity(candidates, metadata, expanded.status);
     const resolutionStatus = resolved ? 'completed' : 'insufficient';
     const durationMs = Date.now() - startedAt;
+    const usedGrok = Number(checkpoint.grok_request_attempts || 0) > 0;
     const result = await db.query(
       `UPDATE token_research_reports
        SET candidates = $1,
@@ -632,7 +674,7 @@ async function expandReport(id, options = {}) {
         {
           xai: {
             status: resolutionStatus,
-            model: XAI_MODEL,
+            model: usedGrok ? XAI_MODEL : null,
             prompt_version: XAI_PROMPT_VERSION,
             duration_ms: durationMs,
             summary: expanded.summary,
@@ -644,7 +686,7 @@ async function expandReport(id, options = {}) {
         },
         `${REPORT_ANALYZER_VERSION}+xai`,
         XAI_PROMPT_VERSION,
-        XAI_MODEL,
+        usedGrok ? XAI_MODEL : null,
         durationMs,
         id
       ]

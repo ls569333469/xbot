@@ -301,12 +301,47 @@ test('P37 first success short-circuits and conditional second request chooses on
     const first = await expandReport('1', {
       xaiOptions: { fetchImpl: async () => { calls += 1; return response(structuredOutput({ summary: 'known' })); } }
     });
-    assert.equal(calls, 1);
-    assert.equal(first.social_resolution.grok_request_attempts, 1);
+    assert.equal(calls, 0);
+    assert.equal(first.social_resolution.grok_request_attempts, 0);
+    assert.equal(first.social_resolution.search_tool_calls, 0);
     assert.equal(first.social_resolution.status, 'gmgn_confirmed');
+    assert.equal(first.provider_snapshot.xai.model, null);
+    assert.match(first.provider_snapshot.xai.summary, /跳过 Grok 搜索/);
     assert.equal('requests' in (first.provider_snapshot.xai.usage || {}), false);
 
-    reports.set('2', report('2', 'known_second'));
+    reports.set('1-grok', report('1-grok'));
+    let grokSuccessCalls = 0;
+    const grokOfficial = {
+      handle: 'grok_official', role: 'official_project', organization: 'P37',
+      association: 'Official account linked to the exact contract', confidence: 'high',
+      evidence_ids: ['grok-official-post']
+    };
+    const grokOfficialEvidence = [{
+      evidence_id: 'grok-official-post',
+      source_type: 'x_post',
+      url: 'https://x.com/grok_official/status/1',
+      tweet_id: '1',
+      excerpt: 'Official contract post'
+    }];
+    const grokResolved = await expandReport('1-grok', {
+      xaiOptions: {
+        fetchImpl: async () => {
+          grokSuccessCalls += 1;
+          return response(structuredOutput({
+            status: 'resolved',
+            summary: 'grok found',
+            candidates: [grokOfficial],
+            evidence: grokOfficialEvidence
+          }));
+        }
+      }
+    });
+    assert.equal(grokSuccessCalls, 1);
+    assert.equal(grokResolved.social_resolution.grok_request_attempts, 1);
+    assert.equal(grokResolved.social_resolution.second_request_reason, null);
+    assert.equal(grokResolved.candidates[0].handle, 'grok_official');
+
+    reports.set('2', report('2'));
     const formatBodies = [];
     const repaired = await expandReport('2', {
       xaiOptions: {
@@ -396,6 +431,20 @@ test('P37 first success short-circuits and conditional second request chooses on
     }), { code: 'XAI_GROK_REQUEST_IN_PROGRESS' });
     assert.equal(concurrentCalls, 0);
     assert.equal(checkpoints.get('5').grok_request_attempts, 1);
+
+    reports.set('6', report('6'));
+    let overBudgetCalls = 0;
+    await assert.rejects(() => expandReport('6', {
+      xaiOptions: {
+        fetchImpl: async () => {
+          overBudgetCalls += 1;
+          return response(structuredOutput(), 8);
+        }
+      }
+    }), { code: 'XAI_SEARCH_TOOL_BUDGET_EXCEEDED' });
+    assert.equal(overBudgetCalls, 1);
+    assert.equal(checkpoints.get('6').grok_request_attempts, 1);
+    assert.equal(checkpoints.get('6').search_tool_calls, 8);
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY;
     else process.env.XAI_API_KEY = previousKey;
