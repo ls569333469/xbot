@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-test('live engine persists intent, restores matching configuration, and faults on drift', async () => {
+test('live engine persists intent, restores matching configuration, and keeps intent on drift', async () => {
   const db = require('../lib/db');
   const originalQuery = db.query;
   const originalMode = process.env.TRADING_MODE;
@@ -83,8 +83,8 @@ test('live engine persists intent, restores matching configuration, and faults o
       pauseOnRetryableExhaustion: true,
       sleep: async () => {}
     });
-    assert.equal(waiting.status, 'paused_transient');
-    assert.equal(engine.getStatus().status, 'paused_transient');
+    assert.equal(waiting.status, 'waiting');
+    assert.equal(engine.getStatus().status, 'recovering');
     assert.equal(engine.getStatus().desiredRunning, true);
 
     await engine.setFaulted({ reason: 'RESTART' });
@@ -93,9 +93,10 @@ test('live engine persists intent, restores matching configuration, and faults o
       snapshotHash: 'snapshot-2',
       configurationFingerprint: 'config-2'
     }));
-    assert.equal(drifted.status, 'fault_protected');
+    assert.equal(drifted.status, 'waiting');
     assert.equal(drifted.reason, 'configuration_changed');
-    assert.equal(engine.getStatus().desiredRunning, false);
+    assert.equal(engine.getStatus().desiredRunning, true);
+    assert.equal(engine.getStatus().status, 'recovering');
     assert.equal(engine.getStatus().lastError, 'LIVE_CONFIGURATION_CHANGED');
   } finally {
     db.query = originalQuery;

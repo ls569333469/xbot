@@ -69,7 +69,8 @@ function usageLevel(usagePct) {
 async function get6551Status(executor = db, consumerInstance = consumer, options = {}) {
   const remoteWatchPromise = getRemoteWatchSummary({ force: options.refreshRemote === true });
 
-  const [watchRows, watchSyncRows, eventRows, eventTotals, restUsage, ingestionHeartbeat, remoteWatches] = await Promise.all([
+  const [watchRows, watchSyncRows, eventRows, eventTotals, restUsage,
+    heartbeatObservation, remoteWatches] = await Promise.all([
     executor.query(
       `SELECT sync_status AS status, COUNT(*) AS count,
               COUNT(*) FILTER (WHERE managed = true) AS managed_count
@@ -100,9 +101,13 @@ async function get6551Status(executor = db, consumerInstance = consumer, options
        FROM x_provider_events WHERE provider = '6551'`
     ),
     providerUsage.getDailyUsage('6551'),
-    latestHeartbeat(['ingestion', 'all'], executor).catch(() => null),
+    latestHeartbeat(['ingestion', 'all'], executor)
+      .then((value) => ({ value }))
+      .catch((error) => ({ error })),
     remoteWatchPromise
   ]);
+  const ingestionHeartbeat = heartbeatObservation.value || null;
+  const heartbeatObserverError = heartbeatObservation.error || null;
 
   const watches = countsByStatus(watchRows.rows);
   const watchSyncCounts = countsByStatus(watchSyncRows.rows);
@@ -187,6 +192,11 @@ async function get6551Status(executor = db, consumerInstance = consumer, options
       tradingMode: getTradingMode(),
       engineArmed: engineState.getArmed(),
       watchApplyEnabled: String(process.env.X_6551_WATCH_APPLY_ENABLED || 'false').toLowerCase() === 'true'
+    },
+    observer: {
+      heartbeatError: heartbeatObserverError
+        ? heartbeatObserverError.code || heartbeatObserverError.message
+        : null
     }
   };
 }

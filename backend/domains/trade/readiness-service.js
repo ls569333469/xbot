@@ -27,6 +27,11 @@ const TRANSIENT_BLOCKERS = new Set([
   'X_6551_INGESTION_UNHEALTHY',
   'GMGN_SCHEDULER_NOT_HEALTHY'
 ]);
+const HEALTH_ONLY_BLOCKERS = new Set([
+  'X_6551_INGESTION_UNHEALTHY',
+  'GMGN_SCHEDULER_NOT_HEALTHY',
+  'UNRESOLVED_TRADE_ATTEMPTS'
+]);
 let latestSnapshot = null;
 
 function getLatestSnapshot(maxAgeMs = 5000) {
@@ -63,7 +68,32 @@ function tradeAttemptReadiness(row = {}) {
   return {
     unresolvedAttempts,
     reconcilingAttempts,
-    blockers: unresolvedAttempts > 0 ? ['UNRESOLVED_TRADE_ATTEMPTS'] : []
+    blockers: [],
+    advisories: unresolvedAttempts > 0 ? ['UNRESOLVED_TRADE_ATTEMPTS'] : []
+  };
+}
+
+function healthIssue(code, options = {}) {
+  return {
+    code,
+    severity: options.severity || 'warning',
+    scope_type: options.scope_type || 'runtime',
+    scope_id: options.scope_id ?? null,
+    summary: options.summary || code,
+    engine_affected: options.engine_affected === true
+  };
+}
+
+function classifyReadiness(blockers = [], advisories = []) {
+  const uniqueBlockers = [...new Set(blockers)];
+  const uniqueAdvisories = [...new Set(advisories)];
+  const healthCodes = [
+    ...uniqueAdvisories,
+    ...uniqueBlockers.filter((code) => HEALTH_ONLY_BLOCKERS.has(code))
+  ];
+  return {
+    armBlockers: uniqueBlockers.filter((code) => !HEALTH_ONLY_BLOCKERS.has(code)),
+    healthIssues: [...new Set(healthCodes)].map((code) => healthIssue(code))
   };
 }
 
@@ -718,6 +748,11 @@ async function getSnapshot(options = {}) {
       snapshotHash: null,
       generatedAt: new Date(),
       blockers: ['MIGRATION_NOT_CURRENT'],
+      armBlockers: ['MIGRATION_NOT_CURRENT'],
+      healthIssues: [healthIssue('MIGRATION_NOT_CURRENT', {
+        severity: 'critical',
+        engine_affected: true
+      })],
       checks: { database: migration.ok, migration: false },
       chains: [],
       scheduler: scheduler.getStatus(),
@@ -1002,7 +1037,13 @@ async function getSnapshot(options = {}) {
       minimumGasReserve: process.env[`GMGN_MIN_GAS_RESERVE_${chain.toUpperCase()}`] || ''
     }]))
   });
-  const ingestionHeartbeat = await latestHeartbeat(['ingestion', 'all']).catch(() => null);
+  let ingestionHeartbeat = null;
+  let ingestionObserverError = null;
+  try {
+    ingestionHeartbeat = await latestHeartbeat(['ingestion', 'all']);
+  } catch (error) {
+    ingestionObserverError = error;
+  }
   // Do not queue more GMGN probes after a 429 starts the scheduler cooldown.
   // A readiness check must fail promptly instead of waiting behind a multi-minute
   // cooldown for every whitelist quote and strategy query.
@@ -1252,7 +1293,11 @@ async function getSnapshot(options = {}) {
   if (!liveEnabled) blockers.push('LIVE_TRADING_DISABLED');
   if (emergencyStop) blockers.push('EMERGENCY_STOP_ACTIVE');
   if (!providerConfigured) blockers.push('GMGN_CREDENTIALS_MISSING');
-  if (!ingestionHealthy) blockers.push('X_6551_INGESTION_UNHEALTHY');
+  if (xProvider === '6551' && ingestionObserverError) {
+    advisories.push('X_6551_HEALTH_OBSERVER_ERROR');
+  } else if (xProvider === '6551' && !ingestionHealthy) {
+    blockers.push('X_6551_INGESTION_UNHEALTHY');
+  }
   if (!keyExclusive) blockers.push('GMGN_KEY_EXCLUSIVE_NOT_CONFIRMED');
   blockers.push(...schedulerGate.blockers);
   advisories.push(...schedulerGate.advisories);
@@ -1268,6 +1313,7 @@ async function getSnapshot(options = {}) {
   }
   if (scopeIncludesFixed && acceptanceScope?.expired) blockers.push('LIVE_ACCEPTANCE_SCOPE_EXPIRED');
   blockers.push(...attemptReadiness.blockers);
+  advisories.push(...(attemptReadiness.advisories || []));
   if (Number(quarantineResult.rows[0].count) > 0) advisories.push('WALLET_QUARANTINE_ACTIVE');
   if (Number(unprotectedResult.rows[0].count) > 0) {
     // An unprotected position must remain visible and closable, but it is a
@@ -1341,15 +1387,26 @@ async function getSnapshot(options = {}) {
     blockers.push('LIVE_CONFIGURATION_CHANGED');
   }
 
+  const classified = classifyReadiness(blockers, advisories);
+  const healthIssues = [
+    ...classified.healthIssues,
+    ...classified.armBlockers.map((code) => healthIssue(code, {
+      severity: 'critical',
+      engine_affected: true
+    }))
+  ];
+
   const snapshot = {
     generatedAt: new Date(),
     mode,
     armed: engineState.getArmed(),
     liveEnabled,
     configurationFingerprint,
-    readyToArm: blockers.length === 0,
-    blockers: [...new Set(blockers)],
+    readyToArm: classified.armBlockers.length === 0,
+    armBlockers: classified.armBlockers,
+    blockers: classified.armBlockers,
     advisories: [...new Set(advisories)],
+    healthIssues,
     checks: {
       database: true,
       migration: true,
@@ -1385,8 +1442,13 @@ async function getSnapshot(options = {}) {
         heartbeatAt: ingestionHeartbeat.heartbeatAt,
         heartbeatAgeMs: ingestionHeartbeat.ageMs,
         fresh: ingestionHeartbeat.fresh,
-        wssStatus: ingestionHeartbeat.status?.wss?.status || 'unknown'
-      } : null
+        wssStatus: ingestionHeartbeat.status?.wss?.status || 'unknown',
+        observerError: null
+      } : {
+        observerError: ingestionObserverError
+          ? ingestionObserverError.code || ingestionObserverError.message
+          : null
+      }
     },
     policy,
     dynamicPolicy,
@@ -1439,139 +1501,74 @@ class ReadinessMonitor {
   constructor(options = {}) {
     this.snapshotProvider = options.snapshotProvider || getSnapshot;
     this.engine = options.engine || engineState;
-    this.onDisarm = options.onDisarm || (async (details) => {
+    this.onHealthChange = options.onHealthChange || (async (details) => {
       await db.query(
         `INSERT INTO notification_outbox(topic, aggregate_type, aggregate_id, payload)
-         VALUES ('trade.auto_disarmed', 'system', 'readiness', $1)`,
-        [details]
-      );
-    });
-    this.onRecover = options.onRecover || (async (details) => {
-      await db.query(
-        `INSERT INTO notification_outbox(topic, aggregate_type, aggregate_id, payload)
-         VALUES ('trade.auto_resumed', 'system', 'readiness', $1)`,
-        [details]
-      );
-    });
-    this.onReminder = options.onReminder || (async (details) => {
-      await db.query(
-        `INSERT INTO notification_outbox(topic, aggregate_type, aggregate_id, payload)
-         VALUES ('trade.transient_pause_reminder', 'system', 'readiness', $1)`,
+         VALUES ('system.health_changed', 'system', 'readiness', $1)`,
         [details]
       );
     });
     this.intervalMs = Math.max(500, Number(options.intervalMs || 1000));
-    this.recoveryHealthyChecks = Math.max(1, Number(options.recoveryHealthyChecks || 3));
-    this.transientReminderMs = Math.max(
-      1000,
-      Number(options.transientReminderMs || options.transientTimeoutMs || 5 * 60_000)
-    );
-    this.now = options.now || (() => Date.now());
-    this.lastTransientReminderAt = null;
-    this.healthyCount = 0;
     this.timer = null;
     this.lastError = null;
+    this.lastHealthFingerprint = null;
+  }
+
+  async publishHealth(snapshot, error = null) {
+    const issues = error
+      ? [healthIssue('READINESS_OBSERVER_ERROR', {
+        severity: 'critical',
+        summary: error.code || error.message
+      })]
+      : (snapshot?.healthIssues || (snapshot?.blockers || []).map((code) => healthIssue(code, {
+        severity: 'critical',
+        engine_affected: true
+      })));
+    const fingerprint = JSON.stringify(issues.map((issue) => [
+      issue.code, issue.severity, issue.scope_type, issue.scope_id
+    ]).sort());
+    if (fingerprint === this.lastHealthFingerprint) return false;
+    this.lastHealthFingerprint = fingerprint;
+    await this.onHealthChange({
+      status: issues.some((issue) => issue.severity === 'critical')
+        ? 'critical' : issues.length > 0 ? 'degraded' : 'healthy',
+      issues,
+      engine_affected: false,
+      snapshot_hash: snapshot?.snapshotHash || null,
+      error: error ? error.code || error.message : null,
+      generated_at: snapshot?.generatedAt || new Date()
+    });
+    return true;
   }
 
   async checkOnce() {
     const engineStatus = this.engine.getStatus?.() || {};
-    const transientPaused = engineStatus.status === 'paused_transient' && engineStatus.desiredRunning;
-    if (!this.engine.getArmed() && !transientPaused) {
-      this.healthyCount = 0;
+    const operatorIntent = Boolean(this.engine.getArmed?.() || engineStatus.desiredRunning);
+    if (!operatorIntent) {
       return { status: 'skipped', reason: 'not_armed' };
     }
     try {
       const scope = this.engine.getScopeInput?.();
       const snapshot = await this.snapshotProvider(scope ? { scope } : {});
-      const scopeRefresh = snapshot.readyToArm && !transientPaused
+      const scopeRefresh = snapshot.readyToArm && this.engine.getArmed?.()
         && typeof this.engine.refreshAuthorizedScope === 'function'
         ? await this.engine.refreshAuthorizedScope(snapshot)
         : null;
       executionGateService.update(snapshot);
-      if (snapshot.readyToArm) {
-        if (!transientPaused) return { status: 'ready', snapshot, scopeRefresh };
-        this.healthyCount += 1;
-        if (this.healthyCount < this.recoveryHealthyChecks) {
-          return { status: 'recovering', healthyChecks: this.healthyCount, snapshot };
-        }
-        await this.engine.recoverTransient(snapshot);
-        this.healthyCount = 0;
-        this.lastTransientReminderAt = null;
-        await this.onRecover({
-          reason: 'TRANSIENT_READINESS_RECOVERED',
-          snapshot_hash: snapshot.snapshotHash || null,
-          generated_at: snapshot.generatedAt || new Date()
-        });
-        return { status: 'resumed', snapshot };
-      }
-      this.healthyCount = 0;
-      const blockers = [...new Set(snapshot.blockers || [])];
-      const transientOnly = blockers.length > 0
-        && blockers.every((blocker) => TRANSIENT_BLOCKERS.has(blocker));
-      if (transientOnly) {
-        const now = this.now();
-        const startedAt = engineStatus.transientStartedAt
-          ? new Date(engineStatus.transientStartedAt).getTime()
-          : now;
-        const reminderDue = transientPaused
-          && now - startedAt >= this.transientReminderMs
-          && (this.lastTransientReminderAt === null
-            || now - this.lastTransientReminderAt >= this.transientReminderMs);
-        if (reminderDue) {
-          this.lastTransientReminderAt = now;
-          await this.onReminder({
-            reason: 'TRANSIENT_READINESS_WAITING', blockers,
-            paused_since: new Date(startedAt),
-            snapshot_hash: snapshot.snapshotHash || null,
-            generated_at: snapshot.generatedAt || new Date()
-          });
-        }
-        if (!transientPaused) {
-          await this.engine.pauseTransient({
-            reason: 'TRANSIENT_READINESS_FAILURE',
-            details: { blockers, snapshot_hash: snapshot.snapshotHash }
-          });
-          await this.onDisarm({
-            reason: 'TRANSIENT_READINESS_FAILURE', blockers,
-            snapshot_hash: snapshot.snapshotHash || null,
-            generated_at: snapshot.generatedAt || new Date()
-          });
-          this.lastTransientReminderAt = now;
-        }
-        return { status: 'paused_transient', reminder: reminderDue, snapshot };
-      }
-      this.lastTransientReminderAt = null;
-      if (typeof this.engine.setFaulted === 'function') {
-        await this.engine.setFaulted({
-          reason: 'READINESS_FAILED',
-          details: { blockers: snapshot.blockers, snapshot_hash: snapshot.snapshotHash }
-        });
-      } else {
-        await this.engine.setArmed(false);
-      }
-      await this.onDisarm({
-        reason: 'READINESS_FAILED',
-        blockers: snapshot.blockers || [],
-        snapshot_hash: snapshot.snapshotHash || null,
-        generated_at: snapshot.generatedAt || new Date()
+      await this.publishHealth(snapshot).catch((error) => {
+        this.lastError = error.code || error.message;
       });
-      return { status: 'disarmed', snapshot };
+      return {
+        status: snapshot.readyToArm
+          ? (snapshot.healthIssues?.length || snapshot.advisories?.length ? 'degraded' : 'ready')
+          : 'blocked',
+        snapshot,
+        scopeRefresh
+      };
     } catch (error) {
-      this.lastError = error.message;
-      if (typeof this.engine.setFaulted === 'function') {
-        await this.engine.setFaulted({
-          reason: 'READINESS_CHECK_ERROR',
-          details: { error: error.code || error.message }
-        }).catch(() => {});
-      } else {
-        await this.engine.setArmed(false).catch(() => {});
-      }
-      await this.onDisarm({
-        reason: 'READINESS_CHECK_ERROR',
-        error: error.code || error.message,
-        generated_at: new Date()
-      }).catch(() => {});
-      return { status: 'disarmed', error: error.code || error.message };
+      this.lastError = error.code || error.message;
+      await this.publishHealth(null, error).catch(() => {});
+      return { status: 'degraded', error: error.code || error.message };
     }
   }
 
@@ -1595,6 +1592,7 @@ module.exports = {
   REQUIRED_MIGRATION,
   ReadinessMonitor,
   TRANSIENT_BLOCKERS,
+  HEALTH_ONLY_BLOCKERS,
   appendPolicyHealth,
   balanceCacheStatus,
   balanceCacheTtlMs,
@@ -1618,5 +1616,7 @@ module.exports = {
   runDiagnostic,
   diagnosticPreview,
   persistedEngineDesiredRunning,
-  tradeAttemptReadiness
+  tradeAttemptReadiness,
+  classifyReadiness,
+  healthIssue
 };

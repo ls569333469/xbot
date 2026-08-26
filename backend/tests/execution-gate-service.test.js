@@ -115,3 +115,21 @@ test('execution gate ignores the position-local unprotected advisory', () => {
   });
   assert.equal(gate.assertReady('robinhood').configurationFingerprint, 'config-1');
 });
+
+test('execution gate ignores runtime health and unresolved-trade advisories globally', () => {
+  const gate = new ExecutionGateService({ engine: engine(), maxAgeMs: 1500 });
+  gate.update({
+    readyToArm: true,
+    blockers: [
+      'X_6551_INGESTION_UNHEALTHY',
+      'GMGN_SCHEDULER_NOT_HEALTHY',
+      'UNRESOLVED_TRADE_ATTEMPTS'
+    ],
+    healthIssues: [
+      { code: 'X_6551_INGESTION_UNHEALTHY', severity: 'warning' }
+    ],
+    configurationFingerprint: 'config-1',
+    chains: [{ chain: 'robinhood', ready: true, blockers: [] }]
+  });
+  assert.equal(gate.assertReady('robinhood').configurationFingerprint, 'config-1');
+});

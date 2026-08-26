@@ -30,7 +30,7 @@ test('scheduler readiness still blocks real cooldowns while allowing a swap-size
   }).blockers, ['GMGN_SCHEDULER_NOT_HEALTHY']);
 });
 
-test('readiness monitor pauses transient blockers and reports them once', async () => {
+test('readiness monitor reports transient blockers without changing Engine state', async () => {
   let armed = true;
   let status = 'running';
   const alerts = [];
@@ -38,19 +38,22 @@ test('readiness monitor pauses transient blockers and reports them once', async 
     engine: {
       getArmed: () => armed,
       getStatus: () => ({ status, desiredRunning: true }),
-      pauseTransient: async () => { armed = false; status = 'paused_transient'; }
+      pauseTransient: async () => { armed = false; status = 'paused_transient'; },
+      setFaulted: async () => { armed = false; status = 'fault_protected'; }
     },
     snapshotProvider: async () => ({
-      readyToArm: false,
-      blockers: ['GMGN_SCHEDULER_NOT_HEALTHY'],
+      readyToArm: true,
+      blockers: [],
+      healthIssues: [{ code: 'GMGN_SCHEDULER_NOT_HEALTHY', severity: 'warning' }],
       snapshotHash: 'snapshot-1'
     }),
-    onDisarm: async (details) => alerts.push(details)
+    onHealthChange: async (details) => alerts.push(details)
   });
   const result = await monitor.checkOnce();
-  assert.equal(result.status, 'paused_transient');
-  assert.equal(armed, false);
-  assert.deepEqual(alerts[0].blockers, ['GMGN_SCHEDULER_NOT_HEALTHY']);
+  assert.equal(result.status, 'degraded');
+  assert.equal(armed, true);
+  assert.equal(status, 'running');
+  assert.deepEqual(alerts[0].issues[0].code, 'GMGN_SCHEDULER_NOT_HEALTHY');
 });
 
 test('readiness monitor keeps running when a newly saved Follow Watch is only advisory', async () => {
@@ -69,10 +72,10 @@ test('readiness monitor keeps running when a newly saved Follow Watch is only ad
       advisories: ['FOLLOW_WATCH_NOT_SYNCED'],
       snapshotHash: 'follow-watch-pending'
     }),
-    onDisarm: async () => {}
+    onHealthChange: async () => {}
   });
 
-  assert.equal((await monitor.checkOnce()).status, 'ready');
+  assert.equal((await monitor.checkOnce()).status, 'degraded');
   assert.equal(faulted, 0);
   assert.equal(paused, 0);
 });
@@ -103,7 +106,7 @@ test('readiness monitor refreshes an authorized scope before accepting a hot pol
       }
     },
     snapshotProvider: async () => snapshot,
-    onDisarm: async () => {}
+    onHealthChange: async () => {}
   });
 
   const result = await monitor.checkOnce();
@@ -112,29 +115,31 @@ test('readiness monitor refreshes an authorized scope before accepting a hot pol
   assert.equal(result.scopeRefresh.updated, true);
 });
 
-test('readiness monitor automatically faults critical blockers', async () => {
+test('readiness monitor reports critical blockers without faulting Engine', async () => {
   let armed = true;
   const alerts = [];
   const monitor = new ReadinessMonitor({
     engine: {
       getArmed: () => armed,
       getStatus: () => ({ status: armed ? 'running' : 'fault_protected', desiredRunning: true }),
-      setArmed: async (value) => { armed = value; }
+      setArmed: async (value) => { armed = value; },
+      setFaulted: async () => { armed = false; }
     },
     snapshotProvider: async () => ({
       readyToArm: false,
       blockers: ['MIGRATION_NOT_CURRENT'],
+      healthIssues: [{ code: 'MIGRATION_NOT_CURRENT', severity: 'critical' }],
       snapshotHash: 'snapshot-critical'
     }),
-    onDisarm: async (details) => alerts.push(details)
+    onHealthChange: async (details) => alerts.push(details)
   });
   const result = await monitor.checkOnce();
-  assert.equal(result.status, 'disarmed');
-  assert.equal(armed, false);
-  assert.deepEqual(alerts[0].blockers, ['MIGRATION_NOT_CURRENT']);
+  assert.equal(result.status, 'blocked');
+  assert.equal(armed, true);
+  assert.equal(alerts[0].issues[0].code, 'MIGRATION_NOT_CURRENT');
 });
 
-test('readiness monitor treats undersized trade capacity as a critical configuration error', async () => {
+test('readiness monitor treats undersized trade capacity as a critical observation', async () => {
   let faulted = 0;
   const monitor = new ReadinessMonitor({
     engine: {
@@ -147,14 +152,14 @@ test('readiness monitor treats undersized trade capacity as a critical configura
       blockers: ['GMGN_TRADE_WEIGHT_UNAVAILABLE'],
       snapshotHash: 'snapshot-misconfigured'
     }),
-    onDisarm: async () => {}
+    onHealthChange: async () => {}
   });
 
-  assert.equal((await monitor.checkOnce()).status, 'disarmed');
-  assert.equal(faulted, 1);
+  assert.equal((await monitor.checkOnce()).status, 'blocked');
+  assert.equal(faulted, 0);
 });
 
-test('readiness monitor requires three healthy checks before transient recovery', async () => {
+test('readiness monitor does not automatically recover a legacy transient pause', async () => {
   let recovered = 0;
   const recoveredEvents = [];
   const monitor = new ReadinessMonitor({
@@ -171,21 +176,17 @@ test('readiness monitor requires three healthy checks before transient recovery'
       blockers: [],
       snapshotHash: 'snapshot-ready'
     }),
-    onDisarm: async () => {},
-    onRecover: async (details) => recoveredEvents.push(details),
-    recoveryHealthyChecks: 3
+    onHealthChange: async (details) => recoveredEvents.push(details)
   });
-  assert.equal((await monitor.checkOnce()).status, 'recovering');
-  assert.equal((await monitor.checkOnce()).status, 'recovering');
-  assert.equal((await monitor.checkOnce()).status, 'resumed');
-  assert.equal(recovered, 1);
+  assert.equal((await monitor.checkOnce()).status, 'ready');
+  assert.equal((await monitor.checkOnce()).status, 'ready');
+  assert.equal(recovered, 0);
   assert.equal(recoveredEvents.length, 1);
 });
 
-test('readiness monitor reminds but never faults while a transient blocker persists', async () => {
-  let now = Date.parse('2026-08-05T00:01:00.000Z');
+test('readiness monitor emits one health edge while a transient blocker persists', async () => {
   let faulted = 0;
-  const reminders = [];
+  const healthChanges = [];
   const monitor = new ReadinessMonitor({
     engine: {
       getArmed: () => false,
@@ -199,25 +200,19 @@ test('readiness monitor reminds but never faults while a transient blocker persi
     snapshotProvider: async () => ({
       readyToArm: false,
       blockers: ['GMGN_SCHEDULER_NOT_HEALTHY'],
+      healthIssues: [{ code: 'GMGN_SCHEDULER_NOT_HEALTHY', severity: 'warning' }],
       snapshotHash: 'snapshot-cooling'
     }),
-    onDisarm: async () => {},
-    onReminder: async (details) => reminders.push(details),
-    transientReminderMs: 60_000,
-    now: () => now
+    onHealthChange: async (details) => healthChanges.push(details)
   });
 
   const first = await monitor.checkOnce();
-  assert.equal(first.status, 'paused_transient');
-  assert.equal(first.reminder, true);
-  assert.equal(reminders.length, 1);
+  assert.equal(first.status, 'blocked');
+  assert.equal(healthChanges.length, 1);
   assert.equal(faulted, 0);
 
-  now += 30_000;
-  assert.equal((await monitor.checkOnce()).reminder, false);
-  now += 30_000;
-  assert.equal((await monitor.checkOnce()).reminder, true);
-  assert.equal(reminders.length, 2);
+  assert.equal((await monitor.checkOnce()).status, 'blocked');
+  assert.equal(healthChanges.length, 1);
   assert.equal(faulted, 0);
 });
 

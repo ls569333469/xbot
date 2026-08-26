@@ -5,6 +5,7 @@ const {
   balanceCacheStatus,
   balanceCacheTtlMs,
   contractApprovalReady,
+  classifyReadiness,
   configurationFingerprintChains,
   followLivePolicyState,
   followWatchReadiness,
@@ -39,6 +40,20 @@ test('recent GMGN 429 history is advisory and does not block a fresh readiness c
   assert.deepEqual(providerHistoryReadiness(false), { blockers: [], advisories: [] });
 });
 
+test('readiness separates health issues from operator start blockers', () => {
+  const result = classifyReadiness([
+    'X_6551_INGESTION_UNHEALTHY',
+    'UNRESOLVED_TRADE_ATTEMPTS',
+    'LIVE_TRADING_DISABLED'
+  ], ['GMGN_RECENT_429']);
+  assert.deepEqual(result.armBlockers, ['LIVE_TRADING_DISABLED']);
+  assert.deepEqual(result.healthIssues.map((issue) => issue.code), [
+    'GMGN_RECENT_429',
+    'X_6551_INGESTION_UNHEALTHY',
+    'UNRESOLVED_TRADE_ATTEMPTS'
+  ]);
+});
+
 test('ordinary receipt reconciliation is observable without blocking live trading', () => {
   assert.deepEqual(tradeAttemptReadiness({
     unresolved_attempts: 0,
@@ -46,11 +61,12 @@ test('ordinary receipt reconciliation is observable without blocking live tradin
   }), {
     unresolvedAttempts: 0,
     reconcilingAttempts: 1,
-    blockers: []
+    blockers: [],
+    advisories: []
   });
 });
 
-test('submission uncertainty remains a global readiness blocker', async () => {
+test('submission uncertainty is advisory and does not become a global readiness blocker', async () => {
   let sql = '';
   const readiness = await loadTradeAttemptReadiness({
     query: async (statement) => {
@@ -60,10 +76,11 @@ test('submission uncertainty remains a global readiness blocker', async () => {
   });
 
   assert.match(sql, /status = 'submission_uncertain'/);
-  assert.deepEqual(readiness.blockers, ['UNRESOLVED_TRADE_ATTEMPTS']);
+  assert.deepEqual(readiness.blockers, []);
+  assert.deepEqual(readiness.advisories, ['UNRESOLVED_TRADE_ATTEMPTS']);
 });
 
-test('manual-review reconciliation remains a global readiness blocker', async () => {
+test('manual-review reconciliation is advisory and does not become a global readiness blocker', async () => {
   let sql = '';
   const readiness = await loadTradeAttemptReadiness({
     query: async (statement) => {
@@ -80,7 +97,8 @@ test('manual-review reconciliation remains a global readiness blocker', async ()
     sql,
     /status = 'reconciliation_required' AND requires_manual_review = false/
   );
-  assert.deepEqual(readiness.blockers, ['UNRESOLVED_TRADE_ATTEMPTS']);
+  assert.deepEqual(readiness.blockers, []);
+  assert.deepEqual(readiness.advisories, ['UNRESOLVED_TRADE_ATTEMPTS']);
 });
 
 test('chain readiness separates fixed CA contract evidence from shared infrastructure', () => {

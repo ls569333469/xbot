@@ -1,6 +1,12 @@
 const engineState = require('../../lib/engine-state');
 
 const MAX_AGE_MS = 1500;
+const NON_TRANSACTION_BLOCKERS = new Set([
+  'UNPROTECTED_LIVE_POSITIONS',
+  'X_6551_INGESTION_UNHEALTHY',
+  'GMGN_SCHEDULER_NOT_HEALTHY',
+  'UNRESOLVED_TRADE_ATTEMPTS'
+]);
 
 class ExecutionGateService {
   constructor(options = {}) {
@@ -16,6 +22,8 @@ class ExecutionGateService {
       capturedAtMs: Date.now(),
       readyToArm: Boolean(readiness.readyToArm),
       blockers: [...new Set(readiness.blockers || [])],
+      armBlockers: [...new Set(readiness.armBlockers || readiness.blockers || [])],
+      healthIssues: Array.isArray(readiness.healthIssues) ? readiness.healthIssues : [],
       configurationFingerprint: readiness.configurationFingerprint || null,
       scope: readiness.scope ? {
         scope_type: readiness.scope.scope_type || 'combined',
@@ -59,7 +67,7 @@ class ExecutionGateService {
       throw error;
     }
     const globalBlockers = (snapshot.blockers || []).filter((blocker) => (
-      blocker !== 'UNPROTECTED_LIVE_POSITIONS'
+      !NON_TRANSACTION_BLOCKERS.has(blocker)
     ));
     if (globalBlockers.length > 0) {
       const error = new Error(`Execution gate is blocked: ${globalBlockers.join(', ')}`);

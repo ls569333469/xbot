@@ -1431,8 +1431,10 @@ export interface TradeReadiness {
   armed: boolean;
   liveEnabled: boolean;
   readyToArm: boolean;
+  armBlockers?: string[];
   blockers: string[];
   advisories: string[];
+  healthIssues?: RuntimeHealthIssue[];
   checks: Record<string, boolean | number>;
   chains: Array<{
     chain: ChainId;
@@ -1588,6 +1590,28 @@ export interface TradeReadiness {
     whitelistIds: number[];
     maxSignalAgeSeconds: number;
   };
+}
+
+export interface RuntimeHealthIssue {
+  code: string;
+  severity: 'warning' | 'critical' | string;
+  scope_type: string;
+  scope_id: string | number | null;
+  summary: string;
+  engine_affected: boolean;
+}
+
+export interface RuntimeHealth {
+  status: 'healthy' | 'degraded' | 'critical' | string;
+  engine: {
+    desired: 'running' | 'stopped' | string;
+    effective: 'running' | 'stopped' | string;
+    status: string;
+    armed: boolean;
+  };
+  issues: RuntimeHealthIssue[];
+  generated_at: string;
+  snapshot_hash: string | null;
 }
 
 export interface ArmPreparation {

@@ -4,6 +4,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useToast } from './components/ui/ToastContext';
 import { api, clearAdminToken, getAuthToken, setAdminToken, validateAdminToken } from './lib/api';
 import { Activity, Eye, EyeOff, History, KeyRound, LayoutDashboard, List, LogIn, Settings, ShieldAlert, ShieldCheck, TrendingUp, Users, Wifi, WifiOff } from 'lucide-react';
+import type { RuntimeHealth } from './lib/types';
 
 type AuthState = 'checking' | 'authenticated' | 'signed_out';
 
@@ -76,6 +77,7 @@ export default function Layout() {
   const [engineStatus, setEngineStatus] = useState<
     'stopped' | 'recovering' | 'running' | 'paused_transient' | 'fault_protected'
   >('stopped');
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth | null>(null);
   const location = useLocation();
 
   useEffect(() => {
@@ -112,13 +114,19 @@ export default function Layout() {
     if (authState !== 'authenticated') return;
 
     let active = true;
-    const refreshEngineStatus = async () => {
-      const res = await api.system.engineStatus();
-      if (!active || !res.ok || !res.data) return;
-      setEngineStatus(res.data.status || (res.data.armed ? 'running' : 'stopped'));
+    const refreshRuntimeStatus = async () => {
+      const [engineRes, healthRes] = await Promise.all([
+        api.system.engineStatus(),
+        api.system.runtimeHealth()
+      ]);
+      if (!active) return;
+      if (engineRes.ok && engineRes.data) {
+        setEngineStatus(engineRes.data.status || (engineRes.data.armed ? 'running' : 'stopped'));
+      }
+      if (healthRes.ok && healthRes.data) setRuntimeHealth(healthRes.data);
     };
-    void refreshEngineStatus();
-    const timer = window.setInterval(() => void refreshEngineStatus(), 10000);
+    void refreshRuntimeStatus();
+    const timer = window.setInterval(() => void refreshRuntimeStatus(), 10000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -163,6 +171,14 @@ export default function Layout() {
       : engineStatus === 'recovering'
         ? '正在恢复'
         : '已停止';
+  const healthIssue = runtimeHealth?.issues?.[0];
+  const healthIssueLabel: Record<string, string> = {
+    X_6551_INGESTION_UNHEALTHY: '6551 实时连接异常',
+    X_6551_HEALTH_OBSERVER_ERROR: '6551 健康检查不可用',
+    GMGN_SCHEDULER_NOT_HEALTHY: 'GMGN 调度器冷却中',
+    UNRESOLVED_TRADE_ATTEMPTS: '有交易等待人工对账',
+    WALLET_QUARANTINE_ACTIVE: '有钱包处于隔离状态'
+  };
 
   const navItems = [
     { path: '/', label: '总览', icon: LayoutDashboard },
@@ -258,6 +274,27 @@ export default function Layout() {
             </div>
           </div>
         </header>
+
+        {runtimeHealth && runtimeHealth.issues.length > 0 && (
+          <div
+            role="status"
+            style={{
+              padding: '10px var(--space-lg)',
+              background: runtimeHealth.status === 'critical' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+              borderBottom: '1px solid var(--color-border)',
+              color: runtimeHealth.status === 'critical' ? 'var(--color-danger)' : 'var(--color-warning)',
+              fontSize: '0.8125rem',
+              lineHeight: 1.45,
+              overflowWrap: 'anywhere'
+            }}
+          >
+            <strong>运行健康异常 {runtimeHealth.issues.length} 项</strong>
+            {' · '}
+            {healthIssue ? (healthIssueLabel[healthIssue.code] || healthIssue.summary || healthIssue.code) : '请查看设置页'}
+            {' · '}
+            Engine {engineRunning ? '仍在运行，异常不会自动暂停交易' : '当前未运行'}
+          </div>
+        )}
 
         <main className="app-main-panel" style={{ padding: 'var(--space-lg)', flex: 1, overflowY: 'auto' }}>
           <div key={location.pathname} className="page-transition-container">

@@ -141,6 +141,55 @@ router.get('/engine-status', (req, res) => {
   res.json({ ok: true, data: { ...engineState.getStatus(), mode: getTradingMode() } });
 });
 
+router.get('/runtime-health', async (req, res) => {
+  try {
+    const readiness = await readinessService.getSnapshot({ scope: engineState.getScopeInput() });
+    const issues = readiness.healthIssues || [];
+    const status = issues.some((issue) => issue.severity === 'critical')
+      ? 'critical'
+      : issues.length > 0 ? 'degraded' : 'healthy';
+    const engine = engineState.getStatus();
+    res.json({
+      ok: true,
+      data: {
+        status,
+        engine: {
+          desired: engine.desiredRunning ? 'running' : 'stopped',
+          effective: engine.status === 'running' ? 'running' : 'stopped',
+          status: engine.status,
+          armed: engine.armed
+        },
+        issues,
+        generated_at: readiness.generatedAt,
+        snapshot_hash: readiness.snapshotHash || null
+      }
+    });
+  } catch (error) {
+    res.status(200).json({
+      ok: true,
+      data: {
+        status: 'critical',
+        engine: {
+          desired: engineState.getStatus().desiredRunning ? 'running' : 'stopped',
+          effective: engineState.getStatus().status === 'running' ? 'running' : 'stopped',
+          status: engineState.getStatus().status,
+          armed: engineState.getStatus().armed
+        },
+        issues: [{
+          code: 'READINESS_OBSERVER_ERROR',
+          severity: 'critical',
+          scope_type: 'runtime',
+          scope_id: null,
+          summary: error.code || error.message,
+          engine_affected: false
+        }],
+        generated_at: new Date().toISOString(),
+        snapshot_hash: null
+      }
+    });
+  }
+});
+
 router.get('/readiness', async (req, res) => {
   try {
     const probe = String(req.query.probe || 'false').toLowerCase() === 'true';

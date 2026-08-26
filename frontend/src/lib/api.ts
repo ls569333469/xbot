@@ -5,7 +5,7 @@ import {
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
   RuntimePolicyDetailPage, RuntimeSummary, DynamicPolicy, DynamicResolution,
   DynamicSignalStatus, DynamicPaperSession, AccountResearchRun, DynamicPolicyTemplate, EntityId,
-  DynamicPolicyInput, DynamicPresetAssetRouteInput, DynamicPresetRouteMatchPreview
+  DynamicPolicyInput, DynamicPresetAssetRouteInput, DynamicPresetRouteMatchPreview, RuntimeHealth
 } from './types';
 
 const configuredApiBase = import.meta.env.VITE_API_URL;
@@ -348,6 +348,7 @@ export const api = {
     }),
     disarm: () => fetchApi<ApiResponse<any>>('/api/system/disarm', { method: 'POST' }),
     engineStatus: () => fetchApi<ApiResponse<any>>('/api/system/engine-status'),
+    runtimeHealth: () => fetchApi<ApiResponse<RuntimeHealth>>('/api/system/runtime-health'),
     readiness: (probe = false, scope?: { scope_type?: string; scope_id?: number | null; chain_ids?: string[] }) => {
       const params = new URLSearchParams({ probe: String(probe) });
       if (scope?.scope_type) params.set('scope_type', scope.scope_type);

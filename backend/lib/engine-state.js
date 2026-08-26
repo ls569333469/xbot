@@ -296,6 +296,21 @@ async function refreshAuthorizedScope(snapshot = {}) {
   return { updated: true, reason: 'scope_refreshed', runtime: getStatus() };
 }
 
+async function keepDesiredStateWaiting(reason, details) {
+  const now = new Date().toISOString();
+  await persist(normalize({
+    ...state,
+    desired_running: true,
+    status: 'recovering',
+    last_error: reason,
+    last_error_details: details || null,
+    last_checked_at: now
+  }));
+  isArmed = false;
+  armedAt = null;
+  return getStatus();
+}
+
 async function restoreDesiredState(snapshotProvider, options = {}) {
   if (!state.desired_running) return { status: 'skipped', reason: 'stopped' };
   const maxAttempts = Math.max(1, Number(options.maxAttempts || 1));
@@ -312,32 +327,25 @@ async function restoreDesiredState(snapshotProvider, options = {}) {
         && blockers.every((blocker) => retryableBlockers.has(blocker));
       if (!retryable || attempt === maxAttempts) {
         if (retryable && options.pauseOnRetryableExhaustion) {
-          await pauseTransient({
-            operator: options.operator || 'readiness-monitor',
-            reason: 'TRANSIENT_READINESS_FAILURE',
-            details: { blockers, snapshot_hash: snapshot.snapshotHash }
+          await keepDesiredStateWaiting('TRANSIENT_READINESS_FAILURE', {
+            blockers, snapshot_hash: snapshot.snapshotHash
           });
-          return { status: 'paused_transient', snapshot };
+          return { status: 'waiting', snapshot };
         }
-        await setFaulted({
-          reason: 'READINESS_FAILED_ON_RESTART',
-          details: { blockers, snapshot_hash: snapshot.snapshotHash }
+        await keepDesiredStateWaiting('READINESS_FAILED_ON_RESTART', {
+          blockers, snapshot_hash: snapshot.snapshotHash
         });
-        return { status: 'fault_protected', snapshot };
+        return { status: 'waiting', snapshot };
       }
       await sleep(retryDelayMs);
     }
     if (!state.configuration_fingerprint
         || state.configuration_fingerprint !== snapshot.configurationFingerprint) {
-      await setFaulted({
-        preserveIntent: false,
-        reason: 'LIVE_CONFIGURATION_CHANGED',
-        details: {
-          expected: state.configuration_fingerprint,
-          actual: snapshot.configurationFingerprint
-        }
+      await keepDesiredStateWaiting('LIVE_CONFIGURATION_CHANGED', {
+        expected: state.configuration_fingerprint,
+        actual: snapshot.configurationFingerprint
       });
-      return { status: 'fault_protected', reason: 'configuration_changed', snapshot };
+      return { status: 'waiting', reason: 'configuration_changed', snapshot };
     }
     await arm({
       operator: state.operator || 'supervisor-restore',
@@ -348,12 +356,11 @@ async function restoreDesiredState(snapshotProvider, options = {}) {
     logger.info('engine-state', 'Live trading restored after realtime readiness verification');
     return { status: 'restored', snapshot };
   } catch (error) {
-    await setFaulted({
-      reason: 'READINESS_CHECK_ERROR_ON_RESTART',
-      details: { error: error.code || error.message }
+    await keepDesiredStateWaiting('READINESS_CHECK_ERROR_ON_RESTART', {
+      error: error.code || error.message
     }).catch(() => {});
     logger.error('engine-state', `Live trading recovery failed: ${error.message}`);
-    return { status: 'fault_protected', error: error.code || error.message };
+    return { status: 'waiting', error: error.code || error.message };
   }
 }
 
