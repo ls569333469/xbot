@@ -9,7 +9,9 @@ import { ChainIcon } from '../components/ui/ChainIcon';
 import { TableSkeleton } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/ToastContext';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { queryStageLabel, sideLabel, statusLabel } from '../lib/display-labels';
+import {
+  queryStageLabel, sideLabel, statusLabel, tradeErrorCategoryLabel, tradeErrorSourceLabel
+} from '../lib/display-labels';
 import { explorerUrl } from '../lib/chain-explorers';
 
 function short(value?: string | null) {
@@ -46,6 +48,12 @@ function pollingIntervalLabel(order: TradeOrderRecord) {
     return `${seconds}s`;
   }
   return '等待首次查询';
+}
+
+function errorPanelClass(category: string) {
+  if (category === 'health_advisory') return 'signal-execution-panel--advisory';
+  if (category === 'provider_uncertain') return 'signal-execution-panel--uncertain';
+  return 'signal-execution-panel--blocked';
 }
 
 function JsonSection({ title, rows }: { title: string; rows?: object[] }) {
@@ -222,7 +230,12 @@ export default function TradeLog() {
                     <td className="trade-attempt-status">
                       <span className={attempt.requires_manual_review ? 'text-danger' : 'text-strong'}>{statusLabel(attempt.status)}</span>
                       <div className="text-xs text-secondary">Intent: {statusLabel(attempt.intent_status)}</div>
-                      {(attempt.error_code || attempt.failure_class) && <div className="text-xs text-danger font-mono trade-attempt-error">{attempt.error_code || attempt.failure_class}</div>}
+                      {attempt.execution.error && (
+                        <div className="text-xs text-danger trade-attempt-error">
+                          {attempt.execution.error.user_message}
+                          <span className="font-mono"> · {attempt.execution.error.code}</span>
+                        </div>
+                      )}
                     </td>
                     <td className="text-xs trade-attempt-retry">
                       <div>第 {attempt.attempt_no} 次提交</div>
@@ -272,8 +285,20 @@ export default function TradeLog() {
                     <div><span className="text-xs text-secondary">钱包写入状态</span><div className="font-mono text-sm">{selected.wallet_lane ? statusLabel(selected.wallet_lane.state) : '未占用'}</div></div>
                     <div><span className="text-xs text-secondary">失败分类</span><div className="font-mono text-xs">{selected.failure_class || selected.error_code || '-'}</div></div>
                     <div><span className="text-xs text-secondary">创建时间</span><div className="font-mono text-xs">{new Date(selected.created_at).toLocaleString()}</div></div>
-                  </div>
-                  <div className="section-divider-top">
+                   </div>
+                   {selected.execution.error && (
+                     <div className={`signal-execution-panel ${errorPanelClass(selected.execution.error.category)}`}>
+                       <strong>{selected.execution.error.user_message}</strong>
+                       <span>{tradeErrorCategoryLabel(selected.execution.error.category)} · 来源：{tradeErrorSourceLabel(selected.execution.error.source)} · 阶段：{selected.execution.error.stage} · 结果：{selected.execution.error.result}</span>
+                       <span>错误码：{selected.execution.error.code}
+                         {selected.execution.error.http_status ? ` · HTTP ${selected.execution.error.http_status}` : ''}
+                         {selected.execution.error.provider_code ? ` · GMGN ${selected.execution.error.provider_code}` : ''}
+                       </span>
+                       {selected.execution.error.provider_message && <span>原始信息：{selected.execution.error.provider_message}</span>}
+                       <span>下一步：{selected.execution.error.next_action}</span>
+                     </div>
+                   )}
+                   <div className="section-divider-top">
                     <span className="text-xs text-secondary">资金预留</span>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginTop: '8px' }}>
                       <div><span className="text-xs text-secondary">本金</span><div className="font-mono text-sm">{numberLabel(selected.budget_reservation?.amount_native)} {nativeSymbol(selected.chain)}</div></div>

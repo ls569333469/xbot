@@ -1,5 +1,6 @@
 const CONTRACT_VERSION = 'p27.v1';
 const STRATEGY_TYPES = new Set(['fixed_ca', 'dynamic_policy', 'follow_discovery']);
+const { describeTradeError, isExecutionBlocker } = require('./trade-error-catalog');
 
 function text(value) {
   const normalized = String(value || '').trim();
@@ -52,7 +53,10 @@ function executionDecision(row = {}) {
       : { status: 'not_attempted', blockers: [] };
   }
   if (['rejected', 'failed'].includes(finalStatus)) {
-    return { status: 'denied', blockers: [row.trade_error_code || row.error_code].filter(Boolean) };
+    return {
+      status: 'denied',
+      blockers: [row.trade_error_code || row.error_code].filter(isExecutionBlocker)
+    };
   }
   return { status: 'allowed', blockers: [] };
 }
@@ -61,7 +65,36 @@ function executionBlockers(row = {}, decision = executionDecision(row)) {
   return [...new Set([
     ...(decision.blockers || []),
     ...(['rejected', 'failed'].includes(row.status) ? [row.reject_reason] : [])
-  ].filter(Boolean))];
+  ].filter(Boolean).filter(isExecutionBlocker))];
+}
+
+function errorProjection(row = {}) {
+  const code = row.trade_error_code || row.error_code || row.reject_reason || row.failure_class;
+  if (!code) return null;
+  const attemptStatus = row.trade_attempt_status || row.attempt_status || row.status;
+  const latestEvent = Array.isArray(row.events) ? row.events.at(-1) : null;
+  const latestOrder = Array.isArray(row.orders) ? row.orders.at(-1) : null;
+  const lastResponseJson = {
+    ...(row.order_last_response_json || row.attempt_order_last_response_json || {}),
+    ...(latestOrder?.last_response_json || {})
+  };
+  return describeTradeError({
+    code,
+    failure_class: row.failure_class,
+    stage: row.attempt_stage || row.stage,
+    provider_code: row.provider_code || row.attempt_provider_code,
+    provider_message: row.provider_message || row.attempt_provider_message
+      || row.attempt_event_reason || latestEvent?.summary?.provider_message || latestEvent?.reason,
+    http_status: row.http_status || row.attempt_http_status || row.attempt_event_http_status,
+    attempt_event_summary: row.attempt_event_summary || row.latest_attempt_event_summary
+      || latestEvent?.summary,
+    last_response_json: lastResponseJson,
+    order_id: row.order_id || latestOrder?.id,
+    provider_order_id: row.provider_order_id || latestOrder?.provider_order_id,
+    tx_hash: row.tx_hash || latestOrder?.tx_hash,
+    write_started: ['submitted', 'confirming', 'submission_uncertain', 'reconciliation_required',
+      'failure_verifying'].includes(attemptStatus)
+  });
 }
 
 function riskProjection(row = {}, blockers = []) {
@@ -81,6 +114,7 @@ function projectSignal(row, currentProjection = { status: 'unknown', blockers: [
   const policySnapshot = row.authorization_snapshot?.signal_policy_snapshot || {};
   const decision = executionDecision(row);
   const blockers = executionBlockers(row, decision);
+  const error = errorProjection(row);
   const execution = {
     mode: row.execution_mode ?? null,
     status: row.status ?? null,
@@ -88,7 +122,8 @@ function projectSignal(row, currentProjection = { status: 'unknown', blockers: [
     attempt_id: row.trade_attempt_id ?? null,
     order_id: row.order_id ?? null,
     tx_hash: row.tx_hash ?? null,
-    blockers
+    blockers,
+    error
   };
   return {
     ...row,
@@ -135,7 +170,8 @@ function projectSignal(row, currentProjection = { status: 'unknown', blockers: [
 
 function projectPosition(row) {
   const projectedAsset = asset(row);
-  const blockers = [row.trade_error_code].filter(Boolean);
+  const blockers = [row.trade_error_code].filter(Boolean).filter(isExecutionBlocker);
+  const error = errorProjection(row);
   const executionTxHash = row.trade_attempt_side === 'sell'
     ? row.sell_tx_hash || row.tx_hash || null
     : row.sell_tx_hash || row.buy_tx_hash || row.tx_hash || null;
@@ -154,7 +190,8 @@ function projectPosition(row) {
       order_id: row.order_id ?? null,
       tx_hash: executionTxHash,
       side: row.trade_attempt_side ?? null,
-      blockers
+      blockers,
+      error
     },
     risk: riskProjection(row, blockers)
   };
@@ -171,7 +208,8 @@ function projectAttempt(row) {
   const contractAddress = row.contract_address
     || (row.side === 'sell' ? row.input_token : row.output_token);
   const blockers = ['rejected', 'failed'].includes(row.status)
-    ? [row.error_code].filter(Boolean) : [];
+    ? [row.error_code].filter(Boolean).filter(isExecutionBlocker) : [];
+  const error = errorProjection(row);
   return {
     ...row,
     contract_version: CONTRACT_VERSION,
@@ -186,7 +224,8 @@ function projectAttempt(row) {
       attempt_id: row.id ?? null,
       order_id: order?.id ?? null,
       tx_hash: order?.tx_hash ?? null,
-      blockers
+      blockers,
+      error
     },
     risk: riskProjection(row, blockers),
     order: {

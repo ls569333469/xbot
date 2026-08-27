@@ -23,6 +23,7 @@ const { TRADE_RESERVATION_WEIGHT } = require('../../lib/gmgn-rate-scheduler');
 const { closedPositionCsv } = require('./contract-projector');
 const { createDiagnosticHandler } = require('./diagnostic-handler');
 const { externalCloseService } = require('./external-close-service');
+const { describeTradeError } = require('./trade-error-catalog');
 
 const ACTIVE_POSITION_STATUSES = [
   'open', 'open_unprotected', 'open_protected', 'partially_closed', 'closing',
@@ -45,7 +46,22 @@ function sendError(res, error) {
   const status = error.code === 'SIGNAL_NOT_FOUND' || error.code === 'POSITION_NOT_FOUND'
     ? 404
     : conflictCodes.has(error.code) ? 409 : 400;
-  res.status(status).json({ ok: false, error: error.message, code: error.code || 'TRADE_REQUEST_FAILED' });
+  const code = error.code || 'TRADE_REQUEST_FAILED';
+  const errorDetail = describeTradeError({
+    code,
+    provider_code: error.apiError || error.providerCode,
+    provider_message: error.apiMessage || error.providerMessage,
+    http_status: error.status,
+    stage: error.responseMeta?.stage,
+    tx_hash: error.txHash,
+    order_id: error.orderId
+  });
+  res.status(status).json({
+    ok: false,
+    error: errorDetail?.user_message || '交易请求失败，请打开交易日志核对详情',
+    code,
+    error_detail: errorDetail
+  });
 }
 
 // 获取当前活跃持仓

@@ -568,6 +568,10 @@ body {
 }
 .signal-execution-panel--blocked { border-left-color: var(--color-danger); background: rgba(255, 71, 87, 0.06); }
 .signal-execution-panel--blocked strong { color: var(--color-danger); }
+.signal-execution-panel--uncertain { border-left-color: var(--color-warning); background: rgba(243, 186, 47, 0.08); }
+.signal-execution-panel--uncertain strong { color: var(--color-warning); }
+.signal-execution-panel--advisory { border-left-color: var(--color-accent); background: rgba(108, 92, 231, 0.06); }
+.signal-execution-panel--advisory strong { color: var(--color-accent); }
 .signal-risk-panel span { overflow-wrap: anywhere; }
 
 .signal-card__identity {

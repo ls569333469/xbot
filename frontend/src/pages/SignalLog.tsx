@@ -5,13 +5,26 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { Skeleton } from '../components/ui/Skeleton';
 import { TradeSignal } from '../lib/types';
-import { blockerLabel, eventTypeLabel, modeLabel, riskLabel, signalTypeLabel, statusLabel } from '../lib/display-labels';
+import {
+  blockerLabel, eventTypeLabel, modeLabel, riskLabel, signalTypeLabel, statusLabel,
+  tradeErrorCategoryLabel, tradeErrorSourceLabel
+} from '../lib/display-labels';
 
 function authorizationLabel(value: TradeSignal['live_authorization']) {
   if (value === 'auto_allowed') return '允许自动执行';
   if (value === 'manual_allowed') return '允许人工执行';
   if (value === 'record_only') return '只记录';
   return '当前授权未知';
+}
+
+function errorPanelClass(category: string) {
+  if (category === 'health_advisory') return 'signal-execution-panel--advisory';
+  if (category === 'provider_uncertain') return 'signal-execution-panel--uncertain';
+  return 'signal-execution-panel--blocked';
+}
+
+function errorHeadline(error: NonNullable<TradeSignal['execution']['error']>) {
+  return error.category === 'provider_uncertain' ? '交易结果待核验' : error.user_message;
 }
 
 export default function SignalLog() {
@@ -121,10 +134,18 @@ export default function SignalLog() {
                   {sig.trade_intent_id && (
                     <div className="text-xs font-mono">
                       Intent #{sig.trade_intent_id} · Attempt {sig.attempt_no || '-'} · {statusLabel(sig.trade_attempt_status || sig.trade_intent_status)}
-                      {(sig.failure_class || sig.trade_error_code) && <span className="text-danger"> · {sig.failure_class || sig.trade_error_code}</span>}
+                      {sig.execution.error && sig.execution.error.category !== 'health_advisory'
+                        && <span className="text-danger"> · {sig.execution.error.user_message}</span>}
                     </div>
                   )}
-                  {sig.execution.blockers.length > 0 && (
+                  {sig.execution.error && sig.execution.error.category !== 'health_advisory' && (
+                    <div className={`signal-execution-panel ${errorPanelClass(sig.execution.error.category)}`}>
+                      <strong>{errorHeadline(sig.execution.error)}</strong>
+                      <span>{tradeErrorCategoryLabel(sig.execution.error.category)} · 阶段：{sig.execution.error.stage} · 来源：{tradeErrorSourceLabel(sig.execution.error.source)}</span>
+                      <span>{sig.execution.error.result} · {sig.execution.error.next_action}</span>
+                    </div>
+                  )}
+                  {!sig.execution.error && sig.execution.blockers.length > 0 && (
                     <div className="signal-execution-panel signal-execution-panel--blocked">
                       <strong>执行阻断</strong>
                       <span>{sig.execution.blockers.map(blockerLabel).join(' · ')}</span>

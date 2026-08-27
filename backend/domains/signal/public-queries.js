@@ -24,7 +24,10 @@ const SIGNAL_SELECT = `
   trade_flow.retry_count, trade_flow.max_retries,
   trade_flow.trade_attempt_id, trade_flow.attempt_no,
   trade_flow.trade_attempt_status, trade_flow.failure_class,
-  trade_flow.trade_error_code, trade_flow.order_id, trade_flow.tx_hash,
+  trade_flow.trade_error_code, trade_flow.order_id, trade_flow.provider_order_id,
+  trade_flow.tx_hash, trade_flow.attempt_event_reason,
+  trade_flow.attempt_event_http_status, trade_flow.attempt_event_summary,
+  trade_flow.attempt_order_last_response_json,
   trade_flow.output_decimals`;
 
 function boundedInteger(value, fallback, min, max) {
@@ -63,19 +66,33 @@ async function listSignals(filters = {}, executor = db) {
              attempt.id AS trade_attempt_id, attempt.attempt_no,
              attempt.status AS trade_attempt_status,
              attempt.failure_class, attempt.error_code AS trade_error_code,
-             orders.id AS order_id, orders.tx_hash, orders.output_decimals
+             orders.id AS order_id, orders.provider_order_id, orders.tx_hash,
+             orders.last_response_json AS attempt_order_last_response_json,
+             orders.output_decimals,
+             attempt_event.attempt_event_reason,
+             attempt_event.attempt_event_http_status,
+             attempt_event.attempt_event_summary
       FROM trade_intents intent
       LEFT JOIN LATERAL (
-        SELECT attempt_row.id, attempt_row.attempt_no, attempt_row.status,
-               attempt_row.failure_class, attempt_row.error_code
+         SELECT attempt_row.id, attempt_row.attempt_no, attempt_row.status,
+                attempt_row.failure_class, attempt_row.error_code
         FROM trade_attempts attempt_row
         WHERE attempt_row.intent_id = intent.id ORDER BY attempt_row.attempt_no DESC LIMIT 1
       ) attempt ON true
       LEFT JOIN LATERAL (
-        SELECT order_row.id, order_row.tx_hash, order_row.output_decimals
+         SELECT order_row.id, order_row.provider_order_id, order_row.tx_hash,
+                order_row.last_response_json, order_row.output_decimals
         FROM trade_orders order_row
         WHERE order_row.attempt_id = attempt.id ORDER BY order_row.id DESC LIMIT 1
       ) orders ON true
+      LEFT JOIN LATERAL (
+        SELECT event.reason AS attempt_event_reason,
+               event.http_status AS attempt_event_http_status,
+               event.summary AS attempt_event_summary
+        FROM trade_attempt_events event
+        WHERE event.attempt_id = attempt.id
+        ORDER BY event.id DESC LIMIT 1
+      ) attempt_event ON true
       WHERE intent.signal_id = ts.id ORDER BY intent.id DESC LIMIT 1
     ) trade_flow ON true ${where}`;
   const count = await executor.query(`SELECT COUNT(*)::int AS count ${from}`, params);

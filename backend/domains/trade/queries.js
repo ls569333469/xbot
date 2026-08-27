@@ -17,7 +17,10 @@ const POSITION_SELECT = `
   trade_flow.trade_intent_id, trade_flow.trade_intent_status,
   trade_flow.trade_attempt_id, trade_flow.attempt_no,
   trade_flow.trade_attempt_status, trade_flow.trade_attempt_side, trade_flow.failure_class,
-  trade_flow.trade_error_code, trade_flow.order_id, trade_flow.tx_hash`;
+  trade_flow.trade_error_code, trade_flow.order_id, trade_flow.provider_order_id,
+  trade_flow.tx_hash, trade_flow.attempt_event_reason,
+  trade_flow.attempt_event_http_status, trade_flow.attempt_event_summary,
+  trade_flow.attempt_order_last_response_json`;
 
 const POSITION_FROM = `
   FROM positions p
@@ -34,7 +37,11 @@ const POSITION_FROM = `
            attempt.status AS trade_attempt_status,
            attempt.failure_class, attempt.side AS trade_attempt_side,
            attempt.error_code AS trade_error_code,
-           orders.id AS order_id, orders.tx_hash
+           orders.id AS order_id, orders.provider_order_id, orders.tx_hash,
+           orders.last_response_json AS attempt_order_last_response_json,
+           attempt_event.attempt_event_reason,
+           attempt_event.attempt_event_http_status,
+           attempt_event.attempt_event_summary
     FROM trade_intents intent
     LEFT JOIN LATERAL (
       SELECT attempt_row.id, attempt_row.attempt_no, attempt_row.status,
@@ -43,10 +50,19 @@ const POSITION_FROM = `
       WHERE attempt_row.intent_id = intent.id ORDER BY attempt_row.attempt_no DESC LIMIT 1
     ) attempt ON true
     LEFT JOIN LATERAL (
-      SELECT order_row.id, order_row.tx_hash
+      SELECT order_row.id, order_row.provider_order_id, order_row.tx_hash,
+             order_row.last_response_json
       FROM trade_orders order_row
       WHERE order_row.attempt_id = attempt.id ORDER BY order_row.id DESC LIMIT 1
     ) orders ON true
+    LEFT JOIN LATERAL (
+      SELECT event.reason AS attempt_event_reason,
+             event.http_status AS attempt_event_http_status,
+             event.summary AS attempt_event_summary
+      FROM trade_attempt_events event
+      WHERE event.attempt_id = attempt.id
+      ORDER BY event.id DESC LIMIT 1
+    ) attempt_event ON true
     WHERE intent.position_id = p.id OR intent.signal_id = p.signal_id
     ORDER BY intent.id DESC LIMIT 1
   ) trade_flow ON true`;

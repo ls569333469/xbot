@@ -248,6 +248,8 @@ async function request(method, path, query = {}, body = null, options = {}) {
     emitRequestEvent(responseMeta, 'GMGN_NON_JSON_RESPONSE');
     throw new GmgnOpenApiError(`${method} ${path} failed: HTTP ${response.status} non-JSON response`, {
       status: response.status,
+      apiError: 'GMGN_NON_JSON_RESPONSE',
+      apiMessage: 'GMGN returned a non-JSON response',
       path,
       method,
       responseMeta

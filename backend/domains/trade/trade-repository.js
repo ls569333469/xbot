@@ -201,6 +201,39 @@ async function addAttemptEvent(executor, attemptId, fromStatus, toStatus, detail
   await enqueueEntityEvent(executor, 'attempt', attemptId, 'updated', `status:${toStatus}`);
 }
 
+function errorEventDetails(error, extra = {}) {
+  const httpStatus = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+  const providerCode = error?.apiError || error?.providerCode || null;
+  const providerMessage = error?.apiMessage || error?.providerMessage || null;
+  return {
+    ...extra,
+    reason: error?.message || extra.reason || null,
+    httpStatus: Number.isInteger(httpStatus) ? httpStatus : extra.httpStatus || null,
+    summary: {
+      ...(extra.summary || {}),
+      error_code: error?.code || null,
+      provider_code: providerCode,
+      provider_message: providerMessage,
+      http_status: Number.isInteger(httpStatus) ? httpStatus : null
+    }
+  };
+}
+
+function normalizedOrderEventDetails(normalizedOrder) {
+  const raw = normalizedOrder?.raw && typeof normalizedOrder.raw === 'object'
+    ? normalizedOrder.raw : {};
+  return {
+    reason: normalizedOrder?.errorCode || normalizedOrder?.providerStatus || null,
+    summary: {
+      error_code: normalizedOrder?.errorCode || null,
+      provider_code: raw.error_code || raw.error_status || null,
+      provider_message: raw.message || raw.error_message || null,
+      provider_status: normalizedOrder?.providerStatus || null,
+      tx_hash: normalizedOrder?.txHash || null
+    }
+  };
+}
+
 async function writeOutbox(executor, topic, aggregateType, aggregateId, payload) {
   await executor.query(
     `INSERT INTO notification_outbox(topic, aggregate_type, aggregate_id, payload)
@@ -996,13 +1029,13 @@ async function getExecutionTrace(traceId) {
 }
 
 async function markSubmissionUncertain(attemptId, error) {
-  return transitionAttempt(attemptId, ['submitting'], 'submission_uncertain', {
+  return transitionAttempt(attemptId, ['submitting'], 'submission_uncertain', errorEventDetails(error, {
     errorCode: error.code || 'GMGN_SUBMISSION_UNCERTAIN',
     errorClass: error.name || 'Error',
     requiresManualReview: true,
     alertTopic: 'trade.submission_uncertain',
     reason: error.message
-  });
+  }));
 }
 
 async function releaseRejectedAttempt(attemptId, error) {
@@ -1062,10 +1095,9 @@ async function releaseRejectedAttempt(attemptId, error) {
     );
     await runtimeAuthorization
       .releaseUsage(attemptResult.rows[0].signal_id, client);
-    await addAttemptEvent(client, attemptId, 'submitting', 'rejected', {
-      reason: error.message,
+    await addAttemptEvent(client, attemptId, 'submitting', 'rejected', errorEventDetails(error, {
       errorCode: error.code
-    });
+    }));
     await client.query('COMMIT');
     return attemptResult.rows[0];
   } catch (transactionError) {
@@ -2063,7 +2095,8 @@ async function markSellUncertain(attemptId, positionId, error) {
       `UPDATE positions SET status = 'close_uncertain', updated_at = NOW() WHERE id = $1`,
       [positionId]
     );
-    await addAttemptEvent(client, attemptId, 'submitting', 'submission_uncertain', { reason: error.message });
+    await addAttemptEvent(client, attemptId, 'submitting', 'submission_uncertain',
+      errorEventDetails(error));
     await writeOutbox(client, 'position.close_uncertain', 'position', positionId, {
       position_id: positionId,
       attempt_id: attemptId,
@@ -2101,7 +2134,8 @@ async function rejectSellAttempt(attemptId, positionId, error, fallbackStatus = 
          WHERE id = $1 AND status = 'closing'`,
         [positionId, fallbackStatus]
       );
-      await addAttemptEvent(client, attemptId, 'submitting', 'rejected', { reason: error.message });
+      await addAttemptEvent(client, attemptId, 'submitting', 'rejected',
+        errorEventDetails(error));
     }
     await client.query('COMMIT');
   } catch (transactionError) {
@@ -3152,7 +3186,7 @@ async function failOrder(orderId, normalizedOrder) {
       [row.attempt_id, normalizedOrder.errorCode || 'ORDER_FAILED']
     );
     await addAttemptEvent(client, row.attempt_id, row.attempt_status, 'failure_verifying', {
-      reason: normalizedOrder.errorCode || normalizedOrder.providerStatus
+      ...normalizedOrderEventDetails(normalizedOrder)
     });
     await client.query('COMMIT');
   } catch (error) {
@@ -3265,8 +3299,12 @@ async function listAttempts(limit = 100) {
             reservation.fee_native AS retry_fee_envelope_native,
             reservation.fee_used_native,
             orders.id AS order_id, orders.provider_order_id, orders.tx_hash,
-            orders.provider_status, orders.normalized_status AS order_status,
+             orders.provider_status, orders.normalized_status AS order_status,
+             orders.last_response_json AS order_last_response_json,
              orders.last_queried_at, orders.next_query_at, orders.query_count,
+             attempt_event.attempt_event_reason,
+             attempt_event.attempt_event_http_status,
+             attempt_event.attempt_event_summary,
              CASE
                WHEN orders.normalized_status IN ('confirmed','failed','expired') THEN 'stopped'
                WHEN orders.normalized_status = 'definitive_failed_no_fill' THEN 'terminal_audit_15_30m'
@@ -3283,10 +3321,18 @@ async function listAttempts(limit = 100) {
      LEFT JOIN budget_reservations AS reservation ON reservation.intent_id = attempt.intent_id
      LEFT JOIN wallet_write_lanes AS wallet_lane
        ON wallet_lane.chain = attempt.chain AND wallet_lane.wallet_address = attempt.wallet_address
-     LEFT JOIN LATERAL (
-       SELECT * FROM trade_orders WHERE attempt_id = attempt.id ORDER BY id DESC LIMIT 1
-     ) orders ON true
-     ORDER BY attempt.created_at DESC LIMIT $1`,
+      LEFT JOIN LATERAL (
+        SELECT * FROM trade_orders WHERE attempt_id = attempt.id ORDER BY id DESC LIMIT 1
+      ) orders ON true
+      LEFT JOIN LATERAL (
+        SELECT event.reason AS attempt_event_reason,
+               event.http_status AS attempt_event_http_status,
+               event.summary AS attempt_event_summary
+        FROM trade_attempt_events event
+        WHERE event.attempt_id = attempt.id
+        ORDER BY event.id DESC LIMIT 1
+      ) attempt_event ON true
+      ORDER BY attempt.created_at DESC LIMIT $1`,
     [Math.min(500, Math.max(1, Number(limit)))]
   );
   return result.rows.map(projectAttempt);

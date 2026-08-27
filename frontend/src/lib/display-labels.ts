@@ -265,6 +265,36 @@ export function blockerActionLabel(value: string): string {
   return BLOCKER_ACTION_LABELS[value] || '请先处理该项后重新检查';
 }
 
+const TRADE_ERROR_CATEGORY_LABELS: Record<string, string> = {
+  startup_blocker: '启动检查',
+  trade_gate: '交易门禁',
+  local_execution: '本地执行',
+  provider_rejection: 'GMGN 拒绝',
+  provider_rate_limited: 'GMGN 限流',
+  provider_uncertain: '交易结果待核验',
+  health_advisory: '健康观察',
+  unknown: '未分类错误'
+};
+
+const TRADE_ERROR_SOURCE_LABELS: Record<string, string> = {
+  local_trade_gate: '本地交易门禁',
+  local_engine: '本地 Engine',
+  local_execution: '本地执行',
+  local_gmgn_scheduler: '本地 GMGN 调度器',
+  gmgn: 'GMGN',
+  rpc_observer: 'RPC 观察器',
+  runtime_health: '运行健康检查',
+  system: '系统'
+};
+
+export function tradeErrorCategoryLabel(value?: string | null): string {
+  return TRADE_ERROR_CATEGORY_LABELS[String(value || 'unknown')] || '未分类错误';
+}
+
+export function tradeErrorSourceLabel(value?: string | null): string {
+  return TRADE_ERROR_SOURCE_LABELS[String(value || 'system')] || String(value || '系统');
+}
+
 const RISK_LABELS: Record<string, string> = {
   GMGN_SECURITY_HONEYPOT: 'GMGN 标记为疑似貔貅盘',
   HONEYPOT_UNKNOWN: '貔貅盘字段暂无结果',

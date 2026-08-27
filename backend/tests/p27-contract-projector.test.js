@@ -144,6 +144,42 @@ test('risk observations never become execution blockers unless execution proves 
   assert.deepEqual(rejected.risk.hard_failures, ['GMGN_SECURITY_RUG_RISK']);
 });
 
+test('P41 health observations do not become position or attempt blockers', () => {
+  const position = projectPosition({
+    id: 41, chain_id: 'base', contract_address: '0x1234567890abcdef', status: 'open',
+    trade_error_code: 'WALLET_BALANCE_CACHE_STALE'
+  });
+  assert.deepEqual(position.execution.blockers, []);
+  assert.equal(position.execution.error.category, 'health_advisory');
+
+  const attempt = projectAttempt({
+    id: 42, intent_id: 41, chain: 'base', output_token: '0x1234567890abcdef',
+    status: 'failed', error_code: 'CHAIN_RPC_TIMEOUT'
+  });
+  assert.deepEqual(attempt.execution.blockers, []);
+  assert.equal(attempt.execution.error.category, 'health_advisory');
+});
+
+test('P41 projects provider response stored on the latest trade order', () => {
+  const attempt = projectAttempt({
+    id: 43, intent_id: 42, chain: 'base', output_token: '0x1234567890abcdef',
+    status: 'rejected', error_code: 'GMGN_API_ERROR',
+    orders: [{
+      id: 17,
+      provider_order_id: null,
+      tx_hash: null,
+      normalized_status: 'failed',
+      last_response_json: {
+        error: 'GEvmInsufficientFunds',
+        message: 'insufficient native token balance'
+      }
+    }]
+  });
+  assert.equal(attempt.execution.error.user_message, '钱包余额不足，无法支付本次买入金额和交易手续费');
+  assert.equal(attempt.execution.error.provider_code, 'GEvmInsufficientFunds');
+  assert.equal(attempt.execution.error.provider_message, 'insufficient native token balance');
+});
+
 test('asset fallback uses the shortened CA and never invents a token name', () => {
   assert.deepEqual(asset({ contract_address: '0x1234567890abcdef1234' }), {
     symbol: null,
@@ -235,5 +271,10 @@ test('P27 JSON schemas validate canonical projector fixtures', () => {
   assertSchema('trade-attempt.schema.json', projectAttempt({
     ...common, id: 30, intent_id: 29, chain: 'robinhood', side: 'buy',
     output_token: common.contract_address, execution_mode: null
+  }));
+  assertSchema('signal.schema.json', projectSignal({
+    ...common, status: 'rejected', trade_error_code: 'CA_BUY_LIMIT_REACHED',
+    signal_type: 'handle_match',
+    gmgn_asset_symbol: 'CAT', gmgn_asset_name: 'Thinking Cat', gmgn_asset_decimals: 18
   }));
 });

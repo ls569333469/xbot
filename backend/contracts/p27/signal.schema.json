@@ -17,7 +17,7 @@
       "required": ["token_decimals", "source"],
       "properties": {
         "token_decimals": { "type": ["integer", "null"], "minimum": 0 },
-        "source": { "enum": ["order_report", "position_lot", "unavailable"] }
+        "source": { "enum": ["order_report", "position_lot", "gmgn_shared", "unavailable"] }
       }
     },
     "project": {
@@ -81,7 +81,7 @@
         "name": { "type": ["string", "null"] },
         "logo_url": { "type": ["string", "null"] },
         "display_label": { "type": "string", "minLength": 1 },
-        "metadata_source": { "enum": ["signal_snapshot", "whitelist", "candidate", "address_fallback"] }
+        "metadata_source": { "enum": ["signal_snapshot", "whitelist", "candidate", "gmgn_shared", "address_fallback"] }
       }
     },
     "execution": {
@@ -94,8 +94,29 @@
         "attempt_id": { "$ref": "#/$defs/nullableEntityId" },
         "order_id": { "$ref": "#/$defs/nullableEntityId" },
         "tx_hash": { "type": ["string", "null"] },
-        "blockers": { "type": "array", "items": { "type": "string" } }
+        "blockers": { "type": "array", "items": { "type": "string" } },
+        "error": { "$ref": "#/$defs/tradeError" }
       }
+    },
+    "tradeError": {
+      "type": ["object", "null"],
+      "required": ["code", "user_message", "category", "source", "stage", "result", "order_created", "retry_allowed", "next_action"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "user_message": { "type": "string", "minLength": 1 },
+        "category": { "enum": ["startup_blocker", "trade_gate", "local_execution", "provider_rejection", "provider_rate_limited", "provider_uncertain", "health_advisory", "unknown"] },
+        "source": { "type": "string", "minLength": 1 },
+        "stage": { "type": "string", "minLength": 1 },
+        "provider_code": { "type": ["string", "null"] },
+        "provider_message": { "type": ["string", "null"] },
+        "http_status": { "type": ["integer", "null"] },
+        "result": { "type": "string", "minLength": 1 },
+        "order_created": { "type": "boolean" },
+        "tx_hash": { "type": ["string", "null"] },
+        "retry_allowed": { "type": "boolean" },
+        "next_action": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
     },
     "risk": {
       "type": "object",

@@ -227,6 +227,28 @@ test('API business errors expose sanitized machine-readable fields', async () =>
   }
 });
 
+test('non-JSON GMGN responses preserve a distinct error code for P41 projection', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response('upstream unavailable', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' }
+  });
+
+  try {
+    await assert.rejects(
+      withEnv({ GMGN_API_KEY: 'gmgn-test-key' }, () => gmgnHttp.getTokenInfo('base', 'TokenAddress')),
+      (error) => {
+        assert.equal(error.code, 'GMGN_NON_JSON_RESPONSE');
+        assert.equal(error.apiError, 'GMGN_NON_JSON_RESPONSE');
+        assert.equal(error.status, 200);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('legacy local-wallet swap calls fail closed', () => {
   assert.throws(
     () => gmgnHttp.getSwapRoute(),

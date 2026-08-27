@@ -1060,6 +1060,24 @@ export interface EntityExecution {
   tx_hash: string | null;
   side?: 'buy' | 'sell' | 'strategy_create' | 'strategy_cancel' | null;
   blockers: string[];
+  error: TradeErrorDescriptor | null;
+}
+
+export interface TradeErrorDescriptor {
+  code: string;
+  user_message: string;
+  category: 'startup_blocker' | 'trade_gate' | 'local_execution' | 'provider_rejection'
+    | 'provider_rate_limited' | 'provider_uncertain' | 'health_advisory' | 'unknown';
+  source: string;
+  stage: string;
+  provider_code?: string | null;
+  provider_message?: string | null;
+  http_status?: number | null;
+  result: string;
+  order_created: boolean;
+  tx_hash?: string | null;
+  retry_allowed: boolean;
+  next_action: string;
 }
 
 export interface EntityRisk {

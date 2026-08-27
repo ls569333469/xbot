@@ -243,8 +243,10 @@ export default function PositionsPage() {
               Intent #{row.trade_intent_id} · Attempt {row.attempt_no || '-'}
             </span>
           )}
-          {(row.failure_class || row.trade_error_code) && (
-            <span className="text-xs text-danger font-mono">{row.failure_class || row.trade_error_code}</span>
+          {row.execution.error && row.execution.error.category !== 'health_advisory' && (
+            <span className="text-xs text-danger" title={row.execution.error.code}>
+              {row.execution.error.user_message}
+            </span>
           )}
         </div>
       )
