@@ -2,6 +2,27 @@ const express = require('express');
 const router = express.Router();
 const service = require('./service');
 const templates = require('./templates');
+const templateSync = require('./template-sync');
+
+router.post('/template-sync/preview', async (req, res) => {
+  try {
+    const data = await templateSync.preview(req.body);
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
+
+router.post('/template-sync', async (req, res) => {
+  try {
+    const data = await templateSync.execute(req.body, undefined, {
+      createdBy: req.headers['x-operator'] || null
+    });
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message, code: err.code || 'BAD_REQUEST' });
+  }
+});
 
 router.get('/templates', async (req, res) => {
   try {

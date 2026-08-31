@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS trade_signals (
   execution_mode text NOT NULL DEFAULT 'signal' CHECK(execution_mode IN('signal','paper','live')),
   status text DEFAULT 'signal_only' CHECK(status IN('signal_only','recorded','pending','approved','rejected','executed','expired')),
   reject_reason text,
+  trade_config_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
   activation_wait_version int CHECK(activation_wait_version IS NULL OR activation_wait_version >= 1),
   created_at timestamptz DEFAULT NOW(),
   updated_at timestamptz DEFAULT NOW(),
@@ -277,6 +278,9 @@ CREATE TABLE IF NOT EXISTS trade_signals (
 CREATE INDEX IF NOT EXISTS idx_trade_signals_activation_wait
   ON trade_signals(whitelist_id, activation_wait_version, created_at)
   WHERE status = 'recorded' AND activation_wait_version IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_trade_signals_trade_config_snapshot
+  ON trade_signals(whitelist_id, status, id)
+  WHERE trade_config_snapshot = '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS arm_preparations (
   id bigserial PRIMARY KEY,
@@ -382,6 +386,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_whitelist_templates_default_chain
   ON whitelist_templates(chain_id) WHERE is_default = true;
 CREATE INDEX IF NOT EXISTS idx_whitelist_templates_chain
   ON whitelist_templates(chain_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS whitelist_template_sync_runs (
+  id bigserial PRIMARY KEY,
+  template_id bigint NOT NULL REFERENCES whitelist_templates(id) ON DELETE RESTRICT,
+  template_version int NOT NULL CHECK (template_version >= 1),
+  requested_whitelist_ids int[] NOT NULL DEFAULT '{}',
+  created_by text,
+  created_at timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS whitelist_template_sync_items (
+  id bigserial PRIMARY KEY,
+  run_id bigint NOT NULL REFERENCES whitelist_template_sync_runs(id) ON DELETE CASCADE,
+  whitelist_id int REFERENCES ca_whitelist(id) ON DELETE SET NULL,
+  outcome text NOT NULL CHECK (outcome IN ('updated', 'unchanged', 'skipped')),
+  reason_code text,
+  reason_detail text,
+  before_config jsonb NOT NULL DEFAULT '{}',
+  after_config jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whitelist_template_sync_items_run
+  ON whitelist_template_sync_items(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_whitelist_template_sync_items_whitelist
+  ON whitelist_template_sync_items(whitelist_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS token_research_reports (
   id bigserial PRIMARY KEY,

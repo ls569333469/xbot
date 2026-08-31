@@ -1,7 +1,12 @@
 const db = require('../../lib/db');
 const notifier = require('../../lib/notifier');
 const { getTradingMode } = require('../../lib/runtime-mode');
-const { assetSnapshot, authorizationSnapshot, strategyType } = require('./contract-snapshot');
+const {
+  assetSnapshot,
+  authorizationSnapshot,
+  strategyType,
+  tradeConfigSnapshot
+} = require('./contract-snapshot');
 const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 async function getSignals(filters) {
@@ -24,6 +29,10 @@ async function insertSignal(data, executor) {
   const status = executionMode === 'signal' ? 'signal_only' : (data.status || 'recorded');
   const snapshotInput = { ...data, execution_mode: executionMode };
   const signalStrategyType = strategyType(snapshotInput);
+  const configSnapshot = tradeConfigSnapshot(
+    snapshotInput,
+    data.trade_config_snapshot_source || `${signalStrategyType}_signal`
+  );
   const params = [
     data.activity_id,
     data.whitelist_id,
@@ -62,12 +71,16 @@ async function insertSignal(data, executor) {
         (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
          execution_mode, status, canonical_key, matched_project_handles, matched_whitelist_ids,
          matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id,
-         strategy_type, asset_snapshot, authorization_snapshot)
+         strategy_type, trade_config_snapshot, asset_snapshot, authorization_snapshot)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-         $17, $18, $19)
+         $17, $18, $19, $20)
        ON CONFLICT DO NOTHING
        RETURNING *`,
-      params
+      [
+        ...params.slice(0, 17),
+        configSnapshot,
+        ...params.slice(17)
+      ]
     );
     const signal = res.rows[0] || null;
     if (signal) {
@@ -85,12 +98,16 @@ async function insertSignal(data, executor) {
       (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
        execution_mode, status, canonical_key, matched_project_handles, matched_whitelist_ids,
        matched_relation_ids, matched_source_rule_ids, reject_reason, activation_wait_version, trace_id,
-       strategy_type, asset_snapshot, authorization_snapshot)
+       strategy_type, trade_config_snapshot, asset_snapshot, authorization_snapshot)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-       $17, $18, $19)
+       $17, $18, $19, $20)
      ON CONFLICT DO NOTHING
      RETURNING *`,
-    params
+     [
+       ...params.slice(0, 17),
+       configSnapshot,
+       ...params.slice(17)
+     ]
   );
   const signal = res.rows[0] || null;
   if (signal) await enqueueEntityEvent(executor, 'signal', signal.id, 'created', `created:${signal.status}`);

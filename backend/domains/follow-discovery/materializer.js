@@ -4,7 +4,11 @@ const candidateRepository = require('../dynamic-signal/candidate-repository');
 const { legacyPercentages } = require('../trade/exit-strategy-compiler');
 const { chainBudgetFor } = require('./policy-service');
 const { followError } = require('./errors');
-const { assetSnapshot, authorizationSnapshot } = require('../signal/contract-snapshot');
+const {
+  assetSnapshot,
+  authorizationSnapshot,
+  tradeConfigSnapshot
+} = require('../signal/contract-snapshot');
 const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 async function materialize(event, resolution, executor = db) {
@@ -77,25 +81,35 @@ async function materialize(event, resolution, executor = db) {
     contract_address: selected.contractAddress,
     symbol: selected.symbol,
     project_name: projectName,
-    project_handle: projectHandle
+    project_handle: projectHandle,
+    budget_per_trade: whitelist.budget_per_trade,
+    total_budget: whitelist.total_budget,
+    slippage: whitelist.slippage,
+    allow_repeat_buy: whitelist.allow_repeat_buy,
+    max_repeat_buys: whitelist.max_repeat_buys,
+    exit_strategy: whitelist.exit_strategy,
+    exit_strategy_version: whitelist.exit_strategy_version,
+    auto_tp_pct: whitelist.auto_tp_pct,
+    auto_sl_pct: whitelist.auto_sl_pct
   };
+  const configSnapshot = tradeConfigSnapshot(snapshotInput, 'follow_discovery_signal');
   const signalResult = await executor.query(
     `INSERT INTO trade_signals
       (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
        execution_mode, status, canonical_key, matched_whitelist_ids,
        follow_discovery_policy_id, follow_discovery_event_id,
        follow_discovery_policy_revision, follow_discovery_context_hash,
-       activation_wait_version, strategy_type, asset_snapshot, authorization_snapshot)
+       activation_wait_version, strategy_type, trade_config_snapshot, asset_snapshot, authorization_snapshot)
      VALUES ($1,$2,$3,$4,'follow_discovery',$5,$6,$7,$8,ARRAY[$2]::int[],$9,$10,$11,$12,$13,
-       'follow_discovery',$14,$15)
+       'follow_discovery',$14,$15,$16)
      ON CONFLICT (follow_discovery_event_id) WHERE follow_discovery_event_id IS NOT NULL
      DO NOTHING RETURNING *`,
     [event.x_activity_id, whitelist.id, policy.kol_id, event.actor_handle,
       `${selected.chainId}:${selected.contractAddress}`, event.mode,
       event.mode === 'live' ? 'recorded' : 'signal_only', `follow:${event.id}`,
       policy.id, event.id, policy.revision, policy.context_hash, null,
-      assetSnapshot(snapshotInput, 'grok_selected'),
-      authorizationSnapshot(snapshotInput, 'follow_discovery')]
+       configSnapshot, assetSnapshot(snapshotInput, 'grok_selected'),
+       authorizationSnapshot(snapshotInput, 'follow_discovery')]
   );
   const signal = signalResult.rows[0] || null;
   if (signal) await enqueueEntityEvent(executor, 'signal', signal.id, 'created', `created:${signal.status}`);

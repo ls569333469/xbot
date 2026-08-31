@@ -1,4 +1,8 @@
 const crypto = require('crypto');
+const {
+  legacyPercentages,
+  normalizeExitStrategy
+} = require('../trade/exit-strategy-compiler');
 
 const STRATEGY_TYPES = new Set(['fixed_ca', 'dynamic_policy', 'follow_discovery']);
 
@@ -62,4 +66,94 @@ function authorizationSnapshot(value = {}, type = strategyType(value)) {
   return { ...body, snapshot_hash: hashSnapshot(body) };
 }
 
-module.exports = { assetSnapshot, authorizationSnapshot, hashSnapshot, strategyType };
+function tradeConfigSnapshot(value = {}, source = 'signal_creation') {
+  const budgetPerTrade = Number(value.budget_per_trade);
+  const totalBudget = Number(value.total_budget);
+  const slippage = Number(value.slippage);
+  const allowRepeatBuy = value.allow_repeat_buy === true || value.allow_repeat_buy === 'true';
+  const requestedMaxRepeatBuys = Number(value.max_repeat_buys || 1);
+  let exitStrategy;
+  try {
+    exitStrategy = normalizeExitStrategy(value.exit_strategy, value);
+  } catch {
+    return {};
+  }
+  if (!Number.isFinite(budgetPerTrade) || budgetPerTrade <= 0
+      || !Number.isFinite(totalBudget) || totalBudget < budgetPerTrade
+      || !Number.isFinite(slippage) || slippage <= 0 || slippage > 100
+      || !Number.isSafeInteger(requestedMaxRepeatBuys) || requestedMaxRepeatBuys < 1) {
+    return {};
+  }
+  const legacy = legacyPercentages(exitStrategy);
+  const maxRepeatBuys = allowRepeatBuy ? requestedMaxRepeatBuys : 1;
+  const exitStrategyVersion = Number(value.exit_strategy_version || 1);
+  const autoTpPct = Number(value.auto_tp_pct ?? legacy.auto_tp_pct);
+  const autoSlPct = value.auto_sl_pct ?? legacy.auto_sl_pct;
+  const normalizedAutoSlPct = autoSlPct === null ? null : Number(autoSlPct);
+  if (!Number.isSafeInteger(exitStrategyVersion) || exitStrategyVersion < 1
+      || !Number.isFinite(autoTpPct) || autoTpPct <= 0
+      || (normalizedAutoSlPct !== null
+        && (!Number.isFinite(normalizedAutoSlPct) || normalizedAutoSlPct <= 0))) {
+    return {};
+  }
+  const body = {
+    snapshot_version: 'p42.trade_config.v1',
+    source,
+    budget_per_trade: budgetPerTrade,
+    total_budget: totalBudget,
+    slippage,
+    allow_repeat_buy: allowRepeatBuy,
+    max_repeat_buys: maxRepeatBuys,
+    exit_strategy: exitStrategy,
+    exit_strategy_version: exitStrategyVersion,
+    auto_tp_pct: autoTpPct,
+    auto_sl_pct: normalizedAutoSlPct
+  };
+  return { ...body, snapshot_hash: hashSnapshot(body) };
+}
+
+function isTradeConfigSnapshot(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.snapshot_version !== 'p42.trade_config.v1'
+      || typeof value.allow_repeat_buy !== 'boolean'
+      || typeof value.budget_per_trade !== 'number'
+      || !Number.isFinite(value.budget_per_trade)
+      || value.budget_per_trade <= 0
+      || typeof value.total_budget !== 'number'
+      || !Number.isFinite(value.total_budget)
+      || value.total_budget < value.budget_per_trade
+      || typeof value.slippage !== 'number'
+      || !Number.isFinite(value.slippage)
+      || value.slippage <= 0 || value.slippage > 100
+      || !Number.isSafeInteger(value.max_repeat_buys)
+      || value.max_repeat_buys < 1
+      || (!value.allow_repeat_buy && value.max_repeat_buys !== 1)
+      || !Number.isSafeInteger(value.exit_strategy_version)
+      || value.exit_strategy_version < 1
+      || typeof value.auto_tp_pct !== 'number'
+      || !Number.isFinite(value.auto_tp_pct)
+      || value.auto_tp_pct <= 0
+      || (value.auto_sl_pct !== null
+        && (typeof value.auto_sl_pct !== 'number'
+          || !Number.isFinite(value.auto_sl_pct) || value.auto_sl_pct <= 0))
+      || !value.exit_strategy || typeof value.exit_strategy !== 'object'
+      || Array.isArray(value.exit_strategy)
+      || typeof value.snapshot_hash !== 'string'
+      || !/^[a-f0-9]{64}$/.test(value.snapshot_hash)) return false;
+  try {
+    normalizeExitStrategy(value.exit_strategy);
+    const { snapshot_hash: storedHash, ...body } = value;
+    return hashSnapshot(body) === storedHash;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = {
+  assetSnapshot,
+  authorizationSnapshot,
+  hashSnapshot,
+  isTradeConfigSnapshot,
+  strategyType,
+  tradeConfigSnapshot
+};

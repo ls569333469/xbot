@@ -1,4 +1,4 @@
-import { Copy, FilePlus2, Pause, Pencil, Play, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Check, Copy, FilePlus2, Layers3, Pause, Pencil, Play, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChainIcon } from '../components/ui/ChainIcon';
 import { DataTable } from '../components/ui/DataTable';
@@ -12,6 +12,7 @@ import type {
   WhitelistDraftPayload,
   WhitelistEntry,
   WhitelistTemplate,
+  WhitelistTemplateSyncPlan,
 } from '../lib/types';
 import ResearchWorkspace from './whitelist/ResearchWorkspace';
 import LaunchMonitorWorkspace from './whitelist/LaunchMonitorWorkspace';
@@ -95,6 +96,13 @@ export default function WhitelistPage({ initialWhitelistId, onInitialWorkspaceCl
   const [workspaceVersion, setWorkspaceVersion] = useState(0);
   const [activationRetryId, setActivationRetryId] = useState<string | null>(null);
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [syncTargetIds, setSyncTargetIds] = useState<string[]>([]);
+  const [syncTemplateId, setSyncTemplateId] = useState('');
+  const [syncPlan, setSyncPlan] = useState<WhitelistTemplateSyncPlan | null>(null);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncExecuting, setSyncExecuting] = useState(false);
   const handledInitialId = useRef<string | null>(null);
   const { toast } = useToast();
 
@@ -132,6 +140,78 @@ export default function WhitelistPage({ initialWhitelistId, onInitialWorkspaceCl
 
   useEffect(() => { void fetchData(); }, [fetchData]);
   useEffect(() => { void fetchLaunchData(); }, [fetchLaunchData]);
+  useEffect(() => { void fetchTemplates(); }, [fetchTemplates]);
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const togglePageSelection = () => {
+    const pageIds = data.map((item) => item.id);
+    const allSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      pageIds.forEach((id) => (allSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  };
+
+  const openTemplateSync = () => {
+    const targetIds = [...selectedIds];
+    if (targetIds.length === 0) return;
+    const firstTarget = data.find((item) => item.id === targetIds[0]);
+    const defaultTemplate = firstTarget
+      ? templates.find((item) => item.chain_id === firstTarget.chain_id && item.is_default)
+      : null;
+    setSyncTargetIds(targetIds);
+    setSyncTemplateId(defaultTemplate?.id || templates[0]?.id || '');
+    setSyncPlan(null);
+    setSyncOpen(true);
+  };
+
+  const closeTemplateSync = () => {
+    if (syncLoading || syncExecuting) return;
+    setSyncOpen(false);
+    setSyncPlan(null);
+    setSyncTargetIds([]);
+  };
+
+  const previewTemplateSync = async () => {
+    if (!syncTemplateId || syncTargetIds.length === 0) return;
+    setSyncLoading(true);
+    const response = await api.whitelist.templateSync.preview({
+      template_id: syncTemplateId,
+      whitelist_ids: syncTargetIds,
+    });
+    setSyncLoading(false);
+    if (!response.ok || !response.data) return toast(response.error || '同步预览失败', 'error');
+    setSyncPlan(response.data);
+  };
+
+  const executeTemplateSync = async () => {
+    if (!syncPlan || syncExecuting) return;
+    setSyncExecuting(true);
+    const response = await api.whitelist.templateSync.execute({
+      template_id: syncPlan.template.id,
+      whitelist_ids: syncTargetIds,
+      expected_template_version: syncPlan.template.version,
+    });
+    setSyncExecuting(false);
+    if (!response.ok || !response.data) return toast(response.error || '模板同步失败', 'error');
+    setSyncPlan(response.data);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      syncTargetIds.forEach((id) => next.delete(id));
+      return next;
+    });
+    void fetchData();
+    toast(`模板同步完成：${response.data.summary.updated} 个已更新，${response.data.summary.skipped} 个跳过`, 'success');
+  };
   const ensureWorkspaceDependencies = useCallback(async () => {
     const [templateResponse, kolResponse] = await Promise.all([
       api.whitelist.templates.list(),
@@ -284,6 +364,7 @@ export default function WhitelistPage({ initialWhitelistId, onInitialWorkspaceCl
   }
 
   const columns = [
+    { header: '选择', accessor: (row: WhitelistEntry) => <input className="p42-row-checkbox" type="checkbox" checked={selectedIds.has(row.id)} onChange={() => toggleSelected(row.id)} aria-label={`选择 ${row.symbol || row.contract_address}`} /> },
     { header: '链', accessor: (row: WhitelistEntry) => <ChainIcon chain={row.chain_id} size="sm" /> },
     { header: '代币', accessor: (row: WhitelistEntry) => <div className="p16-table-token-cell"><TokenLogo url={row.token_logo_url} symbol={row.symbol} /><div className="p16-table-token"><strong>{row.symbol || '-'}</strong><span>{row.project_name || row.contract_address}</span></div></div> },
     { header: '触发规则', accessor: (row: WhitelistEntry) => {
@@ -343,15 +424,25 @@ export default function WhitelistPage({ initialWhitelistId, onInitialWorkspaceCl
         <button type="button" className={productMode === 'known' ? 'active' : ''} onClick={() => switchProductMode('known')}>已知 CA</button>
         <button type="button" className={productMode === 'launch' ? 'active' : ''} onClick={() => switchProductMode('launch')}>未发币监控</button>
       </div>
+      {productMode === 'known' && <div className="p42-selection-bar"><span><strong>{selectedIds.size}</strong> 个固定 CA 已选择</span><div><button type="button" className="p42-selection-button" disabled={data.length === 0} onClick={togglePageSelection}><Check size={14} />选择本页</button><button type="button" className="p42-selection-button" disabled={selectedIds.size === 0} onClick={() => setSelectedIds(new Set())}>清除选择</button></div></div>}
       <div className="p16-list-toolbar">
         <div className="p16-chain-filter">{CHAINS.map((chain) => <button type="button" key={chain} className={chainFilter === chain ? 'active' : ''} onClick={() => { setChainFilter(chain); setPage(1); }}>{chain === 'all' ? '全部' : chain.toUpperCase()}</button>)}</div>
-        <div className="p16-list-actions"><div className="p16-search-field"><Search size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={productMode === 'known' ? '搜索 CA / 代币 / 项目' : '搜索项目 / X 账号'} /></div>{productMode === 'known' ? <><button type="button" className="btn btn-secondary" onClick={() => openResearch({})}><Search size={16} />快速投研</button><button type="button" className="btn btn-primary" onClick={() => void openCreate()}><FilePlus2 size={16} />添加白名单</button></> : <button type="button" className="btn btn-primary" onClick={() => void openLaunchCreate()}><FilePlus2 size={16} />添加未发币监控</button>}</div>
+        <div className="p16-list-actions"><div className="p16-search-field"><Search size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={productMode === 'known' ? '搜索 CA / 代币 / 项目' : '搜索项目 / X 账号'} /></div>{productMode === 'known' ? <><button type="button" className="btn btn-secondary" disabled={selectedIds.size === 0} onClick={openTemplateSync}><Layers3 size={16} />模板同步</button><button type="button" className="btn btn-secondary" onClick={() => openResearch({})}><Search size={16} />快速投研</button><button type="button" className="btn btn-primary" onClick={() => void openCreate()}><FilePlus2 size={16} />添加白名单</button></> : <button type="button" className="btn btn-primary" onClick={() => void openLaunchCreate()}><FilePlus2 size={16} />添加未发币监控</button>}</div>
       </div>
 
       {productMode === 'known'
         ? loading ? <TableSkeleton rows={6} cols={9} /> : <DataTable data={data} columns={columns} />
         : launchLoading ? <TableSkeleton rows={6} cols={9} /> : <DataTable data={launchData} columns={launchColumns} />}
       {(productMode === 'known' ? total : launchTotal) > 20 && !(productMode === 'known' ? loading : launchLoading) && <div className="p16-pagination"><button className="btn btn-secondary" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button><span>第 {page} 页 / 共 {Math.ceil((productMode === 'known' ? total : launchTotal) / 20)} 页</span><button className="btn btn-secondary" disabled={page >= Math.ceil((productMode === 'known' ? total : launchTotal) / 20)} onClick={() => setPage((value) => value + 1)}>下一页</button></div>}
+      {syncOpen && <div className="p42-sync-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeTemplateSync(); }}>
+        <section className="p42-sync-panel" role="dialog" aria-modal="true" aria-label="模板同步">
+          <div className="p42-sync-head"><div><strong>模板同步</strong><span>{syncTargetIds.length} 个固定 CA · 先预览，再确认</span></div><button type="button" className="p16-icon-button" title="关闭" aria-label="关闭模板同步" onClick={closeTemplateSync}><X size={16} /></button></div>
+          {!syncPlan
+            ? <div className="p42-sync-body"><label className="p42-sync-template-field"><span>选择配置模板</span><select className="input" value={syncTemplateId} onChange={(event) => setSyncTemplateId(event.target.value)}><option value="">请选择模板</option>{templates.map((template) => <option value={template.id} key={template.id}>{template.name} · {template.chain_id.toUpperCase()}{template.is_default ? ' · 默认' : ''}</option>)}</select></label><div className="p42-sync-notice"><Layers3 size={16} /><span>只同步金额、累计上限、重复买入、滑点和离场策略。不会修改 Watch、Signal、Engine、持仓或交易历史。</span></div></div>
+            : <div className="p42-sync-body"><div className="p42-sync-plan-head"><div><strong>{syncPlan.template.name}</strong><span>{syncPlan.template.chain_id.toUpperCase()} · 模板版本 v{syncPlan.template.version}{syncPlan.run_id ? ` · 执行记录 #${syncPlan.run_id}` : ''}</span></div><button type="button" className="p42-sync-button" onClick={() => setSyncPlan(null)} disabled={syncExecuting}>重新预览</button></div><div className="p42-sync-summary"><div><strong>{syncPlan.summary.updated}</strong><span>将更新</span></div><div><strong>{syncPlan.summary.unchanged}</strong><span>无需更新</span></div><div><strong>{syncPlan.summary.skipped}</strong><span>已跳过</span></div></div><div className="p42-sync-results">{syncPlan.items.map((item) => <div className={`p42-sync-result ${item.outcome}`} key={item.whitelist_id}><div><strong>{item.symbol || item.contract_address || `CA #${item.whitelist_id}`}</strong><span>{item.chain_id?.toUpperCase() || '-'} · {item.changed_fields.length ? `将更新：${item.changed_fields.join('、')}` : item.reason_detail || (item.outcome === 'unchanged' ? '配置没有变化' : '未同步')}</span></div><em>{item.outcome === 'updated' ? '待同步' : item.outcome === 'unchanged' ? '无需更新' : '已跳过'}</em></div>)}</div></div>}
+          <div className="p42-sync-foot"><button type="button" className="btn btn-secondary" onClick={closeTemplateSync} disabled={syncLoading || syncExecuting}>{syncPlan?.run_id ? '关闭' : '取消'}</button>{!syncPlan && <button type="button" className="btn btn-primary" disabled={!syncTemplateId || syncLoading} onClick={() => void previewTemplateSync()}><Layers3 size={15} />{syncLoading ? '预览中' : '预览同步'}</button>}{syncPlan && !syncPlan.run_id && <button type="button" className="btn btn-primary" disabled={syncExecuting || syncPlan.summary.updated === 0} onClick={() => void executeTemplateSync()}><Check size={15} />{syncExecuting ? '同步中' : '确认同步'}</button>}</div>
+        </section>
+      </div>}
     </div>
   );
 }

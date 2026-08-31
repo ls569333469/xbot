@@ -73,7 +73,9 @@ async function main() {
       '050_p33_kol_performance_analysis.sql',
       '051_p34_kol_research_result_convergence.sql',
       '052_p35_dynamic_preset_asset_routes.sql',
-      '053_p36_kol_custom_labels.sql']]
+      '053_p36_kol_custom_labels.sql',
+      '054_p37_project_research_xai_checkpoints.sql',
+      '055_p42_template_sync_trade_config_snapshots.sql']]
   );
   const migrations = new Set(migration.rows.map((row) => row.name));
   if (!migrations.has('027_p19_low_latency_execution.sql')) throw new Error('Migration 027 is not applied');
@@ -103,12 +105,14 @@ async function main() {
   if (!migrations.has('051_p34_kol_research_result_convergence.sql')) throw new Error('Migration 051 is not applied');
   if (!migrations.has('052_p35_dynamic_preset_asset_routes.sql')) throw new Error('Migration 052 is not applied');
   if (!migrations.has('053_p36_kol_custom_labels.sql')) throw new Error('Migration 053 is not applied');
+  if (!migrations.has('054_p37_project_research_xai_checkpoints.sql')) throw new Error('Migration 054 is not applied');
+  if (!migrations.has('055_p42_template_sync_trade_config_snapshots.sql')) throw new Error('Migration 055 is not applied');
 
   await requireColumns('schema_migrations', [
     'checksum_sha256', 'migration_manifest_id', 'release_sha'
   ]);
   await requireColumns('trade_signals', [
-    'asset_snapshot', 'authorization_snapshot', 'strategy_type'
+    'asset_snapshot', 'authorization_snapshot', 'strategy_type', 'trade_config_snapshot'
   ]);
   await requireColumns('positions', ['asset_snapshot']);
   await requireColumns('asset_metadata', [
@@ -245,6 +249,13 @@ async function main() {
     'follow_discovery_policy_id', 'follow_discovery_event_id',
     'follow_discovery_policy_revision', 'follow_discovery_context_hash'
   ]);
+  await requireColumns('whitelist_template_sync_runs', [
+    'template_id', 'template_version', 'requested_whitelist_ids', 'created_by'
+  ]);
+  await requireColumns('whitelist_template_sync_items', [
+    'run_id', 'whitelist_id', 'outcome', 'reason_code', 'reason_detail',
+    'before_config', 'after_config'
+  ]);
   await requireIndexes([
     'asset_metadata_chain_id_contract_address_key_key',
     'idx_asset_metadata_claim',
@@ -261,7 +272,10 @@ async function main() {
     'uq_trade_signal_dynamic_resolution',
     'uq_follow_discovery_policy_kol_current',
     'uq_whitelist_follow_discovery_active',
-    'uq_trade_signal_follow_discovery_event'
+    'uq_trade_signal_follow_discovery_event',
+    'idx_trade_signals_trade_config_snapshot',
+    'idx_whitelist_template_sync_items_run',
+    'idx_whitelist_template_sync_items_whitelist'
   ]);
 
   const invalidActivation = await client.query(

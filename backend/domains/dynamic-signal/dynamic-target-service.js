@@ -2,7 +2,11 @@ const crypto = require('crypto');
 const db = require('../../lib/db');
 const { chainBudgetFor } = require('./policy-service');
 const { legacyPercentages } = require('../trade/exit-strategy-compiler');
-const { assetSnapshot, authorizationSnapshot } = require('../signal/contract-snapshot');
+const {
+  assetSnapshot,
+  authorizationSnapshot,
+  tradeConfigSnapshot
+} = require('../signal/contract-snapshot');
 const { enqueueEntityEvent } = require('../../lib/entity-outbox');
 
 async function materialize(job, attempt, selected, executor = db) {
@@ -99,8 +103,18 @@ async function createSignal(job, attempt, target, result, executor = db) {
     symbol: target.whitelist?.symbol,
     project_name: target.whitelist?.project_name,
     project_x_handles: target.whitelist?.project_x_handles,
+    budget_per_trade: target.whitelist?.budget_per_trade,
+    total_budget: target.whitelist?.total_budget,
+    slippage: target.whitelist?.slippage,
+    allow_repeat_buy: target.whitelist?.allow_repeat_buy,
+    max_repeat_buys: target.whitelist?.max_repeat_buys,
+    exit_strategy: target.whitelist?.exit_strategy,
+    exit_strategy_version: target.whitelist?.exit_strategy_version,
+    auto_tp_pct: target.whitelist?.auto_tp_pct,
+    auto_sl_pct: target.whitelist?.auto_sl_pct,
     asset_route_snapshot: presetRouteSnapshot
   };
+  const configSnapshot = tradeConfigSnapshot(snapshotInput, 'dynamic_policy_signal');
   const signalResult = await executor.query(
     `INSERT INTO trade_signals
       (activity_id, whitelist_id, kol_id, kol_handle, signal_type, match_detail,
@@ -108,9 +122,9 @@ async function createSignal(job, attempt, target, result, executor = db) {
        matched_dynamic_resolution_id, dynamic_target_id, actor_policy_id,
        actor_policy_revision, dynamic_policy_context_hash, dynamic_intent_class,
        dynamic_intent_reason_codes, dynamic_intent_rule_revision, dynamic_authorization,
-       activation_wait_version, strategy_type, asset_snapshot, authorization_snapshot)
+        activation_wait_version, strategy_type, trade_config_snapshot, asset_snapshot, authorization_snapshot)
      VALUES ($1,$2,$3,$4,'dynamic_keyword',$5,$6,$7,$8,ARRAY[$2]::int[],$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-       'dynamic_policy',$19,$20)
+        'dynamic_policy',$19,$20,$21)
      ON CONFLICT (matched_dynamic_resolution_id) WHERE matched_dynamic_resolution_id IS NOT NULL
      DO NOTHING RETURNING *`,
     [job.x_activity_id, target.whitelist_id, job.kol_id, job.kol_handle,
@@ -123,8 +137,8 @@ async function createSignal(job, attempt, target, result, executor = db) {
         resolution_confidence: result.confidence,
         preset_route_snapshot: presetRouteSnapshot
       },
-      null, assetSnapshot(snapshotInput, 'dynamic_candidate'),
-      authorizationSnapshot(snapshotInput, 'dynamic_policy')]
+       null, configSnapshot, assetSnapshot(snapshotInput, 'dynamic_candidate'),
+       authorizationSnapshot(snapshotInput, 'dynamic_policy')]
   );
   const signal = signalResult.rows[0] || null;
   if (signal) await enqueueEntityEvent(executor, 'signal', signal.id, 'created', `created:${signal.status}`);

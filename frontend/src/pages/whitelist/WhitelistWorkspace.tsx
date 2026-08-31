@@ -183,6 +183,7 @@ export default function WhitelistWorkspace({
   const [templateDetailsOpen, setTemplateDetailsOpen] = useState(false);
   const [templateConfirmOpen, setTemplateConfirmOpen] = useState(false);
   const [templateEditing, setTemplateEditing] = useState(false);
+  const [templateName, setTemplateName] = useState('');
   const [metadataState, setMetadataState] = useState<'idle' | 'loading' | 'ready' | 'manual'>('idle');
   const [saving, setSaving] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -234,6 +235,7 @@ export default function WhitelistWorkspace({
 
   const startTemplateEdit = (template: WhitelistTemplate) => {
     applyTemplate(template);
+    setTemplateName(template.name);
     setTemplateEditing(true);
     setTemplateChooserOpen(false);
     setTemplateDetailsOpen(true);
@@ -446,15 +448,19 @@ export default function WhitelistWorkspace({
     const error = validateTemplate();
     if (error) return toast(error, 'error');
     const snapshot = snapshotFromDraft(form);
+    const templateTarget = templateEditing && configSource.id
+      ? chainTemplates.find((item) => item.id === configSource.id) || null
+      : defaultTemplate || null;
+    const name = templateName.trim() || templateTarget?.name || `${form.chain_id.toUpperCase()} 默认模板`;
     const payload = {
-      name: `${form.chain_id.toUpperCase()} 默认模板`,
+      name: name.slice(0, 80),
       chain_id: form.chain_id,
-      is_default: true,
+      is_default: templateTarget ? templateTarget.is_default : true,
       template_snapshot: snapshot,
     };
     setSavingTemplate(true);
-    const response = defaultTemplate
-      ? await api.whitelist.templates.update(defaultTemplate.id, payload)
+    const response = templateTarget
+      ? await api.whitelist.templates.update(templateTarget.id, payload)
       : await api.whitelist.templates.create(payload);
     setSavingTemplate(false);
     if (!response.ok || !response.data) return toast(response.error || '模板保存失败', 'error');
@@ -472,7 +478,7 @@ export default function WhitelistWorkspace({
       setStep(1);
     }
     await onTemplatesChanged();
-    toast(`${form.chain_id.toUpperCase()} 默认模板已更新`, 'success');
+    toast(`模板“${response.data.name}”已保存`, 'success');
   };
 
   const handleSave = async () => {
@@ -500,6 +506,7 @@ export default function WhitelistWorkspace({
     setTemplateChoice('');
     setCopyChoice('');
     setTemplateDetailsOpen(false);
+    setTemplateName('');
     setForm(emptyForm({ chain_id: chainId }));
   };
 
@@ -514,7 +521,10 @@ export default function WhitelistWorkspace({
   const moneySummary = form.budget_per_trade && form.total_budget
     ? `单笔 ${form.budget_per_trade} ${nativeSymbol} · 累计 ${form.total_budget} ${nativeSymbol}`
     : '资金待配置';
-  const templateActionLabel = defaultTemplate ? '更新链默认模板' : '设为链默认模板';
+  const templateTarget = templateEditing && configSource.id
+    ? chainTemplates.find((item) => item.id === configSource.id) || null
+    : defaultTemplate || null;
+  const templateActionLabel = templateTarget ? `更新模板“${templateTarget.name}”` : '创建链默认模板';
   const stepItems = [
     ['代币与模板', '链、CA、配置来源'],
     ['X 触发账号', '项目身份、生态行为'],
@@ -596,10 +606,11 @@ export default function WhitelistWorkspace({
 
     {templateConfirmOpen && <section className="p164-template-modal" role="dialog" aria-modal="true" aria-label={`${templateActionLabel}确认`}>
       <div className="p164-layer-head">
-        <div><strong>{templateActionLabel}</strong><span>覆盖该链后续白名单的默认配置</span></div>
+        <div><strong>{templateActionLabel}</strong><span>只保存配置模板，不修改当前 CA 或交易记录</span></div>
         <button type="button" className="p16-icon-button" title="关闭" aria-label="关闭模板确认" onClick={() => setTemplateConfirmOpen(false)}><X size={16} /></button>
       </div>
       <div className="p164-template-modal-body">
+        <label className="p164-template-name-field"><span>模板名称</span><input className="input" maxLength={80} value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder={`${form.chain_id.toUpperCase()} 默认模板`} /></label>
         <div><span>X 触发</span><strong>{xSummary}</strong></div>
         <div><span>资金与买入</span><strong>{form.budget_per_trade}/{form.total_budget} {nativeSymbol} · {form.max_repeat_buys} 次</strong></div>
         <div><span>离场策略</span><strong>{strategySummary(form.exit_strategy)}</strong></div>
@@ -615,7 +626,7 @@ export default function WhitelistWorkspace({
   return (
     <div className="p16-workspace p162-known-workspace">
       <div className="p16-workspace-head">
-        <div><button type="button" className="p16-back-link" onClick={templateEditing ? cancelTemplateEdit : onCancel}><ArrowLeft size={16} />{templateEditing ? '退出模板编辑' : '返回白名单'}</button><h2>{templateEditing ? `编辑 ${form.chain_id.toUpperCase()} 默认模板` : editing ? '编辑白名单' : '新增白名单'}</h2></div>
+        <div><button type="button" className="p16-back-link" onClick={templateEditing ? cancelTemplateEdit : onCancel}><ArrowLeft size={16} />{templateEditing ? '退出模板编辑' : '返回白名单'}</button><h2>{templateEditing ? `编辑 ${configSource.name}` : editing ? '编辑白名单' : '新增白名单'}</h2></div>
         {!templateEditing && <button type="button" className="btn btn-secondary" onClick={() => onOpenResearch(asDraft())}><Search size={16} />快速投研</button>}
       </div>
 
@@ -631,7 +642,7 @@ export default function WhitelistWorkspace({
         </nav>
 
         {templateEditing ? <div className="p164-template-edit-context">
-          <div><Pencil size={17} /><span><strong>正在编辑 {configSource.name}</strong><small>仅保存 X 触发、资金、买入次数和离场策略</small></span></div>
+          <div><Pencil size={17} /><span><strong>正在编辑 {configSource.name}</strong><small>仅保存名称、X 触发、资金、买入次数和离场策略</small></span></div>
           <button type="button" className="btn btn-primary" onClick={() => setTemplateConfirmOpen(true)}><Save size={16} />保存模板</button>
         </div> : <div className="p162-token-context">
           <div className="p162-token-summary">

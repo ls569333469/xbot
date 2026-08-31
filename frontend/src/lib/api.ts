@@ -5,7 +5,8 @@ import {
   TradeReadiness, TradeRetryRuntime, WalletWriteLane, ChainTradeCircuit, ArmPreparation,
   RuntimePolicyDetailPage, RuntimeSummary, DynamicPolicy, DynamicResolution,
   DynamicSignalStatus, DynamicPaperSession, AccountResearchRun, DynamicPolicyTemplate, EntityId,
-  DynamicPolicyInput, DynamicPresetAssetRouteInput, DynamicPresetRouteMatchPreview, RuntimeHealth
+  DynamicPolicyInput, DynamicPresetAssetRouteInput, DynamicPresetRouteMatchPreview, RuntimeHealth,
+  WhitelistTemplateSyncPlan
 } from './types';
 
 const configuredApiBase = import.meta.env.VITE_API_URL;
@@ -51,7 +52,8 @@ function validatePayloadSchema(endpoint: string, payload: any) {
   const items = Array.isArray(data) ? data : [data];
 
   const isWhitelistUtilityEndpoint = endpoint.startsWith('/api/whitelist/templates')
-    || endpoint.startsWith('/api/whitelist/watch-impact');
+    || endpoint.startsWith('/api/whitelist/watch-impact')
+    || endpoint.startsWith('/api/whitelist/template-sync');
 
   if (endpoint.startsWith('/api/whitelist') && !isWhitelistUtilityEndpoint) {
     items.forEach(item => {
@@ -198,6 +200,14 @@ export const api = {
       create: (data: Partial<import('./types').WhitelistTemplate>) => fetchApi<ApiResponse<import('./types').WhitelistTemplate>>('/api/whitelist/templates', { method: 'POST', body: JSON.stringify(data) }),
       update: (id: string, data: Partial<import('./types').WhitelistTemplate>) => fetchApi<ApiResponse<import('./types').WhitelistTemplate>>(`/api/whitelist/templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
       remove: (id: string) => fetchApi<ApiResponse<{ success: boolean }>>(`/api/whitelist/templates/${id}`, { method: 'DELETE' }),
+    },
+    templateSync: {
+      preview: (data: { template_id: string; whitelist_ids: string[] }) => fetchApi<ApiResponse<WhitelistTemplateSyncPlan>>(
+        '/api/whitelist/template-sync/preview', { method: 'POST', body: JSON.stringify(data) }
+      ),
+      execute: (data: { template_id: string; whitelist_ids: string[]; expected_template_version: number }) => fetchApi<ApiResponse<WhitelistTemplateSyncPlan>>(
+        '/api/whitelist/template-sync', { method: 'POST', body: JSON.stringify(data) }
+      ),
     },
   },
 

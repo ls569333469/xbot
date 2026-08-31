@@ -9,6 +9,7 @@ const { requireChain } = require('./chain-adapters');
 const intentRepository = require('./trade-intent-repository');
 const { persistManualE2eEvidence } = require('./manual-e2e-evidence');
 const { legacyPercentages } = require('./exit-strategy-compiler');
+const { isTradeConfigSnapshot } = require('../signal/contract-snapshot');
 const runtimeAuthorization = require('./runtime-signal-authorization');
 const { projectAttempt } = require('./contract-projector');
 const { enqueueEntityEvent } = require('../../lib/entity-outbox');
@@ -69,6 +70,23 @@ function submittedOrderStatus(status) {
 
 function usesWhitelistLifetimeBudget(signal) {
   return !runtimeAuthorization.scoped(signal);
+}
+
+function applyTradeConfigSnapshot(row) {
+  const snapshot = row?.trade_config_snapshot;
+  if (!isTradeConfigSnapshot(snapshot)) return row;
+  return {
+    ...row,
+    budget_per_trade: Number(snapshot.budget_per_trade),
+    total_budget: Number(snapshot.total_budget),
+    slippage: Number(snapshot.slippage),
+    allow_repeat_buy: Boolean(snapshot.allow_repeat_buy),
+    max_repeat_buys: Number(snapshot.max_repeat_buys),
+    auto_tp_pct: Number(snapshot.auto_tp_pct),
+    auto_sl_pct: snapshot.auto_sl_pct === null ? null : Number(snapshot.auto_sl_pct),
+    exit_strategy: snapshot.exit_strategy,
+    exit_strategy_version: Number(snapshot.exit_strategy_version)
+  };
 }
 
 function buildGasReserveAdvisory(prepared, chainConfig = {}, retryPolicy = {}) {
@@ -146,8 +164,9 @@ async function getSignalForExecution(signalId, executor = db) {
             signal.dynamic_policy_context_hash,
             signal.dynamic_intent_class,
             signal.dynamic_intent_reason_codes,
-            signal.dynamic_intent_rule_revision,
-            signal.follow_discovery_policy_id,
+             signal.dynamic_intent_rule_revision,
+             signal.trade_config_snapshot,
+             signal.follow_discovery_policy_id,
             signal.follow_discovery_event_id,
             signal.follow_discovery_policy_revision,
             signal.follow_discovery_context_hash,
@@ -177,7 +196,7 @@ async function getSignalForExecution(signalId, executor = db) {
      WHERE signal.id = $1`,
     [signalId]
   );
-  return result.rows[0] || null;
+  return result.rows[0] ? applyTradeConfigSnapshot(result.rows[0]) : null;
 }
 
 async function addAttemptEvent(executor, attemptId, fromStatus, toStatus, details = {}) {
@@ -417,8 +436,8 @@ async function createBuyAttempt(prepared) {
     );
     const completedBuys = Number(whitelist.current_buy_count || 0);
     const pendingBuys = Number(activeBuyAttempts.rows[0].count || 0);
-    const maximumBuys = whitelist.allow_repeat_buy
-      ? Math.max(1, Number(whitelist.max_repeat_buys || 1))
+    const maximumBuys = signal.allow_repeat_buy
+      ? Math.max(1, Number(signal.max_repeat_buys || 1))
       : 1;
     if (completedBuys + pendingBuys >= maximumBuys) {
       const error = new Error('Whitelist CA buy limit reached');
@@ -446,7 +465,7 @@ async function createBuyAttempt(prepared) {
     const reservedPrincipal = Number(activeReservations.rows[0].principal_total || 0);
     if (!Number.isFinite(principal) || principal <= 0
         || (usesWhitelistLifetimeBudget(signal)
-          && committed + reservedPrincipal + principal > Number(whitelist.total_budget))) {
+           && committed + reservedPrincipal + principal > Number(signal.total_budget))) {
       const error = new Error('Whitelist lifetime budget exceeded');
       error.code = 'WHITELIST_BUDGET_EXCEEDED';
       throw error;
@@ -3340,6 +3359,7 @@ async function listAttempts(limit = 100) {
 
 module.exports = {
   addAttemptEvent,
+  applyTradeConfigSnapshot,
   backfillLegacyPosition,
   buildGasReserveAdvisory,
   claimExternalClose,

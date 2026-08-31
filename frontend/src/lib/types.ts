@@ -129,6 +129,31 @@ export interface WhitelistTemplate {
   updated_at: string;
 }
 
+export interface WhitelistTemplateSyncItem {
+  whitelist_id: string;
+  symbol: string | null;
+  contract_address: string | null;
+  chain_id: ChainId | string | null;
+  outcome: 'updated' | 'unchanged' | 'skipped';
+  reason_code: string | null;
+  reason_detail: string | null;
+  changed_fields: string[];
+  before_config: Record<string, unknown>;
+  after_config: Record<string, unknown>;
+}
+
+export interface WhitelistTemplateSyncPlan {
+  template: Pick<WhitelistTemplate, 'id' | 'name' | 'chain_id' | 'version' | 'template_snapshot'>;
+  summary: {
+    requested: number;
+    updated: number;
+    unchanged: number;
+    skipped: number;
+  };
+  items: WhitelistTemplateSyncItem[];
+  run_id?: string;
+}
+
 export interface LaunchMonitorSource {
   id?: string;
   actor_handle: string;
