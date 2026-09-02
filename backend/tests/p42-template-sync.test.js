@@ -8,8 +8,10 @@ const {
 } = require('../domains/whitelist/template-sync');
 const {
   tradeConfigSnapshot,
-  isTradeConfigSnapshot
+  isTradeConfigSnapshot,
+  hashSnapshot
 } = require('../domains/signal/contract-snapshot');
+const { getSignalForExecution } = require('../domains/trade/trade-repository');
 
 function templateSnapshot(overrides = {}) {
   return {
@@ -102,6 +104,45 @@ test('P42 trade config snapshot is immutable and includes the execution fields',
   assert.match(snapshot.snapshot_hash, /^[a-f0-9]{64}$/);
   assert.equal(isTradeConfigSnapshot({ ...snapshot, budget_per_trade: 0.2 }), false);
   assert.equal(isTradeConfigSnapshot({ ...snapshot, max_repeat_buys: 2 }), false);
+});
+
+test('P42 trade config snapshots survive JSONB key reordering and preserve legacy hashes', () => {
+  const snapshot = tradeConfigSnapshot({
+    budget_per_trade: 0.1,
+    total_budget: 0.5,
+    slippage: 8,
+    allow_repeat_buy: true,
+    max_repeat_buys: 2,
+    exit_strategy: clonePreset('principal_no_stop')
+  });
+  const reordered = Object.fromEntries(Object.entries(snapshot).reverse());
+  reordered.exit_strategy = Object.fromEntries(Object.entries(reordered.exit_strategy).reverse());
+  reordered.exit_strategy.legs = reordered.exit_strategy.legs.map((leg) => (
+    Object.fromEntries(Object.entries(leg).reverse())
+  ));
+  assert.equal(isTradeConfigSnapshot(reordered), true);
+
+  const { snapshot_hash: ignored, ...body } = snapshot;
+  const legacy = { ...reordered, snapshot_hash: hashSnapshot(body) };
+  assert.equal(isTradeConfigSnapshot(legacy), true);
+});
+
+test('P42 execution falls back to the whitelist repeat-buy settings for legacy signals', async () => {
+  const result = await getSignalForExecution('42', {
+    query: async (sql) => {
+      assert.match(sql, /whitelist\.allow_repeat_buy/);
+      assert.match(sql, /whitelist\.max_repeat_buys/);
+      return { rows: [{
+        signal_id: 42,
+        trade_config_snapshot: {},
+        allow_repeat_buy: true,
+        max_repeat_buys: 2,
+        current_buy_count: 1
+      }] };
+    }
+  });
+  assert.equal(result.allow_repeat_buy, true);
+  assert.equal(result.max_repeat_buys, 2);
 });
 
 test('P42 keeps incomplete legacy signal inputs on the compatibility path', () => {

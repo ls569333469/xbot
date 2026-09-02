@@ -185,6 +185,8 @@ async function getSignalForExecution(signalId, executor = db) {
             whitelist.auto_sl_pct,
             whitelist.exit_strategy,
             whitelist.exit_strategy_version,
+            whitelist.allow_repeat_buy,
+            whitelist.max_repeat_buys,
             whitelist.current_buy_count,
             whitelist.live_activation_state,
             whitelist.activation_version,

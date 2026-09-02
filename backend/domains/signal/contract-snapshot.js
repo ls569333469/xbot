@@ -22,6 +22,20 @@ function hashSnapshot(snapshot) {
   return crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableStringify(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashTradeConfigSnapshot(snapshot) {
+  return crypto.createHash('sha256').update(stableStringify(snapshot)).digest('hex');
+}
+
 function assetSnapshot(value = {}, source = 'signal_creation') {
   const body = {
     snapshot_version: 'p27.asset.v1',
@@ -109,7 +123,7 @@ function tradeConfigSnapshot(value = {}, source = 'signal_creation') {
     auto_tp_pct: autoTpPct,
     auto_sl_pct: normalizedAutoSlPct
   };
-  return { ...body, snapshot_hash: hashSnapshot(body) };
+  return { ...body, snapshot_hash: hashTradeConfigSnapshot(body) };
 }
 
 function isTradeConfigSnapshot(value = {}) {
@@ -141,9 +155,24 @@ function isTradeConfigSnapshot(value = {}) {
       || typeof value.snapshot_hash !== 'string'
       || !/^[a-f0-9]{64}$/.test(value.snapshot_hash)) return false;
   try {
-    normalizeExitStrategy(value.exit_strategy);
-    const { snapshot_hash: storedHash, ...body } = value;
-    return hashSnapshot(body) === storedHash;
+    const exitStrategy = normalizeExitStrategy(value.exit_strategy);
+    const { snapshot_hash: storedHash } = value;
+    const body = {
+      snapshot_version: 'p42.trade_config.v1',
+      source: value.source,
+      budget_per_trade: value.budget_per_trade,
+      total_budget: value.total_budget,
+      slippage: value.slippage,
+      allow_repeat_buy: value.allow_repeat_buy,
+      max_repeat_buys: value.max_repeat_buys,
+      exit_strategy: exitStrategy,
+      exit_strategy_version: value.exit_strategy_version,
+      auto_tp_pct: value.auto_tp_pct,
+      auto_sl_pct: value.auto_sl_pct
+    };
+    // Accept both the stable hash and P42's original insertion-order hash so
+    // existing production signals remain executable after the fix.
+    return hashTradeConfigSnapshot(body) === storedHash || hashSnapshot(body) === storedHash;
   } catch {
     return false;
   }
@@ -153,6 +182,7 @@ module.exports = {
   assetSnapshot,
   authorizationSnapshot,
   hashSnapshot,
+  hashTradeConfigSnapshot,
   isTradeConfigSnapshot,
   strategyType,
   tradeConfigSnapshot
